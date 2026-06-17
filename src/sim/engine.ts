@@ -1,0 +1,614 @@
+import { getCatalog } from './catalog';
+import { SeededRandom } from './random';
+import { getScenario, type ScenarioAction } from './scenarios';
+import type {
+  AlertCreatedEvent,
+  Catalog,
+  DeviceDefinition,
+  DeviceState,
+  DeviceStateChangedEvent,
+  DeviceTelemetryEvent,
+  HomeMode,
+  PersonMovedEvent,
+  RoomId,
+  ScenarioControlEvent,
+  ScenarioId,
+  TwinEvent,
+  TwinSnapshot
+} from '../shared/types';
+
+export interface SimulatorOptions {
+  seed?: number;
+  homeId?: string;
+}
+
+export interface VirtualHomeSimulator {
+  startScenario(id: ScenarioId): TwinEvent[];
+  advanceMinutes(minutes: number): TwinEvent[];
+  setPaused(paused: boolean): TwinEvent[];
+  getSnapshot(): TwinSnapshot;
+  getEvents(): TwinEvent[];
+  injectAbnormality(kind: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity'): TwinEvent[];
+}
+
+interface RuntimeState {
+  catalog: Catalog;
+  snapshot: TwinSnapshot;
+  elapsedMinutes: number;
+  emittedEvents: TwinEvent[];
+  executedStepKeys: Set<string>;
+  triggeredRules: Set<string>;
+  random: SeededRandom;
+}
+
+const defaultDeviceState: Record<string, Record<string, string | number | boolean | null>> = {
+  door_lock: { locked: true },
+  motion_sensor: { motion: false, confidence: 0 },
+  light: { power: 'off', brightness: 0 },
+  tv: { power: 'off', app: null, volume: 0 },
+  temperature_humidity_sensor: { temperatureC: 25, humidityPercent: 55 },
+  fridge: { doorOpen: false, compressorOn: true, powerW: 90 },
+  stove: { powerW: 0, level: 0 },
+  range_hood: { power: 'off', speed: 0 },
+  air_quality_sensor: { pm25: 8, co2: 520 },
+  sleep_sensor: { inBed: true, heartRateSimulated: 62 },
+  water_flow_sensor: { flowLMin: 0, totalL: 0 },
+  water_leak_sensor: { leakDetected: false },
+  water_valve: { valveOpen: true },
+  soil_moisture_sensor: { moisturePercent: 38 },
+  sprinkler: { valveOpen: false }
+};
+
+class Simulator implements VirtualHomeSimulator {
+  private readonly homeId: string;
+  private state: RuntimeState;
+
+  constructor(options: SimulatorOptions = {}) {
+    const catalog = getCatalog();
+    const random = new SeededRandom(options.seed ?? 1);
+    this.homeId = options.homeId ?? 'home_001';
+    this.state = {
+      catalog,
+      snapshot: this.createInitialSnapshot(catalog, 'weekday_normal', '2026-06-17T00:00:00+08:00', 'morning', 60),
+      elapsedMinutes: 0,
+      emittedEvents: [],
+      executedStepKeys: new Set(),
+      triggeredRules: new Set(),
+      random
+    };
+  }
+
+  startScenario(id: ScenarioId): TwinEvent[] {
+    const scenario = getScenario(id);
+    this.state = {
+      catalog: getCatalog(),
+      snapshot: this.createInitialSnapshot(getCatalog(), id, scenario.startTime, scenario.initialMode, scenario.speed),
+      elapsedMinutes: 0,
+      emittedEvents: [],
+      executedStepKeys: new Set(),
+      triggeredRules: new Set(),
+      random: this.state.random
+    };
+
+    for (const [personId, person] of Object.entries(scenario.initialPeople)) {
+      this.state.snapshot.people[personId].location = person.location;
+      this.state.snapshot.people[personId].activity = person.activity;
+    }
+    this.rebuildRooms();
+    this.updateOccupancy();
+    return [this.createScenarioEvent('start', id)];
+  }
+
+  advanceMinutes(minutes: number): TwinEvent[] {
+    if (this.state.snapshot.simClock.paused) {
+      return [];
+    }
+    const emitted: TwinEvent[] = [];
+    for (let index = 0; index < minutes; index += 1) {
+      this.state.elapsedMinutes += 1;
+      this.advanceClockOneMinute();
+      emitted.push(...this.runDueScenarioSteps());
+      this.rebuildRooms();
+      this.updateOccupancy();
+      emitted.push(...this.applyAmbientDynamics());
+      this.rebuildRooms();
+      this.updateOccupancy();
+      emitted.push(...this.applyRules());
+      emitted.push(...this.generateTelemetry());
+      this.rebuildRooms();
+      this.updateOccupancy();
+    }
+    this.state.emittedEvents.push(...emitted);
+    return emitted;
+  }
+
+  setPaused(paused: boolean): TwinEvent[] {
+    this.state.snapshot.simClock.paused = paused;
+    const event = this.createScenarioEvent(paused ? 'pause' : 'resume', paused);
+    this.state.emittedEvents.push(event);
+    return [event];
+  }
+
+  getSnapshot(): TwinSnapshot {
+    return structuredClone(this.state.snapshot);
+  }
+
+  getEvents(): TwinEvent[] {
+    return structuredClone(this.state.emittedEvents);
+  }
+
+  injectAbnormality(kind: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity'): TwinEvent[] {
+    const alertMap = {
+      door_left_open: ['door_left_open_001', 'warning', 'entrance', 'Front door has remained open', 'check_front_door'],
+      fridge_left_open: ['fridge_left_open_001', 'warning', 'kitchen', 'Fridge door has remained open', 'close_fridge_door'],
+      network_offline: ['network_offline_001', 'warning', 'study', 'Home network is offline', 'restart_router'],
+      senior_no_activity: ['senior_no_activity_001', 'info', 'master_bedroom', 'Senior has no morning activity yet', 'check_in_with_senior']
+    } as const;
+    const [alertId, severity, roomId, message, recommendedAction] = alertMap[kind];
+    const event = this.createAlertEvent(alertId, severity, roomId, message, recommendedAction, `manual_injection:${kind}`);
+    this.state.emittedEvents.push(event);
+    return [event];
+  }
+
+  private createInitialSnapshot(catalog: Catalog, scenarioId: ScenarioId, startTime: string, mode: HomeMode, speed: number): TwinSnapshot {
+    const devices = Object.fromEntries(catalog.devices.map((device) => [device.id, this.createDeviceState(device)]));
+    const rooms = catalog.rooms.reduce<TwinSnapshot['rooms']>((roomMap, room) => {
+      roomMap[room.id] = {
+        id: room.id,
+        name: room.name,
+        occupancy: false,
+        people: [],
+        temperatureC: room.id === 'garden' ? 21 : 25,
+        humidityPercent: room.id === 'bathroom' ? 65 : 52,
+        lightsOn: false,
+        activeDevices: []
+      };
+      return roomMap;
+    }, {} as TwinSnapshot['rooms']);
+    const people = Object.fromEntries(catalog.people.map((person) => [
+      person.id,
+      {
+        id: person.id,
+        kind: person.kind,
+        location: person.kind === 'pet' ? 'living_room' : 'master_bedroom',
+        activity: 'idle',
+        confidence: 0.9,
+        privacyMode: true
+      }
+    ])) as TwinSnapshot['people'];
+
+    return {
+      homeId: this.homeId,
+      scenarioId,
+      simClock: {
+        currentTime: startTime,
+        speed,
+        paused: false,
+        sequence: 0
+      },
+      homeState: {
+        occupancyCount: 0,
+        mode,
+        securityMode: 'disarmed'
+      },
+      rooms,
+      people,
+      devices,
+      activities: {},
+      alerts: {}
+    };
+  }
+
+  private createDeviceState(device: DeviceDefinition): DeviceState {
+    return {
+      id: device.id,
+      roomId: device.roomId,
+      type: device.type,
+      state: { ...(defaultDeviceState[device.type] ?? {}) },
+      lastReason: 'initial'
+    };
+  }
+
+  private runDueScenarioSteps(): TwinEvent[] {
+    const scenario = getScenario(this.state.snapshot.scenarioId as ScenarioId);
+    const events: TwinEvent[] = [];
+    for (const step of scenario.steps) {
+      const key = `${scenario.id}:${step.minute}`;
+      if (step.minute <= this.state.elapsedMinutes && !this.state.executedStepKeys.has(key)) {
+        this.state.executedStepKeys.add(key);
+        for (const action of step.actions) {
+          events.push(...this.applyAction(action));
+        }
+      }
+    }
+    return events;
+  }
+
+  private applyAmbientDynamics(): TwinEvent[] {
+    const events: TwinEvent[] = [];
+    events.push(...this.movePetAroundHome());
+    this.rebuildRooms();
+    events.push(...this.syncMotionSensors());
+    return events;
+  }
+
+  private movePetAroundHome(): TwinEvent[] {
+    const pet = this.state.snapshot.people.pet_1;
+    if (!pet || pet.location === 'away') {
+      return [];
+    }
+
+    const interval = this.state.snapshot.homeState.mode === 'sleeping' ? 17 : 7;
+    if (this.state.elapsedMinutes % interval !== 0) {
+      return [];
+    }
+
+    const destinations: RoomId[] = ['living_room', 'kitchen', 'dining_room', 'garden', 'master_bedroom'];
+    const candidates = destinations.filter((roomId) => roomId !== pet.location);
+    const to = candidates[Math.floor(this.state.random.range(0, candidates.length))] ?? 'living_room';
+    const activities = ['wandering', 'sniffing', 'resting', 'checking_room'];
+    const activity = activities[Math.floor(this.state.random.range(0, activities.length))] ?? 'wandering';
+    const event = this.createPersonMovedEvent('pet_1', pet.location, to, activity);
+    pet.location = to;
+    pet.activity = activity;
+    return [event];
+  }
+
+  private syncMotionSensors(): TwinEvent[] {
+    const events: TwinEvent[] = [];
+    const sensors: Array<{ deviceId: string; roomId: RoomId }> = [
+      { deviceId: 'entrance_motion_01', roomId: 'entrance' },
+      { deviceId: 'living_motion_01', roomId: 'living_room' }
+    ];
+
+    for (const sensor of sensors) {
+      const room = this.state.snapshot.rooms[sensor.roomId];
+      const patch = {
+        motion: room.occupancy,
+        confidence: room.occupancy ? 0.84 : 0
+      };
+      const event = this.setDeviceStateIfChanged(sensor.deviceId, patch, `ambient:motion:${sensor.roomId}`);
+      if (event) {
+        events.push(event);
+      }
+    }
+
+    return events;
+  }
+
+  private applyAction(action: ScenarioAction): TwinEvent[] {
+    if (action.kind === 'movePerson') {
+      const person = this.state.snapshot.people[action.personId];
+      const event = this.createPersonMovedEvent(action.personId, person.location, action.to, action.activity);
+      person.location = action.to;
+      person.activity = action.activity;
+      return [event];
+    }
+
+    if (action.kind === 'setHomeMode') {
+      this.state.snapshot.homeState.mode = action.mode;
+      return [];
+    }
+
+    if (action.kind === 'setDevice') {
+      return [this.setDeviceState(action.deviceId, action.state, action.reason)];
+    }
+
+    if (action.kind === 'startActivity') {
+      this.state.snapshot.activities[action.activityId] = {
+        activityId: action.activityId,
+        participants: action.participants,
+        roomId: action.roomId,
+        startedAt: this.state.snapshot.simClock.currentTime
+      };
+      return [this.createEvent({
+        type: 'ActivityStarted',
+        activityId: action.activityId,
+        participants: action.participants,
+        roomId: action.roomId,
+        reason: action.reason
+      })];
+    }
+
+    if (action.kind === 'endActivity') {
+      const activity = this.state.snapshot.activities[action.activityId];
+      delete this.state.snapshot.activities[action.activityId];
+      if (!activity) {
+        return [];
+      }
+      return [this.createEvent({
+        type: 'ActivityEnded',
+        activityId: action.activityId,
+        participants: activity.participants,
+        roomId: activity.roomId,
+        reason: action.reason
+      })];
+    }
+
+    if (action.kind === 'createAlert') {
+      return [this.createAlertEvent(action.alertId, action.severity, action.roomId, action.message, action.recommendedAction, action.reason)];
+    }
+
+    return [];
+  }
+
+  private applyRules(): TwinEvent[] {
+    const events: TwinEvent[] = [];
+    const snapshot = this.state.snapshot;
+    const humansHome = Object.values(snapshot.people).filter((person) => person.kind === 'human' && person.location !== 'away').length;
+    const doorLocked = snapshot.devices.door_lock_01.state.locked === true;
+    if (snapshot.homeState.mode === 'sleeping' && !this.state.triggeredRules.has('sleep_mode')) {
+      this.state.triggeredRules.add('sleep_mode');
+      events.push(this.setDeviceState('living_light_01', { power: 'off', brightness: 0 }, 'rule:sleep_mode'));
+      events.push(this.setDeviceState('tv_01', { power: 'off', app: null, volume: 0 }, 'rule:sleep_mode'));
+      events.push(this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'sleep_mode',
+        explanation: 'The household is sleeping, so shared room devices are quieted.',
+        actions: ['turn_off_living_light', 'turn_off_tv', 'keep_bedrooms_quiet'],
+        reason: 'home_mode:sleeping'
+      }));
+    }
+
+    if (
+      snapshot.rooms.kitchen.occupancy &&
+      Number(snapshot.devices.stove_01.state.powerW ?? 0) > 500 &&
+      !this.state.triggeredRules.has('cooking_ventilation')
+    ) {
+      this.state.triggeredRules.add('cooking_ventilation');
+      events.push(this.setDeviceState('range_hood_01', { power: 'on', speed: 2 }, 'rule:cooking_ventilation'));
+      events.push(this.setDeviceState('kitchen_light_01', { power: 'on', brightness: 80 }, 'rule:cooking_ventilation'));
+      events.push(this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'cooking_ventilation',
+        explanation: 'Kitchen occupancy and stove power indicate cooking.',
+        actions: ['turn_on_range_hood', 'turn_on_kitchen_light'],
+        reason: 'kitchen_occupied_and_stove_power'
+      }));
+    }
+
+    if (
+      Number(snapshot.devices.stove_01.state.powerW ?? 0) > 1000 &&
+      !snapshot.rooms.kitchen.occupancy &&
+      !this.state.triggeredRules.has('stove_unattended_safety')
+    ) {
+      this.state.triggeredRules.add('stove_unattended_safety');
+      events.push(this.setDeviceState('stove_01', { powerW: 0, level: 0 }, 'rule:stove_unattended_safety'));
+      events.push(this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'stove_unattended_safety',
+        explanation: 'The stove was drawing high power while the kitchen was empty.',
+        actions: ['turn_off_stove', 'raise_warning'],
+        reason: 'stove_power_without_kitchen_occupancy'
+      }));
+    }
+
+    if (humansHome === 0 && doorLocked && snapshot.homeState.mode !== 'away' && !this.state.triggeredRules.has('away_mode')) {
+      this.state.triggeredRules.add('away_mode');
+      snapshot.homeState.mode = 'away';
+      snapshot.homeState.securityMode = 'armed';
+      events.push(this.setDeviceState('living_light_01', { power: 'off', brightness: 0 }, 'rule:away_mode'));
+      events.push(this.setDeviceState('tv_01', { power: 'off', app: null, volume: 0 }, 'rule:away_mode'));
+      events.push(this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'away_mode',
+        explanation: 'All human family members are away and the front door is locked.',
+        actions: ['set_home_mode:away', 'arm_security', 'turn_off_lights', 'turn_off_tv'],
+        reason: 'occupancy_count:0'
+      }));
+    }
+
+    if (
+      snapshot.devices.water_leak_01.state.leakDetected === true &&
+      snapshot.devices.water_valve_01.state.valveOpen !== false &&
+      !this.state.triggeredRules.has('close_water_valve_on_leak')
+    ) {
+      this.state.triggeredRules.add('close_water_valve_on_leak');
+      snapshot.homeState.mode = 'alert';
+      events.push(this.setDeviceState('water_valve_01', { valveOpen: false }, 'rule:close_water_valve_on_leak'));
+      events.push(this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'close_water_valve_on_leak',
+        explanation: 'Bathroom leak sensor is active while the home is sleeping.',
+        actions: ['close_water_valve', 'raise_high_alert'],
+        reason: 'water_leak_sensor:true'
+      }));
+    }
+
+    return events;
+  }
+
+  private generateTelemetry(): TwinEvent[] {
+    const events: TwinEvent[] = [];
+    for (const device of this.state.catalog.devices) {
+      if (!['temperature_humidity_sensor', 'air_quality_sensor', 'water_flow_sensor', 'soil_moisture_sensor'].includes(device.type)) {
+        continue;
+      }
+      const state = this.state.snapshot.devices[device.id].state;
+      const measurements: Record<string, number | boolean> = {};
+      if (device.type === 'temperature_humidity_sensor') {
+        const room = this.state.snapshot.rooms[device.roomId];
+        const roomOccupied = room.people.length > 0;
+        const stoveHeat = device.roomId === 'kitchen' ? Number(this.state.snapshot.devices.stove_01.state.powerW ?? 0) / 9000 : 0;
+        const temperatureC = this.round(this.clamp((Number(state.temperatureC) || 25) + this.state.random.range(-0.12, 0.18) + (roomOccupied ? 0.03 : -0.02) + stoveHeat, 17, 31));
+        const humidityPercent = this.round(this.clamp((Number(state.humidityPercent) || 55) + this.state.random.range(-0.25, 0.35) + (roomOccupied ? 0.04 : -0.03), 35, 78));
+        state.temperatureC = temperatureC;
+        state.humidityPercent = humidityPercent;
+        room.temperatureC = temperatureC;
+        room.humidityPercent = humidityPercent;
+        measurements.temperature_c = temperatureC;
+        measurements.humidity_percent = humidityPercent;
+      } else if (device.type === 'air_quality_sensor') {
+        const cooking = this.state.snapshot.activities.breakfast || this.state.snapshot.activities.cooking_dinner;
+        const occupancy = this.state.snapshot.rooms[device.roomId].people.length;
+        const pm25 = this.round(this.clamp((cooking ? 18 : 8) + this.state.random.range(-1, 1), 2, 60));
+        const co2 = this.round(this.clamp((cooking ? 690 : 530) + occupancy * 42 + this.state.random.range(-8, 8), 420, 1200));
+        state.pm25 = pm25;
+        state.co2 = co2;
+        measurements.pm25 = pm25;
+        measurements.co2 = co2;
+      } else if (device.type === 'water_flow_sensor') {
+        const roomOccupied = this.state.snapshot.rooms[device.roomId].occupancy;
+        const leakActive = this.state.snapshot.devices.water_leak_01.state.leakDetected === true;
+        const valveOpen = this.state.snapshot.devices.water_valve_01.state.valveOpen !== false;
+        const currentFlow = Number(state.flowLMin) || 0;
+        const nextFlow = leakActive && valveOpen
+          ? currentFlow
+          : this.clamp(currentFlow + (roomOccupied ? this.state.random.range(-0.15, 0.08) : -0.7), 0, 12);
+        const flowLMin = this.round(nextFlow);
+        const totalL = this.round((Number(state.totalL) || 0) + flowLMin);
+        state.flowLMin = flowLMin;
+        state.totalL = totalL;
+        measurements.flow_l_min = flowLMin;
+        measurements.total_l = totalL;
+      } else if (device.type === 'soil_moisture_sensor') {
+        const sprinklerOn = this.state.snapshot.devices.sprinkler_01.state.valveOpen === true;
+        const moisturePercent = this.round(this.clamp((Number(state.moisturePercent) || 38) + (sprinklerOn ? 0.55 : -0.03) + this.state.random.range(-0.04, 0.04), 20, 75));
+        state.moisturePercent = moisturePercent;
+        measurements.moisture_percent = moisturePercent;
+      }
+      events.push(this.createEvent({
+        type: 'DeviceTelemetry',
+        roomId: device.roomId,
+        deviceId: device.id,
+        deviceType: device.type,
+        measurements
+      }));
+    }
+    return events;
+  }
+
+  private setDeviceState(deviceId: string, patch: Record<string, string | number | boolean | null>, reason: string): DeviceStateChangedEvent {
+    const device = this.state.snapshot.devices[deviceId];
+    device.state = { ...device.state, ...patch };
+    device.lastReason = reason;
+    return this.createEvent({
+      type: 'DeviceStateChanged',
+      roomId: device.roomId,
+      deviceId,
+      deviceType: device.type,
+      state: device.state,
+      reason
+    });
+  }
+
+  private setDeviceStateIfChanged(deviceId: string, patch: Record<string, string | number | boolean | null>, reason: string): DeviceStateChangedEvent | null {
+    const device = this.state.snapshot.devices[deviceId];
+    const changed = Object.entries(patch).some(([key, value]) => device.state[key] !== value);
+    if (!changed) {
+      return null;
+    }
+    return this.setDeviceState(deviceId, patch, reason);
+  }
+
+  private createAlertEvent(alertId: string, severity: 'info' | 'warning' | 'high', roomId: RoomId, message: string, recommendedAction: string, reason: string): AlertCreatedEvent {
+    this.state.snapshot.alerts[alertId] = {
+      id: alertId,
+      severity,
+      roomId,
+      message,
+      recommendedAction,
+      createdAt: this.state.snapshot.simClock.currentTime
+    };
+    return this.createEvent({
+      type: 'AlertCreated',
+      alertId,
+      severity,
+      roomId,
+      message,
+      recommendedAction,
+      reason
+    });
+  }
+
+  private createPersonMovedEvent(personId: string, from: RoomId | 'away', to: RoomId | 'away', activity: string): PersonMovedEvent {
+    return this.createEvent({
+      type: 'PersonMoved',
+      personId,
+      from,
+      to,
+      activity,
+      reason: `activity:${activity}`
+    });
+  }
+
+  private createScenarioEvent(command: ScenarioControlEvent['command'], value: string | number | boolean): ScenarioControlEvent {
+    return this.createEvent({
+      type: 'ScenarioControl',
+      command,
+      value,
+      reason: `scenario:${value}`
+    });
+  }
+
+  private createEvent<T extends Omit<TwinEvent, 'id' | 'ts' | 'simTime' | 'homeId' | 'scenarioId' | 'sequence'>>(event: T): T & {
+    id: string;
+    ts: string;
+    simTime: string;
+    homeId: string;
+    scenarioId: string;
+    sequence: number;
+  } {
+    this.state.snapshot.simClock.sequence += 1;
+    const sequence = this.state.snapshot.simClock.sequence;
+    return {
+      ...event,
+      id: `evt_${String(sequence).padStart(6, '0')}`,
+      ts: this.state.snapshot.simClock.currentTime,
+      simTime: this.state.snapshot.simClock.currentTime,
+      homeId: this.homeId,
+      scenarioId: this.state.snapshot.scenarioId,
+      sequence
+    };
+  }
+
+  private rebuildRooms(): void {
+    for (const room of Object.values(this.state.snapshot.rooms)) {
+      room.people = [];
+      room.activeDevices = [];
+      room.occupancy = false;
+      room.lightsOn = false;
+    }
+    for (const person of Object.values(this.state.snapshot.people)) {
+      if (person.location !== 'away') {
+        this.state.snapshot.rooms[person.location].people.push(person.id);
+      }
+    }
+    for (const device of Object.values(this.state.snapshot.devices)) {
+      const room = this.state.snapshot.rooms[device.roomId];
+      if (device.state.power === 'on' || device.state.locked === false || device.state.valveOpen === true || Number(device.state.powerW ?? 0) > 0) {
+        room.activeDevices.push(device.id);
+      }
+      if (device.type === 'light' && device.state.power === 'on') {
+        room.lightsOn = true;
+      }
+    }
+    for (const room of Object.values(this.state.snapshot.rooms)) {
+      room.occupancy = room.people.length > 0;
+    }
+  }
+
+  private updateOccupancy(): void {
+    this.state.snapshot.homeState.occupancyCount = Object.values(this.state.snapshot.people)
+      .filter((person) => person.kind === 'human' && person.location !== 'away')
+      .length;
+  }
+
+  private advanceClockOneMinute(): void {
+    const current = new Date(this.state.snapshot.simClock.currentTime);
+    current.setMinutes(current.getMinutes() + 1);
+    this.state.snapshot.simClock.currentTime = current.toISOString().replace('.000Z', '+00:00');
+  }
+
+  private round(value: number): number {
+    return Math.round(value * 10) / 10;
+  }
+
+  private clamp(value: number, min: number, max: number): number {
+    return Math.min(max, Math.max(min, value));
+  }
+}
+
+export function createSimulator(options?: SimulatorOptions): VirtualHomeSimulator {
+  return new Simulator(options);
+}
