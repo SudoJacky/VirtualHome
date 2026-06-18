@@ -53,11 +53,36 @@ export interface FloorplanAutomationLink {
   severity: FloorplanAlertSeverity;
 }
 
+export type ReplayStepKind = 'precondition' | 'sensor' | 'automation' | 'command' | 'result';
+
+export interface FloorplanReplayStep {
+  id: string;
+  kind: ReplayStepKind;
+  label: string;
+  detail: string;
+  roomId: RoomId;
+  deviceId?: string;
+  atSequence: number;
+}
+
+export interface FloorplanEventReplay {
+  id: string;
+  ruleId: string;
+  title: string;
+  roomId: RoomId;
+  focusDeviceId?: string;
+  sourceDeviceId?: string;
+  targetDeviceId?: string;
+  severity: FloorplanAlertSeverity;
+  steps: FloorplanReplayStep[];
+}
+
 export interface Floorplan3DModel {
   rooms: Floorplan3DRoom[];
   people: Floorplan3DPerson[];
   devices: Floorplan3DDevice[];
   automationLinks: FloorplanAutomationLink[];
+  eventReplays: FloorplanEventReplay[];
 }
 
 export function createFloorplan3DModel(snapshot: TwinSnapshot, events: TwinEvent[]): Floorplan3DModel {
@@ -121,11 +146,14 @@ export function createFloorplan3DModel(snapshot: TwinSnapshot, events: TwinEvent
     };
   });
 
+  const automationLinks = createAutomationLinks(snapshot, events, alertSeverityByRoom);
+
   return {
     rooms,
     people,
     devices,
-    automationLinks: createAutomationLinks(snapshot, events, alertSeverityByRoom)
+    automationLinks,
+    eventReplays: createEventReplays(snapshot, events, automationLinks)
   };
 }
 
@@ -231,6 +259,103 @@ function inferAutomationRoom(snapshot: TwinSnapshot, events: TwinEvent[], sequen
     .filter((event): event is Extract<TwinEvent, { type: 'DeviceStateChanged' }> => event.type === 'DeviceStateChanged')
     .find((event) => Math.abs(event.sequence - sequence) <= 2);
   return nearbyDeviceEvent?.roomId ?? Object.values(snapshot.rooms).find((room) => room.occupancy)?.id ?? 'living_room';
+}
+
+function createEventReplays(
+  snapshot: TwinSnapshot,
+  events: TwinEvent[],
+  automationLinks: FloorplanAutomationLink[]
+): FloorplanEventReplay[] {
+  const automationEvents = events
+    .filter((event): event is Extract<TwinEvent, { type: 'AutomationTriggered' }> => event.type === 'AutomationTriggered')
+    .slice(-5)
+    .reverse();
+
+  return automationEvents.map((automation) => {
+    const link = automationLinks.find((candidate) => candidate.id === automation.id);
+    const roomId = link?.roomId ?? inferAutomationRoom(snapshot, events, automation.sequence);
+    const relatedSensor = findNearbyDeviceEvent(events, automation.sequence, link?.sourceDeviceId, -3, 0);
+    const relatedCommand = findNearbyDeviceEvent(events, automation.sequence, link?.targetDeviceId, 0, 3);
+    const sourceDeviceId = link?.sourceDeviceId ?? relatedSensor?.deviceId;
+    const targetDeviceId = link?.targetDeviceId ?? relatedCommand?.deviceId;
+
+    return {
+      id: automation.id,
+      ruleId: automation.ruleId,
+      title: automation.explanation,
+      roomId,
+      focusDeviceId: targetDeviceId ?? sourceDeviceId,
+      sourceDeviceId,
+      targetDeviceId,
+      severity: link?.severity ?? 'info',
+      steps: [
+        {
+          id: `${automation.id}:precondition`,
+          kind: 'precondition',
+          label: 'Replay starts',
+          detail: 'Reconstructing the seconds before the automation from the event stream.',
+          roomId,
+          atSequence: Math.max(0, automation.sequence - 2)
+        },
+        {
+          id: `${automation.id}:sensor`,
+          kind: 'sensor',
+          label: 'Sensor observation',
+          detail: relatedSensor ? summarizeDeviceEvent(relatedSensor) : automation.explanation,
+          roomId: relatedSensor?.roomId ?? roomId,
+          deviceId: sourceDeviceId,
+          atSequence: relatedSensor?.sequence ?? automation.sequence
+        },
+        {
+          id: `${automation.id}:automation`,
+          kind: 'automation',
+          label: 'Rule matched',
+          detail: automation.explanation,
+          roomId,
+          atSequence: automation.sequence
+        },
+        {
+          id: `${automation.id}:command`,
+          kind: 'command',
+          label: 'Device command',
+          detail: automation.actions.join(', '),
+          roomId: relatedCommand?.roomId ?? roomId,
+          deviceId: targetDeviceId,
+          atSequence: relatedCommand?.sequence ?? automation.sequence
+        },
+        {
+          id: `${automation.id}:result`,
+          kind: 'result',
+          label: 'Resulting state',
+          detail: relatedCommand ? summarizeDeviceEvent(relatedCommand) : 'Awaiting resulting device state.',
+          roomId: relatedCommand?.roomId ?? roomId,
+          deviceId: targetDeviceId,
+          atSequence: (relatedCommand?.sequence ?? automation.sequence) + 1
+        }
+      ]
+    };
+  });
+}
+
+function findNearbyDeviceEvent(
+  events: TwinEvent[],
+  sequence: number,
+  preferredDeviceId: string | undefined,
+  minOffset: number,
+  maxOffset: number
+): Extract<TwinEvent, { type: 'DeviceStateChanged' }> | undefined {
+  const candidates = events.filter((event): event is Extract<TwinEvent, { type: 'DeviceStateChanged' }> => (
+    event.type === 'DeviceStateChanged' &&
+    event.sequence >= sequence + minOffset &&
+    event.sequence <= sequence + maxOffset
+  ));
+  return candidates.find((event) => event.deviceId === preferredDeviceId) ?? candidates[0];
+}
+
+function summarizeDeviceEvent(event: Extract<TwinEvent, { type: 'DeviceStateChanged' }>): string {
+  return Object.entries(event.state)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(', ');
 }
 
 function offsetWithinRoom(roomId: RoomId, index: number, spacing: number): { x: number; z: number } {

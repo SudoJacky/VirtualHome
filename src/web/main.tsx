@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import type { DeviceState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { Floorplan3D, type FloorplanLayers, type FloorplanSelection } from './Floorplan3D';
-import { createFloorplan3DModel, type Floorplan3DDevice, type Floorplan3DRoom } from './floorplan3dModel';
+import { createFloorplan3DModel, type Floorplan3DDevice, type Floorplan3DRoom, type FloorplanEventReplay } from './floorplan3dModel';
 import { createDashboardModel, mergeTwinEvents } from './viewModel';
 import './styles.css';
 
@@ -40,6 +40,9 @@ function App(): React.ReactElement {
     alerts: true
   });
   const [floorplanSelection, setFloorplanSelection] = React.useState<FloorplanSelection>(null);
+  const [activeReplayId, setActiveReplayId] = React.useState<string | null>(null);
+  const [activeReplayStepIndex, setActiveReplayStepIndex] = React.useState(0);
+  const pointerActivationRef = React.useRef(false);
 
   React.useEffect(() => {
     void fetch('/api/state').then((response) => response.json()).then(setSnapshot);
@@ -116,9 +119,44 @@ function App(): React.ReactElement {
   const selectedDevice = floorplanSelection?.type === 'device'
     ? floorplanModel.devices.find((device) => device.id === floorplanSelection.id) ?? null
     : null;
+  const activeReplay = activeReplayId
+    ? floorplanModel.eventReplays.find((replay) => replay.id === activeReplayId) ?? null
+    : null;
+  const activeReplayStep = activeReplay?.steps[activeReplayStepIndex] ?? null;
 
   function toggleFloorplanLayer(layer: keyof FloorplanLayers): void {
     setFloorplanLayers((current) => ({ ...current, [layer]: !current[layer] }));
+  }
+
+  function focusReplayStep(replay: FloorplanEventReplay, stepIndex: number): void {
+    const step = replay.steps[stepIndex] ?? replay.steps[0];
+    setActiveReplayId(replay.id);
+    setActiveReplayStepIndex(stepIndex);
+    setFloorplanSelection(step.deviceId ? { type: 'device', id: step.deviceId } : { type: 'room', id: step.roomId });
+    setFloorplanLayers((current) => ({ ...current, alerts: true, devices: true, environment: true }));
+  }
+
+  function startReplayForRecord(record: ReturnType<typeof createDashboardModel>['controlRecords'][number]): void {
+    const ruleId = record.reason.startsWith('rule:') ? record.reason.slice('rule:'.length) : '';
+    const replay = floorplanModel.eventReplays.find((candidate) => candidate.ruleId === ruleId);
+    if (replay) {
+      focusReplayStep(replay, 0);
+      return;
+    }
+    setFloorplanSelection({ type: 'device', id: record.deviceId });
+  }
+
+  function activateFromPointer(action: () => void): void {
+    pointerActivationRef.current = true;
+    action();
+  }
+
+  function activateFromClick(action: () => void): void {
+    if (pointerActivationRef.current) {
+      pointerActivationRef.current = false;
+      return;
+    }
+    action();
   }
 
   return (
@@ -268,6 +306,13 @@ function App(): React.ReactElement {
                 <h2>{model.controlRecords[0].deviceName}</h2>
                 <p>{model.controlRecords[0].action}</p>
                 <small>{model.controlRecords[0].ruleName}</small>
+                <button
+                  className="story-action"
+                  onPointerDown={() => activateFromPointer(() => startReplayForRecord(model.controlRecords[0]))}
+                  onClick={() => activateFromClick(() => startReplayForRecord(model.controlRecords[0]))}
+                >
+                  <Play size={15} /> Replay in 3D
+                </button>
               </>
             ) : (
               <p className="muted">No device control records yet.</p>
@@ -298,6 +343,18 @@ function App(): React.ReactElement {
               />
             )}
           </div>
+
+          <ReplayPanel
+            replay={activeReplay}
+            activeStepIndex={activeReplayStepIndex}
+            activeStepId={activeReplayStep?.id ?? null}
+            onStepSelect={(stepIndex) => activeReplay ? focusReplayStep(activeReplay, stepIndex) : undefined}
+          onNext={() => activeReplay ? focusReplayStep(activeReplay, Math.min(activeReplayStepIndex + 1, activeReplay.steps.length - 1)) : undefined}
+            onClose={() => {
+              setActiveReplayId(null);
+              setActiveReplayStepIndex(0);
+            }}
+          />
 
           <SelectionPanel
             room={selectedRoom}
@@ -379,7 +436,9 @@ function App(): React.ReactElement {
         <ControlRecordPanel
           records={model.controlRecords}
           filters={model.controlRecordFilters}
+          replays={floorplanModel.eventReplays}
           onFocusDevice={(deviceId) => setFloorplanSelection({ type: 'device', id: deviceId })}
+          onReplay={startReplayForRecord}
         />
         {sidebarMode === 'debug' ? <RawEventStream events={events} /> : null}
       </section>
@@ -479,11 +538,15 @@ function Floorplan2D({
 function ControlRecordPanel({
   records,
   filters,
-  onFocusDevice
+  replays,
+  onFocusDevice,
+  onReplay
 }: {
   records: ReturnType<typeof createDashboardModel>['controlRecords'];
   filters: ReturnType<typeof createDashboardModel>['controlRecordFilters'];
+  replays: FloorplanEventReplay[];
   onFocusDevice: (deviceId: string) => void;
+  onReplay: (record: ReturnType<typeof createDashboardModel>['controlRecords'][number]) => void;
 }): React.ReactElement {
   const [roomFilter, setRoomFilter] = React.useState('all');
   const [ruleFilter, setRuleFilter] = React.useState('all');
@@ -492,7 +555,7 @@ function ControlRecordPanel({
   const [scenarioFilter, setScenarioFilter] = React.useState('all');
   const [alertFilter, setAlertFilter] = React.useState('all');
   const [timeWindow, setTimeWindow] = React.useState('all');
-  const [expandedRecordId, setExpandedRecordId] = React.useState<string | null>(null);
+  const pointerActivationRef = React.useRef(false);
   const filteredRecords = records.filter((record) => (
     (roomFilter === 'all' || record.roomName === roomFilter) &&
     (ruleFilter === 'all' || record.ruleName === ruleFilter) &&
@@ -524,6 +587,19 @@ function ControlRecordPanel({
     await navigator.clipboard.writeText(JSON.stringify(record.payload, null, 2));
   }
 
+  function activateFromPointer(action: () => void): void {
+    pointerActivationRef.current = true;
+    action();
+  }
+
+  function activateFromClick(action: () => void): void {
+    if (pointerActivationRef.current) {
+      pointerActivationRef.current = false;
+      return;
+    }
+    action();
+  }
+
   return (
     <section className="panel records-panel">
       <div className="panel-heading">
@@ -535,6 +611,14 @@ function ControlRecordPanel({
           <button onClick={() => exportRecords('json')}><FileDown size={15} /> JSON</button>
           <button onClick={() => exportRecords('csv')}><FileDown size={15} /> CSV</button>
           <button onClick={() => copyLatest()}><Copy size={15} /> Copy latest</button>
+          {filteredRecords[0] ? (
+            <button
+              onPointerDown={() => activateFromPointer(() => onReplay(filteredRecords[0]))}
+              onClick={() => activateFromClick(() => onReplay(filteredRecords[0]))}
+            >
+              <Play size={15} /> Replay latest
+            </button>
+          ) : null}
         </div>
       </div>
       <div className="record-filters">
@@ -599,50 +683,159 @@ function ControlRecordPanel({
           <span>Rule</span>
           <span>State change</span>
           <span>Trigger</span>
+          <span>Actions</span>
         </div>
         {filteredRecords.slice(0, 10).map((record) => (
-          <React.Fragment key={record.id}>
-            <button
-              className="record-row record-button"
-              role="row"
-              onClick={() => {
-                setExpandedRecordId(expandedRecordId === record.id ? null : record.id);
-                onFocusDevice(record.deviceId);
-              }}
-            >
+          <details key={record.id} className="record-entry">
+            <summary className="record-row" role="row">
               <time>{formatTime(record.time)}</time>
               <strong>{record.deviceName}<small>{record.roomName}</small></strong>
               <span>{record.ruleName}</span>
               <code>{record.previousState}{' -> '}{record.nextState}</code>
               <span>{record.trigger}</span>
-            </button>
-            {expandedRecordId === record.id ? (
-              <div className="record-detail">
-                <div>
-                  <strong>Actor</strong>
-                  <span>{record.actor}</span>
-                </div>
-                <div>
-                  <strong>People</strong>
-                  <span>{record.people.join(', ') || 'No person associated'}</span>
-                </div>
-                <div>
-                  <strong>Scenario</strong>
-                  <span>{record.scenarioId}</span>
-                </div>
-                <div>
-                  <strong>Alert severity</strong>
-                  <span>{record.alertSeverity ?? 'None'}</span>
-                </div>
-                <button onClick={() => copyRecordPayload(record)}><Copy size={15} /> Copy payload</button>
+              <span className="record-row-actions">
+                <button
+                  type="button"
+                  aria-label={`Focus ${record.deviceName}`}
+                  onPointerDown={() => {
+                    activateFromPointer(() => onFocusDevice(record.deviceId));
+                  }}
+                  onClick={() => {
+                    activateFromClick(() => onFocusDevice(record.deviceId));
+                  }}
+                >
+                  Focus
+                </button>
+              </span>
+            </summary>
+            <div className="record-detail">
+              <div>
+                <strong>Actor</strong>
+                <span>{record.actor}</span>
               </div>
-            ) : null}
-          </React.Fragment>
+              <div>
+                <strong>People</strong>
+                <span>{record.people.join(', ') || 'No person associated'}</span>
+              </div>
+              <div>
+                <strong>Scenario</strong>
+                <span>{record.scenarioId}</span>
+              </div>
+              <div>
+                <strong>Alert severity</strong>
+                <span>{record.alertSeverity ?? 'None'}</span>
+              </div>
+              <div>
+                <strong>3D replay</strong>
+                <span>{hasReplayForRecord(record, replays) ? 'Replay available' : 'Focus device only'}</span>
+              </div>
+              <button
+                onPointerDown={() => activateFromPointer(() => onReplay(record))}
+                onClick={() => activateFromClick(() => onReplay(record))}
+              >
+                <Play size={15} /> Replay in 3D
+              </button>
+              <button onClick={() => copyRecordPayload(record)}><Copy size={15} /> Copy payload</button>
+            </div>
+          </details>
         ))}
         {filteredRecords.length === 0 ? <p className="muted">No matching device control records.</p> : null}
       </div>
     </section>
   );
+}
+
+function ReplayPanel({
+  replay,
+  activeStepIndex,
+  activeStepId,
+  onStepSelect,
+  onNext,
+  onClose
+}: {
+  replay: FloorplanEventReplay | null;
+  activeStepIndex: number;
+  activeStepId: string | null;
+  onStepSelect: (stepIndex: number) => void;
+  onNext: () => void;
+  onClose: () => void;
+}): React.ReactElement {
+  const pointerActivationRef = React.useRef(false);
+
+  function activateFromPointer(action: () => void): void {
+    pointerActivationRef.current = true;
+    action();
+  }
+
+  function activateFromClick(action: () => void): void {
+    if (pointerActivationRef.current) {
+      pointerActivationRef.current = false;
+      return;
+    }
+    action();
+  }
+
+  if (!replay) {
+    return (
+      <div className="panel replay-panel idle">
+        <span className="eyebrow">3D event replay</span>
+        <h2>Ready to replay</h2>
+        <p className="muted">Open a control record and choose Replay in 3D.</p>
+      </div>
+    );
+  }
+
+  const activeStep = replay.steps[activeStepIndex] ?? replay.steps[0];
+
+  return (
+    <div className={`panel replay-panel ${replay.severity}`}>
+      <div className="panel-heading">
+        <div>
+          <span className="eyebrow">3D event replay</span>
+          <h2>{replay.ruleId.replaceAll('_', ' ')}</h2>
+        </div>
+        <div className="panel-actions">
+          <button
+            onPointerDown={() => activateFromPointer(onNext)}
+            onClick={() => activateFromClick(onNext)}
+            disabled={activeStepIndex >= replay.steps.length - 1}
+          >
+            <StepForward size={15} /> Next
+          </button>
+          <button
+            onPointerDown={() => activateFromPointer(onClose)}
+            onClick={() => activateFromClick(onClose)}
+          >
+            Close
+          </button>
+        </div>
+      </div>
+      <p>{activeStep.label}: {activeStep.detail}</p>
+      <div className="replay-steps" role="list" aria-label="3D event replay steps">
+        {replay.steps.map((step, index) => (
+          <button
+            key={step.id}
+            className={activeStepId === step.id ? 'active' : ''}
+            role="listitem"
+            onPointerDown={() => activateFromPointer(() => onStepSelect(index))}
+            onClick={() => activateFromClick(() => onStepSelect(index))}
+          >
+            <strong>{index + 1}</strong>
+            <span>{step.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function hasReplayForRecord(
+  record: ReturnType<typeof createDashboardModel>['controlRecords'][number],
+  replays: FloorplanEventReplay[]
+): boolean {
+  if (!record.reason.startsWith('rule:')) return false;
+  const ruleId = record.reason.slice('rule:'.length);
+  return replays.some((replay) => replay.ruleId === ruleId);
 }
 
 function SelectionPanel({

@@ -317,6 +317,14 @@ button:hover {
   font-size: 12px;
 }
 
+.story-action {
+  align-self: end;
+  justify-self: start;
+  margin-top: 4px;
+  min-height: 32px;
+  padding: 6px 10px;
+}
+
 .primary-story {
   border-left: 4px solid #1f6e63;
 }
@@ -1187,6 +1195,73 @@ button:hover {
   padding: 10px 0;
 }
 
+.replay-panel {
+  border-left: 4px solid #267e71;
+  display: grid;
+  gap: 12px;
+}
+
+.replay-panel.idle {
+  border-left-color: #9aabb0;
+}
+
+.replay-panel.warning {
+  border-left-color: #b48320;
+}
+
+.replay-panel.critical {
+  border-left-color: #bc2f2f;
+}
+
+.replay-panel p {
+  color: #40555b;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.replay-steps {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.replay-steps button {
+  align-items: flex-start;
+  background: #f7fafb;
+  border-color: #dce6e8;
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  min-height: 58px;
+  padding: 8px;
+  text-align: left;
+}
+
+.replay-steps button.active {
+  background: #e7f3f0;
+  border-color: #267e71;
+  box-shadow: inset 0 0 0 1px rgba(38, 126, 113, 0.32);
+}
+
+.replay-steps strong {
+  align-items: center;
+  background: #267e71;
+  border-radius: 999px;
+  color: #ffffff;
+  display: inline-flex;
+  font-size: 11px;
+  height: 20px;
+  justify-content: center;
+  width: 20px;
+}
+
+.replay-steps span {
+  color: #40555b;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
 .workflow-card strong,
 .decision-row strong {
   color: #24363b;
@@ -1372,8 +1447,21 @@ button:hover {
 .record-row {
   display: grid;
   gap: 12px;
-  grid-template-columns: 72px minmax(140px, 0.8fr) minmax(150px, 0.8fr) minmax(220px, 1.4fr) minmax(240px, 1.4fr);
-  min-width: 920px;
+  grid-template-columns: 72px minmax(140px, 0.8fr) minmax(150px, 0.8fr) minmax(220px, 1.4fr) minmax(240px, 1.4fr) 92px;
+  min-width: 1040px;
+}
+
+.record-entry {
+  border-bottom: 1px solid #edf1f2;
+}
+
+.record-entry summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.record-entry summary::-webkit-details-marker {
+  display: none;
 }
 
 .records-head {
@@ -1386,7 +1474,6 @@ button:hover {
 }
 
 .record-row {
-  border-bottom: 1px solid #edf1f2;
   padding: 10px 0;
 }
 
@@ -1406,6 +1493,17 @@ button:hover {
 .record-button:hover {
   background: #f8fbfb;
   border-color: #edf1f2;
+}
+
+.record-row-actions {
+  align-items: center;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.record-row-actions button {
+  min-height: 30px;
+  padding: 5px 8px;
 }
 
 .record-row time,
@@ -1437,8 +1535,8 @@ button:hover {
   border-bottom: 1px solid #dfe8ea;
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(4, minmax(120px, 1fr)) auto;
-  min-width: 920px;
+  grid-template-columns: repeat(5, minmax(120px, 1fr)) repeat(2, auto);
+  min-width: 1040px;
   padding: 10px 12px;
 }
 
@@ -1557,7 +1655,8 @@ button:hover {
   .metric-row,
   .story-row,
   .main-grid,
-  .record-filters {
+  .record-filters,
+  .replay-steps {
     grid-template-columns: 1fr;
   }
 

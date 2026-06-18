@@ -71,6 +71,37 @@ describe('3D floorplan layout and model', () => {
     });
   });
 
+  it('builds replay scenes that explain sensor, rule, command, and result steps', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('night_water_leak');
+    simulator.advanceMinutes(10);
+
+    const model = createFloorplan3DModel(simulator.getSnapshot(), simulator.getEvents());
+
+    expect(model.eventReplays[0]).toMatchObject({
+      ruleId: 'close_water_valve_on_leak',
+      roomId: 'bathroom',
+      focusDeviceId: 'water_valve_01',
+      sourceDeviceId: 'water_leak_01',
+      targetDeviceId: 'water_valve_01'
+    });
+    expect(model.eventReplays[0].steps.map((step) => step.kind)).toEqual([
+      'precondition',
+      'sensor',
+      'automation',
+      'command',
+      'result'
+    ]);
+    expect(model.eventReplays[0].steps[1]).toMatchObject({
+      deviceId: 'water_leak_01',
+      roomId: 'bathroom'
+    });
+    expect(model.eventReplays[0].steps[3]).toMatchObject({
+      deviceId: 'water_valve_01',
+      roomId: 'bathroom'
+    });
+  });
+
   it('keeps recent person movement paths for smooth animation', () => {
     const simulator = createSimulator({ seed: 314 });
     simulator.startScenario('weekday_normal');
