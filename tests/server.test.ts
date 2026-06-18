@@ -86,6 +86,9 @@ describe('server API', () => {
     expect(document.components.schemas.DeviceCapability.properties.stateFields.additionalProperties.properties).toHaveProperty('unit');
     expect(document.components.schemas.DeviceCapability.properties.stateFields.additionalProperties.properties).toHaveProperty('normalRange');
     expect(document.components.schemas).toHaveProperty('AccessAuditRecord');
+    expect(document.components.schemas.DeviceAccessRecord.required).toEqual(expect.arrayContaining(['stateFields', 'supportedCommands']));
+    expect(document.components.schemas.DeviceAccessRecord.properties).toHaveProperty('stateFields');
+    expect(document.components.schemas.DeviceAccessRecord.properties).toHaveProperty('supportedCommands');
     expect(document.components.schemas.DeviceAccessRecord.properties.lastCommand.anyOf[0].properties.status.enum).toEqual([
       'requested',
       'sent',
@@ -218,6 +221,11 @@ describe('server API', () => {
       connectivity: 'offline',
       reportedState: { online: false, latencyMs: 0 },
       desiredState: { online: true, latencyMs: 18 },
+      stateFields: {
+        online: { type: 'boolean', required: false, defaultValue: true, unit: 'bool' },
+        latencyMs: { type: 'number', required: false, defaultValue: 18, unit: 'ms' }
+      },
+      supportedCommands: ['restart'],
       dataQuality: { source: 'simulator', confidence: 1 },
       lastCommand: {
         status: 'failed',

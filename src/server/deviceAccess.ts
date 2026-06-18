@@ -1,4 +1,4 @@
-import { getDeviceCapability } from '../shared/deviceRegistry';
+import { getDeviceCapability, getDeviceCapabilityMetadata, type DeviceStateFieldMetadata } from '../shared/deviceRegistry';
 import type { DeviceState, DeviceStateChangedEvent, DeviceTelemetryEvent, TwinEvent, TwinSnapshot } from '../shared/types';
 
 type DeviceAccessConnectivity = 'online' | 'offline' | 'unknown';
@@ -12,6 +12,8 @@ export interface DeviceAccessRecord {
   protocol: 'simulated';
   desiredState: DeviceState['state'] | null;
   reportedState: DeviceState['state'];
+  stateFields: Record<string, DeviceStateFieldMetadata>;
+  supportedCommands: string[];
   connectivity: DeviceAccessConnectivity;
   lastSeenAt: string;
   dataQuality: {
@@ -31,6 +33,7 @@ export interface DeviceAccessRecord {
 export function createDeviceAccessRecords(snapshot: TwinSnapshot, events: TwinEvent[]): DeviceAccessRecord[] {
   const latestStateChange = new Map<string, DeviceStateChangedEvent>();
   const latestSeenAt = new Map<string, string>();
+  const capabilityMetadata = getDeviceCapabilityMetadata();
 
   for (const event of [...events].sort((left, right) => left.sequence - right.sequence)) {
     if (event.type === 'DeviceStateChanged') {
@@ -44,6 +47,7 @@ export function createDeviceAccessRecords(snapshot: TwinSnapshot, events: TwinEv
   return Object.values(snapshot.devices)
     .map((device) => {
       const capability = getDeviceCapability(device.type);
+      const metadata = capabilityMetadata[device.type];
       const stateChange = latestStateChange.get(device.id);
       const lastSeenAt = latestSeenAt.get(device.id) ?? snapshot.simClock.currentTime;
       const supportedCommands = capability.supportedCommands;
@@ -58,6 +62,8 @@ export function createDeviceAccessRecords(snapshot: TwinSnapshot, events: TwinEv
           ? { ...capability.defaultState }
           : stateChange ? stateChange.state : supportedCommands.length > 0 ? { ...device.state } : null,
         reportedState: { ...device.state },
+        stateFields: structuredClone(metadata?.stateFields ?? {}),
+        supportedCommands: [...supportedCommands],
         connectivity: connectivityForDevice(device),
         lastSeenAt,
         dataQuality: {

@@ -256,7 +256,7 @@ const accessAuditRecordSchema: JsonSchema = {
 
 const deviceAccessRecordSchema: JsonSchema = {
   type: 'object',
-  required: ['deviceId', 'roomId', 'deviceType', 'displayName', 'protocol', 'desiredState', 'reportedState', 'connectivity', 'lastSeenAt', 'dataQuality'],
+  required: ['deviceId', 'roomId', 'deviceType', 'displayName', 'protocol', 'desiredState', 'reportedState', 'stateFields', 'supportedCommands', 'connectivity', 'lastSeenAt', 'dataQuality'],
   properties: {
     deviceId: stringSchema,
     roomId: stringSchema,
@@ -270,6 +270,41 @@ const deviceAccessRecordSchema: JsonSchema = {
       ]
     },
     reportedState: { type: 'object', additionalProperties: true },
+    stateFields: {
+      type: 'object',
+      additionalProperties: {
+        type: 'object',
+        required: ['type', 'required'],
+        properties: {
+          type: { type: 'string', enum: ['boolean', 'number', 'string', 'unknown'] },
+          required: { type: 'boolean' },
+          defaultValue: {
+            anyOf: [
+              stringSchema,
+              { type: 'number' },
+              { type: 'boolean' },
+              { type: 'null' }
+            ]
+          },
+          unit: stringSchema,
+          normalRange: {
+            type: 'array',
+            items: { type: 'number' },
+            minItems: 2,
+            maxItems: 2
+          },
+          nullable: { type: 'boolean' },
+          enum: {
+            type: 'array',
+            items: stringSchema
+          }
+        }
+      }
+    },
+    supportedCommands: {
+      type: 'array',
+      items: stringSchema
+    },
     connectivity: { type: 'string', enum: ['online', 'offline', 'unknown'] },
     lastSeenAt: isoDateTimeSchema,
     dataQuality: {
