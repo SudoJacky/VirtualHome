@@ -184,6 +184,32 @@ const updateResponseSchema: JsonSchema = {
   }
 };
 
+const twinSocketUpdateMessageSchema: JsonSchema = {
+  type: 'object',
+  required: ['type', 'runId', 'sequence', 'events'],
+  properties: {
+    type: { type: 'string', enum: ['twin.update'] },
+    runId: stringSchema,
+    sequence: { type: 'integer', minimum: 0 },
+    snapshot: { $ref: '#/components/schemas/TwinSnapshot' },
+    events: {
+      type: 'array',
+      items: { $ref: '#/components/schemas/TwinEvent' }
+    }
+  }
+};
+
+const twinSocketHeartbeatMessageSchema: JsonSchema = {
+  type: 'object',
+  required: ['type', 'ts', 'runId', 'sequence'],
+  properties: {
+    type: { type: 'string', enum: ['twin.heartbeat'] },
+    ts: isoDateTimeSchema,
+    runId: stringSchema,
+    sequence: { type: 'integer', minimum: 0 }
+  }
+};
+
 const validationErrorSchema: JsonSchema = {
   type: 'object',
   required: ['error'],
@@ -647,7 +673,9 @@ export function buildOpenApiDocument(): Record<string, unknown> {
             schema: { type: 'integer', minimum: 0 }
           }],
           responses: {
-            '101': { description: 'WebSocket protocol upgrade' }
+            '101': {
+              description: 'WebSocket protocol upgrade. Messages are TwinSocketUpdateMessage or TwinSocketHeartbeatMessage.'
+            }
           }
         }
       }
@@ -664,6 +692,8 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         TelemetrySummary: telemetrySummarySchema,
         AccessAuditRecord: accessAuditRecordSchema,
         UpdateResponse: updateResponseSchema,
+        TwinSocketUpdateMessage: twinSocketUpdateMessageSchema,
+        TwinSocketHeartbeatMessage: twinSocketHeartbeatMessageSchema,
         ValidationError: validationErrorSchema,
         NotFoundError: notFoundErrorSchema,
         IdempotencyConflict: idempotencyConflictSchema

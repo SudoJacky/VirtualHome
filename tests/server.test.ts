@@ -99,6 +99,8 @@ describe('server API', () => {
     ]);
     expect(document.components.schemas).toHaveProperty('AbnormalityInjectedEvent');
     expect(document.components.schemas).toHaveProperty('AlertStatusChangedEvent');
+    expect(document.components.schemas).toHaveProperty('TwinSocketUpdateMessage');
+    expect(document.components.schemas).toHaveProperty('TwinSocketHeartbeatMessage');
     expect(document.components.schemas.TwinEvent.anyOf).toContainEqual({ $ref: '#/components/schemas/AlertStatusChangedEvent' });
     expect(document.components.schemas.AbnormalityInjectedEvent.required).toEqual(expect.arrayContaining(['type', 'kind', 'affectedEntities']));
     expect(document.components.schemas.AbnormalityInjectedEvent.properties.kind.enum).toEqual([
@@ -110,6 +112,8 @@ describe('server API', () => {
     expect(document.components.schemas.TwinEvent.anyOf).toContainEqual({ $ref: '#/components/schemas/AbnormalityInjectedEvent' });
     expect(document.paths['/api/alerts/{alertId}/status'].post.responses['404'].content['application/json'].schema)
       .toEqual({ $ref: '#/components/schemas/NotFoundError' });
+    expect(document.paths['/ws'].get.responses['101'].description).toContain('TwinSocketUpdateMessage');
+    expect(document.paths['/ws'].get.responses['101'].description).toContain('TwinSocketHeartbeatMessage');
 
     await server.close();
   });
