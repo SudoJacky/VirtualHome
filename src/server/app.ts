@@ -13,6 +13,7 @@ export interface ServerOptions {
   databasePath: string;
   autoTick?: boolean;
   tickMs?: number;
+  heartbeatMs?: number;
 }
 
 const limitQuerySchema = z.object({
@@ -52,6 +53,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
   const sockets = new Set<{ privacy: PrivacyMode; send: (payload: string) => void }>();
   const scenarioIds = getScenarioIds();
   let tickHandle: NodeJS.Timeout | undefined;
+  let heartbeatHandle: NodeJS.Timeout | undefined;
 
   app.register(websocket);
 
@@ -67,6 +69,19 @@ export function createServer(options: ServerOptions): FastifyInstance {
       socket.send(payload);
     }
     return snapshot;
+  }
+
+  function broadcastHeartbeat(): void {
+    const snapshot = simulator.getSnapshot();
+    const payload = JSON.stringify({
+      type: 'twin.heartbeat',
+      ts: new Date().toISOString(),
+      runId: snapshot.runId,
+      sequence: snapshot.simClock.sequence
+    });
+    for (const socket of sockets) {
+      socket.send(payload);
+    }
   }
 
   app.get('/api/scenarios', async () => scenarioIds.map((id) => ({ id })));
@@ -180,11 +195,18 @@ export function createServer(options: ServerOptions): FastifyInstance {
         }
       }, options.tickMs ?? 1000);
     }
+    const heartbeatMs = options.heartbeatMs ?? 15000;
+    if (heartbeatMs > 0) {
+      heartbeatHandle = setInterval(() => broadcastHeartbeat(), heartbeatMs);
+    }
   });
 
   app.addHook('onClose', async () => {
     if (tickHandle) {
       clearInterval(tickHandle);
+    }
+    if (heartbeatHandle) {
+      clearInterval(heartbeatHandle);
     }
     db.close();
   });

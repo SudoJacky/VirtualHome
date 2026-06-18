@@ -256,6 +256,22 @@ button:hover {
   box-shadow: 0 0 0 5px rgba(180, 106, 33, 0.12);
 }
 
+.status-pill.socket-live i {
+  background: #1f8a64;
+  box-shadow: 0 0 0 5px rgba(31, 138, 100, 0.12);
+}
+
+.status-pill.socket-connecting i,
+.status-pill.socket-reconnecting i {
+  background: #b48320;
+  box-shadow: 0 0 0 5px rgba(180, 131, 32, 0.14);
+}
+
+.status-pill.socket-offline i {
+  background: #bc2f2f;
+  box-shadow: 0 0 0 5px rgba(188, 47, 47, 0.12);
+}
+
 .metric-row {
   display: grid;
   gap: 12px;

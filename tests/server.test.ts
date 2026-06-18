@@ -95,6 +95,33 @@ describe('server API', () => {
     await server.close();
   });
 
+  it('sends WebSocket heartbeats with the current run cursor', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-ws-heartbeat-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false, heartbeatMs: 10 });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    const state = (await server.inject({ method: 'GET', url: '/api/state' })).json() as { runId: string; simClock: { sequence: number } };
+
+    const heartbeat = createTypedMessagePromise('twin.heartbeat');
+    const ws = await server.injectWS('/ws', {}, {
+      onInit: heartbeat.attach
+    });
+    const message = await heartbeat.value;
+
+    expect(message).toMatchObject({
+      type: 'twin.heartbeat',
+      runId: state.runId,
+      sequence: state.simClock.sequence
+    });
+
+    ws.close();
+    await server.close();
+  });
+
   it('projects public state without exposing private household member details', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-privacy-'));
     dirs.push(dir);
@@ -263,6 +290,38 @@ function createMessagePromise(): {
       ws.once('message', (data: { toString(): string }) => {
         cleanup();
         resolveMessage(JSON.parse(data.toString()) as { snapshot: { runId: string }; events: Array<{ runId: string; sequence: number }> });
+      });
+      ws.once('error', (error: Error) => {
+        cleanup();
+        rejectMessage(error);
+      });
+    }
+  };
+}
+
+function createTypedMessagePromise(type: string): {
+  value: Promise<Record<string, unknown>>;
+  attach: (ws: WebSocket) => void;
+} {
+  let resolveMessage: (message: Record<string, unknown>) => void = () => {};
+  let rejectMessage: (error: Error) => void = () => {};
+  let cleanup = (): void => {};
+  const value = new Promise<Record<string, unknown>>((resolve, reject) => {
+    resolveMessage = resolve;
+    rejectMessage = reject;
+    const timer = setTimeout(() => reject(new Error(`Timed out waiting for WebSocket ${type}`)), 2000);
+    cleanup = () => clearTimeout(timer);
+  });
+
+  return {
+    value,
+    attach: (ws) => {
+      ws.on('message', (data: { toString(): string }) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (message.type === type) {
+          cleanup();
+          resolveMessage(message);
+        }
       });
       ws.once('error', (error: Error) => {
         cleanup();

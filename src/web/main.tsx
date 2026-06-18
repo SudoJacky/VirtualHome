@@ -19,6 +19,7 @@ import type { DeviceState, RoomId, TwinEvent, TwinSnapshot } from '../shared/typ
 import { Floorplan3D, type FloorplanLayers, type FloorplanSelection } from './Floorplan3D';
 import { ApiClientError, postUpdate, type ApiUpdate } from './apiClient';
 import { createFloorplan3DModel, type Floorplan3DDevice, type Floorplan3DRoom } from './floorplan3dModel';
+import { buildTwinSocketUrl, cursorFromSnapshot, nextReconnectDelayMs, parseTwinSocketMessage, type TwinSocketCursor } from './twinSocket';
 import { createDashboardModel, mergeTwinEvents } from './viewModel';
 import './styles.css';
 
@@ -39,18 +40,64 @@ function App(): React.ReactElement {
   const [pendingAction, setPendingAction] = React.useState<string | null>(null);
   const [apiError, setApiError] = React.useState<string | null>(null);
   const [failedAction, setFailedAction] = React.useState<{ label: string; run: () => Promise<void> } | null>(null);
+  const [socketStatus, setSocketStatus] = React.useState<'connecting' | 'live' | 'reconnecting' | 'offline'>('connecting');
+  const [lastHeartbeatAt, setLastHeartbeatAt] = React.useState<string | null>(null);
+  const socketCursorRef = React.useRef<TwinSocketCursor | null>(null);
 
   React.useEffect(() => {
-    void fetch('/api/state').then((response) => response.json()).then(setSnapshot);
-    void fetch('/api/events?limit=80').then((response) => response.json()).then(setEvents);
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${protocol}://${window.location.host}/ws`);
-    ws.addEventListener('message', (message) => {
-      const update = JSON.parse(message.data) as { snapshot: TwinSnapshot; events: TwinEvent[] };
-      setSnapshot(update.snapshot);
-      setEvents((current) => mergeTwinEvents(current, update.events));
+    let disposed = false;
+    let reconnectAttempt = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let socket: WebSocket | undefined;
+
+    void fetch('/api/state').then((response) => response.json()).then((state: TwinSnapshot) => {
+      socketCursorRef.current = cursorFromSnapshot(state);
+      setSnapshot(state);
     });
-    return () => ws.close();
+    void fetch('/api/events?limit=80').then((response) => response.json()).then(setEvents);
+
+    function connect(): void {
+      if (disposed) return;
+      setSocketStatus(reconnectAttempt === 0 ? 'connecting' : 'reconnecting');
+      socket = new WebSocket(buildTwinSocketUrl(window.location, socketCursorRef.current));
+      socket.addEventListener('open', () => {
+        reconnectAttempt = 0;
+        setSocketStatus('live');
+      });
+      socket.addEventListener('message', (message) => {
+        const update = parseTwinSocketMessage(String(message.data));
+        if (update.type === 'twin.heartbeat') {
+          socketCursorRef.current = { runId: update.runId, sequence: update.sequence };
+          setLastHeartbeatAt(update.ts);
+          setSocketStatus('live');
+          return;
+        }
+        socketCursorRef.current = cursorFromSnapshot(update.snapshot);
+        setSnapshot(update.snapshot);
+        setEvents((current) => mergeTwinEvents(current, update.events));
+        setSocketStatus('live');
+      });
+      socket.addEventListener('close', () => {
+        if (disposed) return;
+        setSocketStatus('reconnecting');
+        reconnectTimer = setTimeout(connect, nextReconnectDelayMs(reconnectAttempt));
+        reconnectAttempt += 1;
+      });
+      socket.addEventListener('error', () => {
+        if (!disposed) {
+          setSocketStatus('offline');
+        }
+      });
+    }
+
+    connect();
+    return () => {
+      disposed = true;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+      }
+      socket?.close();
+    };
   }, []);
 
   async function startDailySimulation(): Promise<void> {
@@ -113,6 +160,7 @@ function App(): React.ReactElement {
   }
 
   function applyUpdate(update: ApiUpdate): void {
+    socketCursorRef.current = cursorFromSnapshot(update.snapshot);
     setSnapshot(update.snapshot);
     setEvents((current) => mergeTwinEvents(current, update.events));
   }
@@ -241,6 +289,10 @@ function App(): React.ReactElement {
               {snapshot.simClock.paused ? 'Paused' : 'Auto running'}
             </span>
             <div className="sim-time"><Clock size={16} /> {formatTime(model.simTime)}</div>
+            <span className={`status-pill socket-${socketStatus}`} title={lastHeartbeatAt ? `Last heartbeat ${formatTime(lastHeartbeatAt)}` : undefined}>
+              <i />
+              {socketStatusLabel(socketStatus)}
+            </span>
           </div>
         </header>
 
@@ -777,6 +829,13 @@ function formatApiActionError(error: unknown): string {
     return error.name === 'AbortError' ? 'Request timed out. Please retry.' : error.message;
   }
   return 'Request failed. Please retry.';
+}
+
+function socketStatusLabel(status: 'connecting' | 'live' | 'reconnecting' | 'offline'): string {
+  if (status === 'live') return 'WS live';
+  if (status === 'reconnecting') return 'WS reconnecting';
+  if (status === 'offline') return 'WS offline';
+  return 'WS connecting';
 }
 
 function summarizeState(state: Record<string, string | number | boolean | null>): string {
