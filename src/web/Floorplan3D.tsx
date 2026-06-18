@@ -162,7 +162,7 @@ function RoomMesh({
       </Text>
       {showEnvironment || alert ? (
         <Html center position={[room.x + room.width / 2 - 0.55, 0.34, room.z - room.depth / 2 + 0.3]}>
-          <button className={`room-chip ${alert ? 'alert' : ''}`} onClick={handleDomClick}>
+          <button className={`room-chip ${alert ? 'alert' : ''}`} title={`${room.label} climate`} onClick={handleDomClick}>
             {room.temperatureC.toFixed(1)}C / {room.humidityPercent.toFixed(0)}%
           </button>
         </Html>
@@ -231,7 +231,7 @@ function DeviceMarker({ device, selected, onSelect }: { device: Floorplan3DDevic
         <meshBasicMaterial color={color} transparent opacity={selected ? 0.45 : 0.26} />
       </mesh>
       <Html center position={[0, 0.34, 0]}>
-        <button className={`device-label ${device.abnormal ? 'alert' : ''}`} onClick={handleDomClick}>
+        <button className={`device-label ${device.abnormal ? 'alert' : ''}`} title={`${device.label} in ${device.roomId.replaceAll('_', ' ')}`} onClick={handleDomClick}>
           {device.label}
         </button>
       </Html>
