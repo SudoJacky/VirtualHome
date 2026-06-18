@@ -22,6 +22,7 @@ export interface ServerOptions {
   tickMs?: number;
   heartbeatMs?: number;
   snapshotIntervalEvents?: number;
+  telemetryRetentionEvents?: number;
   homeDefinition?: HomeDefinition;
   homeDefinitionPath?: string;
 }
@@ -73,7 +74,10 @@ export function createServer(options: ServerOptions): FastifyInstance {
     ? loadHomeDefinitionFromFile(options.homeDefinitionPath)
     : getHomeDefinition());
   const simulator = createSimulator({ seed: 20260617, homeDefinition });
-  const db = new TwinDatabase(options.databasePath, { snapshotIntervalEvents: options.snapshotIntervalEvents });
+  const db = new TwinDatabase(options.databasePath, {
+    snapshotIntervalEvents: options.snapshotIntervalEvents,
+    telemetryRetentionEvents: options.telemetryRetentionEvents
+  });
   const latestSnapshot = db.getLatestSnapshot();
   const restoredFromDatabase = Boolean(latestSnapshot?.runId);
   if (latestSnapshot?.runId) {

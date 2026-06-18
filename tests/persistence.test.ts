@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createSimulator } from '../src/sim/engine';
 import { TwinDatabase } from '../src/server/persistence';
+import type { DeviceTelemetryEvent } from '../src/shared/types';
 
 describe('twin persistence', () => {
   const dirs: string[] = [];
@@ -103,6 +104,34 @@ describe('twin persistence', () => {
     expect(db.getSnapshotCount(laterSnapshot.runId)).toBe(1);
     expect(checkpoint?.coveredSequence).toBe(startSnapshot.simClock.sequence);
     expect(db.getRecentEvents(500, laterSnapshot.runId).length).toBe(startEvents.length + advanceEvents.length);
+
+    db.close();
+  });
+
+  it('retains only the newest telemetry rows per run when retention is configured', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-'));
+    dirs.push(dir);
+    const db = new TwinDatabase(path.join(dir, 'twin.db'), { telemetryRetentionEvents: 3 });
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const firstEvents = simulator.advanceMinutes(12);
+    const firstSnapshot = simulator.getSnapshot();
+    db.recordUpdate(firstSnapshot, firstEvents);
+
+    const secondEvents = simulator.advanceMinutes(4);
+    const secondSnapshot = simulator.getSnapshot();
+    db.recordUpdate(secondSnapshot, secondEvents);
+
+    const allEvents = [...firstEvents, ...secondEvents];
+    const expectedTelemetryIds = allEvents
+      .filter((event): event is DeviceTelemetryEvent => event.type === 'DeviceTelemetry')
+      .slice(-3)
+      .reverse()
+      .map((event) => event.id);
+
+    expect(db.getRecentTelemetry(50, secondSnapshot.runId).map((event) => event.id)).toEqual(expectedTelemetryIds);
+    expect(db.getRecentEvents(500, secondSnapshot.runId).length).toBe(allEvents.length);
 
     db.close();
   });

@@ -3,6 +3,7 @@ import type { DeviceTelemetryEvent, TwinEvent, TwinSnapshot } from '../shared/ty
 
 export interface TwinDatabaseOptions {
   snapshotIntervalEvents?: number;
+  telemetryRetentionEvents?: number;
 }
 
 export interface IdempotencyRecord<T = unknown> {
@@ -27,9 +28,13 @@ export interface AccessAuditRecord extends AccessAuditInput {
 export class TwinDatabase {
   private readonly db: Database.Database;
   private readonly snapshotIntervalEvents: number;
+  private readonly telemetryRetentionEvents: number | null;
 
   constructor(filename: string, options: TwinDatabaseOptions = {}) {
     this.snapshotIntervalEvents = Math.max(1, options.snapshotIntervalEvents ?? 50);
+    this.telemetryRetentionEvents = options.telemetryRetentionEvents && Number.isFinite(options.telemetryRetentionEvents)
+      ? Math.max(1, Math.floor(options.telemetryRetentionEvents))
+      : null;
     this.db = new Database(filename);
     this.db.pragma('journal_mode = WAL');
     this.db.exec(`
@@ -115,6 +120,7 @@ export class TwinDatabase {
   recordEvents(events: TwinEvent[]): void {
     const transaction = this.db.transaction((items: TwinEvent[]) => {
       this.insertEvents(items);
+      this.pruneTelemetryForEvents(items);
     });
     transaction(events);
   }
@@ -126,6 +132,7 @@ export class TwinDatabase {
         this.insertSnapshot(nextSnapshot);
       }
       this.insertEvents(nextEvents);
+      this.pruneTelemetryForEvents(nextEvents);
       return shouldRecordSnapshot;
     });
     return transaction(snapshot, events) as boolean;
@@ -272,5 +279,40 @@ export class TwinDatabase {
         insertTelemetry.run(telemetry.id, telemetry.homeId, telemetry.runId, telemetry.sequence, telemetry.simTime, telemetry.scenarioId, telemetry.roomId, telemetry.deviceId, JSON.stringify(telemetry));
       }
     }
+  }
+
+  private pruneTelemetryForEvents(events: TwinEvent[]): void {
+    if (!this.telemetryRetentionEvents) {
+      return;
+    }
+
+    const runs = new Map<string, { homeId: string; runId: string }>();
+    for (const event of events) {
+      if (event.type !== 'DeviceTelemetry') {
+        continue;
+      }
+      runs.set(`${event.homeId}\u0000${event.runId}`, { homeId: event.homeId, runId: event.runId });
+    }
+
+    for (const { homeId, runId } of runs.values()) {
+      this.pruneTelemetryForRun(homeId, runId);
+    }
+  }
+
+  private pruneTelemetryForRun(homeId: string, runId: string): void {
+    if (!this.telemetryRetentionEvents) {
+      return;
+    }
+
+    this.db.prepare(`
+      DELETE FROM telemetry
+      WHERE home_id = ? AND run_id = ? AND id NOT IN (
+        SELECT id
+        FROM telemetry
+        WHERE home_id = ? AND run_id = ?
+        ORDER BY sequence DESC, ts DESC, id DESC
+        LIMIT ?
+      )
+    `).run(homeId, runId, homeId, runId, this.telemetryRetentionEvents);
   }
 }

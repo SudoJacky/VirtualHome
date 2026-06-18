@@ -23,6 +23,13 @@ $env:VIRTUALHOME_HOME_DEFINITION = ".\my-home-definition.json"
 npm run server
 ```
 
+For long-running demos, cap retained telemetry rows per simulation run:
+
+```powershell
+$env:VIRTUALHOME_TELEMETRY_RETENTION_EVENTS = "5000"
+npm run server
+```
+
 Start the web console in another terminal:
 
 ```bash
@@ -41,7 +48,7 @@ http://127.0.0.1:5173
 - Nine rooms, four human family members, one pet, and 30 virtual devices loaded from `src/sim/defaultHomeDefinition.json`.
 - Three static scenarios plus generated daily routines from date and seed.
 - Internal twin events for people movement, device state, telemetry, rules, alerts, scenario control, and recovery.
-- SQLite-backed append-only events, telemetry, idempotency records, and checkpointed state snapshots.
+- SQLite-backed append-only events, optionally capped telemetry, idempotency records, and checkpointed state snapshots.
 - Startup recovery from persisted snapshots with event replay.
 - Fastify REST API, OpenAPI document at `/api/openapi.json`, and WebSocket event-delta updates with heartbeat/reconnect cursors.
 - Adapter-facing device twin view at `/api/device-twins` with desired state, reported state, connectivity, freshness, and command acknowledgement metadata.
