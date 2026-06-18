@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createSimulator } from '../src/sim/engine';
 import { getCatalog } from '../src/sim/catalog';
 import { getScenarioIds } from '../src/sim/scenarios';
-import type { AlertCreatedEvent, AutomationTriggeredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent, RoomId, RuleRecoveredEvent } from '../src/shared/types';
+import type { AlertCreatedEvent, AutomationTriggeredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent, RoomId, RuleRecoveredEvent, TwinSnapshot } from '../src/shared/types';
 
 describe('virtual home simulator MVP', () => {
   it('defines the MVP home shape from MVP.md', () => {
@@ -203,6 +203,25 @@ describe('virtual home simulator MVP', () => {
     expect(snapshot.devices.kitchen_temp_01.state.temperatureC).toBe(snapshot.rooms.kitchen.temperatureC);
   });
 
+  it('keeps room occupants and whole-home occupancy count consistent across scenarios', () => {
+    const simulator = createSimulator({ seed: 4242 });
+    const checkpoints = [
+      { scenario: 'weekday_normal' as const, minutes: [0, 1, 12, 90, 720] },
+      { scenario: 'away_day' as const, minutes: [0, 20, 120] },
+      { scenario: 'night_water_leak' as const, minutes: [0, 1, 10, 180] }
+    ];
+
+    for (const checkpoint of checkpoints) {
+      simulator.startScenario(checkpoint.scenario);
+      for (const minutes of checkpoint.minutes) {
+        if (minutes > 0) {
+          simulator.advanceMinutes(minutes);
+        }
+        expectSnapshotOccupancyConsistent(simulator.getSnapshot());
+      }
+    }
+  });
+
   it('applies sleep mode when the home is sleeping', () => {
     const simulator = createSimulator({ seed: 88 });
 
@@ -389,4 +408,22 @@ function stripRunFields<T>(value: T): T {
       ? undefined
       : fieldValue
   ))) as T;
+}
+
+function expectSnapshotOccupancyConsistent(snapshot: TwinSnapshot): void {
+  const roomPeople = Object.values(snapshot.rooms).flatMap((room) => room.people);
+  const peopleAtHome = Object.values(snapshot.people).filter((person) => person.location !== 'away');
+  const humansAtHome = peopleAtHome.filter((person) => person.kind === 'human');
+
+  expect(roomPeople.sort()).toEqual(peopleAtHome.map((person) => person.id).sort());
+  expect(new Set(roomPeople).size).toBe(roomPeople.length);
+  for (const room of Object.values(snapshot.rooms)) {
+    const hasHuman = room.people.some((personId) => snapshot.people[personId]?.kind === 'human');
+    expect(room.humanOccupancy).toBe(hasHuman);
+    expect(room.occupancy).toBe(hasHuman);
+  }
+  expect(Object.values(snapshot.rooms)
+    .flatMap((room) => room.people)
+    .filter((personId) => snapshot.people[personId]?.kind === 'human')).toHaveLength(humansAtHome.length);
+  expect(snapshot.homeState.occupancyCount).toBe(humansAtHome.length);
 }
