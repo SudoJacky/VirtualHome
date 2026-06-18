@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createSimulator } from '../src/sim/engine';
 import { getCatalog } from '../src/sim/catalog';
 import { getScenarioIds } from '../src/sim/scenarios';
-import type { AlertCreatedEvent, AutomationTriggeredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent, RoomId } from '../src/shared/types';
+import type { AlertCreatedEvent, AutomationTriggeredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent, RoomId, RuleRecoveredEvent } from '../src/shared/types';
 
 describe('virtual home simulator MVP', () => {
   it('defines the MVP home shape from MVP.md', () => {
@@ -270,6 +270,22 @@ describe('virtual home simulator MVP', () => {
     expect(networkEvents.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'network_offline')).toBe(true);
     expect(snapshot.devices.fridge_01.state.doorOpen).toBe(true);
     expect(snapshot.devices.router_01.state.online).toBe(false);
+  });
+
+  it('recovers abnormality rules and lets them trigger again after cooldown', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const firstOpen = simulator.injectAbnormality('fridge_left_open');
+    const resolved = simulator.resolveAbnormality('fridge_left_open');
+    const secondOpenDuringCooldown = simulator.injectAbnormality('fridge_left_open');
+    const afterCooldown = simulator.advanceMinutes(5);
+
+    expect(firstOpen.filter((event): event is AutomationTriggeredEvent => event.type === 'AutomationTriggered' && event.ruleId === 'fridge_left_open')).toHaveLength(1);
+    expect(resolved.some((event): event is DeviceStateChangedEvent => event.type === 'DeviceStateChanged' && event.deviceId === 'fridge_01' && event.state.doorOpen === false)).toBe(true);
+    expect(resolved.some((event): event is RuleRecoveredEvent => event.type === 'RuleRecovered' && event.ruleId === 'fridge_left_open')).toBe(true);
+    expect(secondOpenDuringCooldown.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'fridge_left_open')).toBe(false);
+    expect(afterCooldown.filter((event): event is AutomationTriggeredEvent => event.type === 'AutomationTriggered' && event.ruleId === 'fridge_left_open')).toHaveLength(1);
   });
 
   it('rejects invalid device state fields before they enter the snapshot', () => {

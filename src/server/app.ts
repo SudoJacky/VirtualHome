@@ -39,6 +39,7 @@ const dailyStartPayloadSchema = z.object({
 const injectPayloadSchema = z.object({
   kind: z.enum(['door_left_open', 'fridge_left_open', 'network_offline', 'senior_no_activity'])
 });
+const resolvePayloadSchema = injectPayloadSchema;
 
 export function createServer(options: ServerOptions): FastifyInstance {
   mkdirSync(path.dirname(options.databasePath), { recursive: true });
@@ -161,6 +162,16 @@ export function createServer(options: ServerOptions): FastifyInstance {
       return sendValidationError(reply, result.error);
     }
     const events = simulator.injectAbnormality(result.data.kind);
+    const snapshot = recordAndBroadcast(events);
+    return { snapshot, events };
+  });
+
+  app.post('/api/control/resolve', async (request, reply) => {
+    const result = resolvePayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const events = simulator.resolveAbnormality(result.data.kind);
     const snapshot = recordAndBroadcast(events);
     return { snapshot, events };
   });

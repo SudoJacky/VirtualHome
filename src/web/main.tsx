@@ -140,6 +140,11 @@ function App(): React.ReactElement {
     applyUpdate(update);
   }
 
+  async function resolve(kind: string): Promise<void> {
+    const update = await postUpdate('/api/control/resolve', { kind });
+    applyUpdate(update);
+  }
+
   async function setPaused(paused: boolean): Promise<void> {
     const update = await postUpdate(paused ? '/api/control/pause' : '/api/control/resume', {});
     applyUpdate(update);
@@ -272,6 +277,14 @@ function App(): React.ReactElement {
               <button onClick={() => void runApiAction('Door open', () => inject('door_left_open'))}><Bell size={16} /> Door open</button>
               <button onClick={() => void runApiAction('Network off', () => inject('network_offline'))}><Bell size={16} /> Network off</button>
               <button onClick={() => void runApiAction('No activity', () => inject('senior_no_activity'))}><Radar size={16} /> No activity</button>
+            </section>
+
+            <section className="control-group">
+              <h2>Resolve</h2>
+              <button onClick={() => void runApiAction('Resolve fridge', () => resolve('fridge_left_open'))}><Bell size={16} /> Fridge closed</button>
+              <button onClick={() => void runApiAction('Resolve door', () => resolve('door_left_open'))}><Bell size={16} /> Door secured</button>
+              <button onClick={() => void runApiAction('Resolve network', () => resolve('network_offline'))}><Bell size={16} /> Network online</button>
+              <button onClick={() => void runApiAction('Resolve activity', () => resolve('senior_no_activity'))}><Radar size={16} /> Check-in done</button>
             </section>
           </>
         )}

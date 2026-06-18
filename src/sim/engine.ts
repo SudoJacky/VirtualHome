@@ -18,6 +18,7 @@ import type {
   ScenarioId,
   StaticScenarioId,
   RunContext,
+  RuleRecoveredEvent,
   TwinEvent,
   TwinSnapshot
 } from '../shared/types';
@@ -36,6 +37,14 @@ export interface VirtualHomeSimulator {
   getSnapshot(): TwinSnapshot;
   getEvents(): TwinEvent[];
   injectAbnormality(kind: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity'): TwinEvent[];
+  resolveAbnormality(kind: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity'): TwinEvent[];
+}
+
+type RuleLifecycleStatus = 'active' | 'cooldown';
+
+interface RuleLifecycleState {
+  status: RuleLifecycleStatus;
+  cooldownUntilMinute: number;
 }
 
 interface RuntimeState {
@@ -47,6 +56,7 @@ interface RuntimeState {
   executedStepKeys: Set<string>;
   profileLitRooms: Set<RoomId>;
   triggeredRules: Set<string>;
+  ruleStates: Map<string, RuleLifecycleState>;
   random: SeededRandom;
 }
 
@@ -98,6 +108,8 @@ const roomLightDevices: Partial<Record<RoomId, string>> = {
   living_room: 'living_light_01'
 };
 
+const ruleCooldownMinutes = 5;
+
 class Simulator implements VirtualHomeSimulator {
   private readonly homeId: string;
   private readonly baseSeed: number;
@@ -118,6 +130,7 @@ class Simulator implements VirtualHomeSimulator {
       executedStepKeys: new Set(),
       profileLitRooms: new Set(),
       triggeredRules: new Set(),
+      ruleStates: new Map(),
       random
     };
   }
@@ -150,6 +163,7 @@ class Simulator implements VirtualHomeSimulator {
       triggeredRules: new Set(events
         .filter((event) => event.type === 'AutomationTriggered')
         .map((event) => event.ruleId)),
+      ruleStates: restoreRuleStates(events, elapsedMinutes, snapshot.simClock.currentTime),
       random: new SeededRandom(snapshot.runContext.seed, snapshot.runContext.rngState)
     };
   }
@@ -167,6 +181,7 @@ class Simulator implements VirtualHomeSimulator {
       executedStepKeys: new Set(),
       profileLitRooms: new Set(),
       triggeredRules: new Set(),
+      ruleStates: new Map(),
       random
     };
 
@@ -238,6 +253,33 @@ class Simulator implements VirtualHomeSimulator {
     this.rebuildRooms();
     this.updateOccupancy();
     events.push(...this.applyRules());
+    this.state.emittedEvents.push(...events);
+    return events;
+  }
+
+  resolveAbnormality(kind: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity'): TwinEvent[] {
+    const events: TwinEvent[] = [];
+    if (kind === 'door_left_open') {
+      events.push(this.setDeviceState('door_lock_01', { locked: true }, 'recovery:door_left_open'));
+      events.push(this.setDeviceState('doorbell_camera_01', { motion: false, ringing: false }, 'recovery:door_left_open'));
+      events.push(...this.recoverRuleIfActive('door_left_open', ['door_lock_01.locked:true', 'doorbell_camera_01.motion:false']));
+    } else if (kind === 'fridge_left_open') {
+      events.push(this.setDeviceState('fridge_01', { doorOpen: false, powerW: 90 }, 'recovery:fridge_left_open'));
+      events.push(...this.recoverRuleIfActive('fridge_left_open', ['fridge_01.doorOpen:false']));
+    } else if (kind === 'network_offline') {
+      events.push(this.setDeviceState('router_01', { online: true, latencyMs: 18 }, 'recovery:network_offline'));
+      events.push(...this.recoverRuleIfActive('network_offline', ['router_01.online:true']));
+    } else if (kind === 'senior_no_activity') {
+      const senior = this.state.snapshot.people.senior_1;
+      const event = this.createPersonMovedEvent('senior_1', senior.location, 'living_room', 'morning_check_in');
+      senior.location = 'living_room';
+      senior.activity = 'morning_check_in';
+      events.push(event);
+      events.push(this.setDeviceState('master_sleep_01', { inBed: false, heartRateSimulated: 70 }, 'recovery:senior_no_activity'));
+      events.push(...this.recoverRuleIfActive('senior_no_activity', ['senior_1.activity:morning_check_in', 'master_sleep_01.inBed:false']));
+    }
+    this.rebuildRooms();
+    this.updateOccupancy();
     this.state.emittedEvents.push(...events);
     return events;
   }
@@ -807,9 +849,9 @@ class Simulator implements VirtualHomeSimulator {
     if (
       snapshot.devices.fridge_01.state.doorOpen === true &&
       snapshot.devices.fridge_01.lastReason === 'abnormality:fridge_left_open' &&
-      !this.state.triggeredRules.has('fridge_left_open')
+      this.canTriggerRule('fridge_left_open')
     ) {
-      this.state.triggeredRules.add('fridge_left_open');
+      this.activateRule('fridge_left_open');
       events.push(this.createAlertEvent('fridge_left_open_001', 'warning', 'kitchen', 'Fridge door has remained open', 'close_fridge_door', 'rule:fridge_left_open'));
       events.push(this.createEvent({
         type: 'AutomationTriggered',
@@ -823,9 +865,9 @@ class Simulator implements VirtualHomeSimulator {
     if (
       snapshot.devices.router_01.state.online === false &&
       snapshot.devices.router_01.lastReason === 'abnormality:network_offline' &&
-      !this.state.triggeredRules.has('network_offline')
+      this.canTriggerRule('network_offline')
     ) {
-      this.state.triggeredRules.add('network_offline');
+      this.activateRule('network_offline');
       events.push(this.createAlertEvent('network_offline_001', 'warning', 'study', 'Home network is offline', 'restart_router', 'rule:network_offline'));
       events.push(this.createEvent({
         type: 'AutomationTriggered',
@@ -840,9 +882,9 @@ class Simulator implements VirtualHomeSimulator {
       snapshot.devices.door_lock_01.state.locked === false &&
       snapshot.devices.doorbell_camera_01.state.motion === true &&
       snapshot.devices.door_lock_01.lastReason === 'abnormality:door_left_open' &&
-      !this.state.triggeredRules.has('door_left_open')
+      this.canTriggerRule('door_left_open')
     ) {
-      this.state.triggeredRules.add('door_left_open');
+      this.activateRule('door_left_open');
       events.push(this.createAlertEvent('door_left_open_001', 'warning', 'entrance', 'Front door has remained open', 'check_front_door', 'rule:door_left_open'));
       events.push(this.createEvent({
         type: 'AutomationTriggered',
@@ -856,9 +898,9 @@ class Simulator implements VirtualHomeSimulator {
     if (
       snapshot.people.senior_1?.activity === 'no_activity' &&
       snapshot.devices.master_sleep_01.state.inBed === true &&
-      !this.state.triggeredRules.has('senior_no_activity')
+      this.canTriggerRule('senior_no_activity')
     ) {
-      this.state.triggeredRules.add('senior_no_activity');
+      this.activateRule('senior_no_activity');
       events.push(this.createAlertEvent('senior_no_activity_001', 'info', 'master_bedroom', 'Senior has no morning activity yet', 'check_in_with_senior', 'rule:senior_no_activity'));
       events.push(this.createEvent({
         type: 'AutomationTriggered',
@@ -963,6 +1005,40 @@ class Simulator implements VirtualHomeSimulator {
       return null;
     }
     return this.setDeviceState(deviceId, patch, reason);
+  }
+
+  private canTriggerRule(ruleId: string): boolean {
+    const lifecycle = this.state.ruleStates.get(ruleId);
+    return !lifecycle || lifecycle.status === 'cooldown' && this.state.elapsedMinutes >= lifecycle.cooldownUntilMinute;
+  }
+
+  private activateRule(ruleId: string): void {
+    this.state.triggeredRules.add(ruleId);
+    this.state.ruleStates.set(ruleId, {
+      status: 'active',
+      cooldownUntilMinute: this.state.elapsedMinutes
+    });
+  }
+
+  private recoverRuleIfActive(ruleId: string, recoveredFacts: string[]): RuleRecoveredEvent[] {
+    const lifecycle = this.state.ruleStates.get(ruleId);
+    if (lifecycle?.status !== 'active') {
+      return [];
+    }
+    const cooldownUntilMinute = this.state.elapsedMinutes + ruleCooldownMinutes;
+    this.state.ruleStates.set(ruleId, {
+      status: 'cooldown',
+      cooldownUntilMinute
+    });
+    const cooldownUntil = new Date(this.state.snapshot.simClock.currentTime);
+    cooldownUntil.setMinutes(cooldownUntil.getMinutes() + ruleCooldownMinutes);
+    return [this.createEvent({
+      type: 'RuleRecovered',
+      ruleId,
+      recoveredFacts,
+      cooldownUntil: formatShanghaiTime(cooldownUntil),
+      reason: `rule:${ruleId}:recovered`
+    })];
   }
 
   private createAlertEvent(alertId: string, severity: 'info' | 'warning' | 'high', roomId: RoomId, message: string, recommendedAction: string, reason: string): AlertCreatedEvent {
@@ -1110,6 +1186,29 @@ function getScenarioForSnapshot(snapshot: TwinSnapshot): ScenarioDefinition {
     return generateDailyScenario({ date, seed: snapshot.runContext.seed });
   }
   return getScenario(snapshot.scenarioId as StaticScenarioId);
+}
+
+function restoreRuleStates(events: TwinEvent[], elapsedMinutes: number, currentTime: string): Map<string, RuleLifecycleState> {
+  const states = new Map<string, RuleLifecycleState>();
+  for (const event of events) {
+    if (event.type === 'AutomationTriggered') {
+      states.set(event.ruleId, {
+        status: 'active',
+        cooldownUntilMinute: elapsedMinutes
+      });
+    } else if (event.type === 'RuleRecovered') {
+      states.set(event.ruleId, {
+        status: 'cooldown',
+        cooldownUntilMinute: elapsedMinutes + minutesBetween(currentTime, event.cooldownUntil)
+      });
+    }
+  }
+  for (const [ruleId, lifecycle] of states) {
+    if (lifecycle.status === 'cooldown' && elapsedMinutes >= lifecycle.cooldownUntilMinute) {
+      states.delete(ruleId);
+    }
+  }
+  return states;
 }
 
 function minutesBetween(startTime: string, endTime: string): number {

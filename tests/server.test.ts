@@ -228,6 +228,37 @@ describe('server API', () => {
     expect(invalidInjection.statusCode).toBe(400);
     expect(invalidInjection.json().error).toMatchObject({ code: 'VALIDATION_FAILED' });
 
+    const invalidResolve = await server.inject({
+      method: 'POST',
+      url: '/api/control/resolve',
+      payload: { kind: 'bad_sensor' }
+    });
+    expect(invalidResolve.statusCode).toBe(400);
+    expect(invalidResolve.json().error).toMatchObject({ code: 'VALIDATION_FAILED' });
+
+    await server.close();
+  });
+
+  it('resolves abnormal device facts through the control API', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-resolve-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/inject',
+      payload: { kind: 'fridge_left_open' }
+    });
+    const resolve = await server.inject({
+      method: 'POST',
+      url: '/api/control/resolve',
+      payload: { kind: 'fridge_left_open' }
+    });
+
+    expect(resolve.statusCode).toBe(200);
+    expect(resolve.json().snapshot.devices.fridge_01.state.doorOpen).toBe(false);
+    expect(resolve.json().events.some((event: { type: string; ruleId?: string }) => event.type === 'RuleRecovered' && event.ruleId === 'fridge_left_open')).toBe(true);
+
     await server.close();
   });
 

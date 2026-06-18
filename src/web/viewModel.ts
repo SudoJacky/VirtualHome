@@ -267,6 +267,9 @@ function formatEvent(event: TwinEvent): DashboardEvent {
   if (event.type === 'AutomationTriggered') {
     return { id: event.id, time: event.simTime, type: event.type, label: `${formatRuleName(event.ruleId)}: ${event.explanation}` };
   }
+  if (event.type === 'RuleRecovered') {
+    return { id: event.id, time: event.simTime, type: event.type, label: `${formatRuleName(event.ruleId)} recovered; cooldown until ${formatClockTime(event.cooldownUntil)}` };
+  }
   if (event.type === 'ActivityStarted') {
     return { id: event.id, time: event.simTime, type: event.type, label: `${formatActivity(event.activityId)} started in ${formatRoomName(event.roomId)}` };
   }
@@ -749,6 +752,10 @@ function formatAlertKind(message: string): string {
   if (message.toLowerCase().includes('network')) return 'network';
   if (message.toLowerCase().includes('senior')) return 'wellness';
   return 'alert';
+}
+
+function formatClockTime(value: string): string {
+  return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
 function inferNextAction(mode: TwinSnapshot['homeState']['mode']): string {

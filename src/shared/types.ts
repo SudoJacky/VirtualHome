@@ -178,6 +178,13 @@ export interface AutomationTriggeredEvent extends BaseTwinEvent {
   actions: string[];
 }
 
+export interface RuleRecoveredEvent extends BaseTwinEvent {
+  type: 'RuleRecovered';
+  ruleId: string;
+  recoveredFacts: string[];
+  cooldownUntil: string;
+}
+
 export interface AlertCreatedEvent extends BaseTwinEvent {
   type: 'AlertCreated';
   alertId: string;
@@ -200,6 +207,7 @@ export type TwinEvent =
   | ActivityStartedEvent
   | ActivityEndedEvent
   | AutomationTriggeredEvent
+  | RuleRecoveredEvent
   | AlertCreatedEvent
   | ScenarioControlEvent;
 
