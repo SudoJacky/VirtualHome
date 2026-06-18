@@ -83,9 +83,29 @@ const abnormalityInjectedEventSchema: JsonSchema = {
   }
 };
 
+const alertStatusChangedEventSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'alertId', 'previousStatus', 'status'],
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    type: { type: 'string', enum: ['AlertStatusChanged'] },
+    ts: isoDateTimeSchema,
+    simTime: isoDateTimeSchema,
+    homeId: stringSchema,
+    scenarioId: stringSchema,
+    sequence: { type: 'integer', minimum: 1 },
+    reason: stringSchema,
+    alertId: stringSchema,
+    previousStatus: alertLifecycleStatusSchema(),
+    status: alertLifecycleStatusSchema()
+  }
+};
+
 const twinEventSchema: JsonSchema = {
   anyOf: [
     { $ref: '#/components/schemas/AbnormalityInjectedEvent' },
+    { $ref: '#/components/schemas/AlertStatusChangedEvent' },
     twinEventBaseSchema
   ]
 };
@@ -553,6 +573,19 @@ export function buildOpenApiDocument(): Record<string, unknown> {
           responses: updateResponses()
         }
       },
+      '/api/alerts/{alertId}/status': {
+        post: {
+          summary: 'Change an alert lifecycle status',
+          parameters: [{
+            name: 'alertId',
+            in: 'path',
+            required: true,
+            schema: stringSchema
+          }],
+          requestBody: jsonBody(alertStatusRequestSchema()),
+          responses: updateResponses(true)
+        }
+      },
       '/ws': {
         get: {
           summary: 'Open the twin update WebSocket stream',
@@ -574,6 +607,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         TwinSnapshot: twinSnapshotSchema,
         TwinEvent: twinEventSchema,
         AbnormalityInjectedEvent: abnormalityInjectedEventSchema,
+        AlertStatusChangedEvent: alertStatusChangedEventSchema,
         HomeDefinition: homeDefinitionSchema,
         DeviceAccessRecord: deviceAccessRecordSchema,
         DeviceCapability: deviceCapabilitySchema,
@@ -664,6 +698,27 @@ function abnormalityRequestSchema(): JsonSchema {
       },
       idempotencyKey: idempotencyKeySchema
     }
+  };
+}
+
+function alertStatusRequestSchema(): JsonSchema {
+  return {
+    type: 'object',
+    required: ['status'],
+    properties: {
+      status: {
+        type: 'string',
+        enum: ['active', 'acknowledged', 'ignored']
+      },
+      idempotencyKey: idempotencyKeySchema
+    }
+  };
+}
+
+function alertLifecycleStatusSchema(): JsonSchema {
+  return {
+    type: 'string',
+    enum: ['active', 'acknowledged', 'resolved', 'ignored']
   };
 }
 

@@ -61,6 +61,9 @@ const injectPayloadSchema = idempotencyPayloadSchema.extend({
   kind: z.enum(['door_left_open', 'fridge_left_open', 'network_offline', 'senior_no_activity'])
 });
 const resolvePayloadSchema = injectPayloadSchema;
+const alertStatusPayloadSchema = idempotencyPayloadSchema.extend({
+  status: z.enum(['active', 'acknowledged', 'ignored'])
+});
 
 type UpdateResponse = {
   snapshot: TwinSnapshot;
@@ -287,6 +290,22 @@ export function createServer(options: ServerOptions): FastifyInstance {
       const events = simulator.resolveAbnormality(result.data.kind);
       const snapshot = recordAndBroadcast(events);
       return { snapshot, events };
+    });
+  });
+
+  app.post('/api/alerts/:alertId/status', async (request, reply) => {
+    const params = request.params as { alertId: string };
+    const result = alertStatusPayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    if (!simulator.getSnapshot().alerts[params.alertId]) {
+      return reply.status(404).send({ error: 'Unknown alert' });
+    }
+    return runIdempotentCommand(reply, result.data.idempotencyKey, `POST /api/alerts/${params.alertId}/status`, stripIdempotencyKey(result.data), () => {
+      const events = simulator.setAlertStatus(params.alertId, result.data.status);
+      const snapshot = recordAndBroadcast(events ?? []);
+      return { snapshot, events: events ?? [] };
     });
   });
 

@@ -70,6 +70,7 @@ describe('server API', () => {
       '/api/control/advance',
       '/api/control/inject',
       '/api/control/resolve',
+      '/api/alerts/{alertId}/status',
       '/api/audit/access',
       '/ws'
     ]));
@@ -93,6 +94,8 @@ describe('server API', () => {
       'none'
     ]);
     expect(document.components.schemas).toHaveProperty('AbnormalityInjectedEvent');
+    expect(document.components.schemas).toHaveProperty('AlertStatusChangedEvent');
+    expect(document.components.schemas.TwinEvent.anyOf).toContainEqual({ $ref: '#/components/schemas/AlertStatusChangedEvent' });
     expect(document.components.schemas.AbnormalityInjectedEvent.required).toEqual(expect.arrayContaining(['type', 'kind', 'affectedEntities']));
     expect(document.components.schemas.AbnormalityInjectedEvent.properties.kind.enum).toEqual([
       'door_left_open',
@@ -617,6 +620,43 @@ describe('server API', () => {
     expect(resolve.json().events.some((event: { type: string; ruleId?: string }) => event.type === 'RuleRecovered' && event.ruleId === 'fridge_left_open')).toBe(true);
 
     await server.close();
+  });
+
+  it('changes alert status through an auditable control event', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-alert-status-'));
+    dirs.push(dir);
+    const databasePath = path.join(dir, 'twin.db');
+    const server = createServer({ databasePath, autoTick: false });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/inject',
+      payload: { kind: 'fridge_left_open' }
+    });
+    const acknowledge = await server.inject({
+      method: 'POST',
+      url: '/api/alerts/fridge_left_open_001/status',
+      payload: { status: 'acknowledged' }
+    });
+
+    expect(acknowledge.statusCode).toBe(200);
+    expect(acknowledge.json().snapshot.alerts.fridge_left_open_001.status).toBe('acknowledged');
+    expect(acknowledge.json().events).toEqual([
+      expect.objectContaining({
+        type: 'AlertStatusChanged',
+        alertId: 'fridge_left_open_001',
+        previousStatus: 'active',
+        status: 'acknowledged'
+      })
+    ]);
+
+    await server.close();
+
+    const restartedServer = createServer({ databasePath, autoTick: false });
+    const restored = await restartedServer.inject({ method: 'GET', url: '/api/state' });
+    expect(restored.json().alerts.fridge_left_open_001.status).toBe('acknowledged');
+
+    await restartedServer.close();
   });
 
   it('restores the latest persisted run after a server restart', async () => {

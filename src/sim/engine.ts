@@ -7,6 +7,7 @@ import { getDeviceCapability, validateDeviceStatePatch } from '../shared/deviceR
 import type {
   AbnormalityInjectedEvent,
   AlertCreatedEvent,
+  AlertLifecycleStatus,
   Catalog,
   DeviceDefinition,
   DeviceState,
@@ -41,6 +42,7 @@ export interface VirtualHomeSimulator {
   getEvents(): TwinEvent[];
   injectAbnormality(kind: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity'): TwinEvent[];
   resolveAbnormality(kind: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity'): TwinEvent[];
+  setAlertStatus(alertId: string, status: Extract<AlertLifecycleStatus, 'active' | 'acknowledged' | 'ignored'>): TwinEvent[] | null;
 }
 
 type RuleLifecycleStatus = 'active' | 'cooldown';
@@ -273,6 +275,27 @@ class Simulator implements VirtualHomeSimulator {
     this.updateOccupancy();
     this.state.emittedEvents.push(...events);
     return events;
+  }
+
+  setAlertStatus(alertId: string, status: Extract<AlertLifecycleStatus, 'active' | 'acknowledged' | 'ignored'>): TwinEvent[] | null {
+    const alert = this.state.snapshot.alerts[alertId];
+    if (!alert) {
+      return null;
+    }
+    const previousStatus = alert.status;
+    alert.status = status;
+    if (status === 'active') {
+      delete alert.resolvedAt;
+    }
+    const event = this.createEvent({
+      type: 'AlertStatusChanged',
+      alertId,
+      previousStatus,
+      status,
+      reason: `operator:alert:${status}`
+    });
+    this.state.emittedEvents.push(event);
+    return [event];
   }
 
   private createInitialSnapshot(catalog: Catalog, scenarioId: ScenarioId, startTime: string, mode: HomeMode, speed: number, runContext: RunContext): TwinSnapshot {
@@ -1254,6 +1277,16 @@ function replayEventsOntoSnapshot(snapshot: TwinSnapshot, events: TwinEvent[]): 
           createdAt: event.simTime
         };
         break;
+      case 'AlertStatusChanged': {
+        const alert = snapshot.alerts[event.alertId];
+        if (alert) {
+          alert.status = event.status;
+          if (event.status === 'active') {
+            delete alert.resolvedAt;
+          }
+        }
+        break;
+      }
       case 'ScenarioControl':
         if (event.command === 'pause' || event.command === 'resume') {
           snapshot.simClock.paused = Boolean(event.value);

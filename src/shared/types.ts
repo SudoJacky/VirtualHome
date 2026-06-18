@@ -226,6 +226,13 @@ export interface AlertCreatedEvent extends BaseTwinEvent {
   recommendedAction: string;
 }
 
+export interface AlertStatusChangedEvent extends BaseTwinEvent {
+  type: 'AlertStatusChanged';
+  alertId: string;
+  previousStatus: AlertLifecycleStatus;
+  status: AlertLifecycleStatus;
+}
+
 export interface ScenarioControlEvent extends BaseTwinEvent {
   type: 'ScenarioControl';
   command: 'start' | 'pause' | 'resume' | 'speed' | 'inject';
@@ -242,6 +249,7 @@ export type TwinEvent =
   | RuleRecoveredEvent
   | AbnormalityInjectedEvent
   | AlertCreatedEvent
+  | AlertStatusChangedEvent
   | ScenarioControlEvent;
 
 export type StaticScenarioId = 'weekday_normal' | 'away_day' | 'night_water_leak';
