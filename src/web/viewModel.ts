@@ -21,6 +21,7 @@ export interface DashboardModel {
   automationExplanations: AutomationExplanation[];
   alertWorkflows: AlertWorkflow[];
   scenarioCards: ScenarioCard[];
+  demoSpotlight: DemoSpotlight | null;
   recentEvents: DashboardEvent[];
   telemetrySeries: Array<{
     id: string;
@@ -121,6 +122,21 @@ export interface ScenarioCard {
   recordsGenerated: string;
 }
 
+export interface DemoSpotlight {
+  id: string;
+  scenarioId: string;
+  kind: 'automation' | 'alert' | 'activity';
+  headline: string;
+  summary: string;
+  roomId: RoomId;
+  roomName: string;
+  pauseMs: number;
+  automationId?: string;
+  controlRecordId?: string;
+  focusDeviceId?: string;
+  replayRuleId?: string;
+}
+
 const catalog = getCatalog();
 const roomsById = new Map(catalog.rooms.map((room) => [room.id, room]));
 const devicesById = new Map(catalog.devices.map((device) => [device.id, device]));
@@ -219,6 +235,8 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
     .filter((device) => isDeviceActive(device.type, device.state))
     .length;
   const controlRecords = createControlRecords(events);
+  const automationExplanations = createAutomationExplanations(events, controlRecords);
+  const alertWorkflows = createAlertWorkflows(snapshot, events);
   return {
     homeMode: snapshot.homeState.mode,
     simTime: snapshot.simClock.currentTime,
@@ -229,9 +247,10 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
     householdActivity: createHouseholdActivity(snapshot),
     controlRecords,
     controlRecordFilters: createControlRecordFilters(controlRecords),
-    automationExplanations: createAutomationExplanations(events, controlRecords),
-    alertWorkflows: createAlertWorkflows(snapshot, events),
+    automationExplanations,
+    alertWorkflows,
     scenarioCards,
+    demoSpotlight: createDemoSpotlight(snapshot, controlRecords, automationExplanations, alertWorkflows),
     recentEvents: events
       .filter((event) => event.type !== 'DeviceTelemetry')
       .slice(-20)
@@ -563,6 +582,61 @@ function createAlertWorkflows(snapshot: TwinSnapshot, events: TwinEvent[]): Aler
     });
 }
 
+function createDemoSpotlight(
+  snapshot: TwinSnapshot,
+  controlRecords: ControlRecord[],
+  automationExplanations: AutomationExplanation[],
+  alertWorkflows: AlertWorkflow[]
+): DemoSpotlight | null {
+  const latestAutomation = automationExplanations[0];
+  if (latestAutomation) {
+    const record = controlRecords.find((candidate) => candidate.reason === `rule:${latestAutomation.ruleId}`);
+    const roomId = record ? devicesById.get(record.deviceId)?.roomId : inferAutomationRoom(latestAutomation.ruleId);
+    return {
+      id: `automation:${latestAutomation.id}`,
+      scenarioId: snapshot.scenarioId,
+      kind: 'automation',
+      headline: latestAutomation.ruleName,
+      summary: latestAutomation.explanation,
+      roomId: roomId ?? firstOccupiedRoom(snapshot),
+      roomName: formatRoomName(roomId ?? firstOccupiedRoom(snapshot)),
+      pauseMs: 2000,
+      automationId: latestAutomation.id,
+      controlRecordId: record?.id,
+      focusDeviceId: record?.deviceId,
+      replayRuleId: latestAutomation.ruleId
+    };
+  }
+
+  const activeAlert = Object.values(snapshot.alerts).sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+  if (activeAlert) {
+    const workflow = alertWorkflows.find((candidate) => candidate.alertId === activeAlert.id);
+    return {
+      id: `alert:${activeAlert.id}`,
+      scenarioId: snapshot.scenarioId,
+      kind: 'alert',
+      headline: workflow?.title ?? activeAlert.message,
+      summary: activeAlert.recommendedAction,
+      roomId: activeAlert.roomId,
+      roomName: formatRoomName(activeAlert.roomId),
+      pauseMs: 2000
+    };
+  }
+
+  const roomId = firstOccupiedRoom(snapshot);
+  const activity = createHouseholdActivity(snapshot);
+  return {
+    id: `activity:${snapshot.scenarioId}:${roomId}`,
+    scenarioId: snapshot.scenarioId,
+    kind: 'activity',
+    headline: activity.title,
+    summary: activity.summary,
+    roomId,
+    roomName: formatRoomName(roomId),
+    pauseMs: 0
+  };
+}
+
 function enrichTelemetrySeries(
   series: { id: string; label: string; points: number[] },
   automationsByRoom: Map<RoomId, string>
@@ -727,6 +801,10 @@ function inferAutomationRoom(ruleId: string): RoomId | null {
   if (ruleId === 'sleep_mode') return 'living_room';
   if (ruleId === 'away_mode') return 'entrance';
   return null;
+}
+
+function firstOccupiedRoom(snapshot: TwinSnapshot): RoomId {
+  return Object.values(snapshot.rooms).find((room) => room.occupancy)?.id ?? 'living_room';
 }
 
 function inferHumanActivity(ruleId: string): string {

@@ -143,6 +143,28 @@ describe('dashboard view model', () => {
     expect(pm25?.relatedAutomation).toBe('Cooking ventilation');
   });
 
+  it('selects a demo spotlight that can drive 3D story playback', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('night_water_leak');
+    simulator.advanceMinutes(10);
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+
+    expect(model.demoSpotlight).toMatchObject({
+      scenarioId: 'night_water_leak',
+      kind: 'automation',
+      roomId: 'bathroom',
+      roomName: 'Bathroom',
+      focusDeviceId: 'water_valve_01',
+      replayRuleId: 'close_water_valve_on_leak',
+      pauseMs: 2000
+    });
+    expect(model.demoSpotlight?.automationId).toBe(model.automationExplanations[0].id);
+    expect(model.demoSpotlight?.controlRecordId).toBe(model.controlRecords[0].id);
+    expect(model.demoSpotlight?.headline).toBe('Close water valve on leak');
+    expect(model.demoSpotlight?.summary).toContain('Bathroom leak sensor is active');
+  });
+
   it('surfaces expanded random household devices on the floorplan', () => {
     const simulator = createSimulator({ seed: 2026 });
     simulator.startScenario('weekday_normal');

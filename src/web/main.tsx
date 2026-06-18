@@ -42,6 +42,9 @@ function App(): React.ReactElement {
   const [floorplanSelection, setFloorplanSelection] = React.useState<FloorplanSelection>(null);
   const [activeReplayId, setActiveReplayId] = React.useState<string | null>(null);
   const [activeReplayStepIndex, setActiveReplayStepIndex] = React.useState(0);
+  const [activeDemoSpotlightId, setActiveDemoSpotlightId] = React.useState<string | null>(null);
+  const [demoHoldUntil, setDemoHoldUntil] = React.useState<string | null>(null);
+  const demoHoldTimerRef = React.useRef<number | null>(null);
   const pointerActivationRef = React.useRef(false);
 
   React.useEffect(() => {
@@ -57,22 +60,66 @@ function App(): React.ReactElement {
     return () => ws.close();
   }, []);
 
+  React.useEffect(() => {
+    return () => {
+      if (demoHoldTimerRef.current !== null) {
+        window.clearTimeout(demoHoldTimerRef.current);
+      }
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (!snapshot || sidebarMode !== 'demo') {
+      return;
+    }
+    const demoModel = createDashboardModel(snapshot, events);
+    const spotlight = demoModel.demoSpotlight;
+    if (!spotlight || spotlight.id === activeDemoSpotlightId) {
+      return;
+    }
+
+    const demoFloorplanModel = createFloorplan3DModel(snapshot, events);
+    const replay = spotlight.replayRuleId
+      ? demoFloorplanModel.eventReplays.find((candidate) => candidate.ruleId === spotlight.replayRuleId) ?? null
+      : null;
+    const replayStep = replay?.steps[0] ?? null;
+
+    setActiveDemoSpotlightId(spotlight.id);
+    setFloorplanView('3d');
+    setFloorplanLayers((current) => ({ ...current, alerts: true, devices: true, environment: true }));
+    if (replay && replayStep) {
+      setActiveReplayId(replay.id);
+      setActiveReplayStepIndex(0);
+      setFloorplanSelection(replayStep.deviceId ? { type: 'device', id: replayStep.deviceId } : { type: 'room', id: replayStep.roomId });
+      return;
+    }
+    setFloorplanSelection(spotlight.focusDeviceId ? { type: 'device', id: spotlight.focusDeviceId } : { type: 'room', id: spotlight.roomId });
+  }, [activeDemoSpotlightId, events, sidebarMode, snapshot]);
+
   async function startDailySimulation(): Promise<void> {
+    resetDemoSpotlight();
     const update = await postUpdate('/api/daily/start', { date: dailyDate, seed: dailySeed });
-    applyUpdate(update);
+    applyUpdate(update, true);
   }
 
   async function startScenarioCard(cardId: string): Promise<void> {
+    resetDemoSpotlight();
     if (cardId === 'weekday_normal' || cardId === 'away_day' || cardId === 'night_water_leak') {
       const update = await postUpdate(`/api/scenarios/${cardId}/start`, {});
-      applyUpdate(update);
+      if (cardId === 'night_water_leak') {
+        const advanced = await postUpdate('/api/control/advance', { minutes: 10 });
+        applyUpdate({ snapshot: advanced.snapshot, events: [...update.events, ...advanced.events] }, true);
+        holdDemoSpotlight(2000);
+        return;
+      }
+      applyUpdate(update, true);
       return;
     }
     if (cardId === 'kitchen_air_quality') {
       const update = await postUpdate('/api/scenarios/weekday_normal/start', {});
-      applyUpdate(update);
       const advanced = await postUpdate('/api/control/advance', { minutes: 750 });
-      applyUpdate(advanced);
+      applyUpdate({ snapshot: advanced.snapshot, events: [...update.events, ...advanced.events] }, true);
+      holdDemoSpotlight(2000);
       return;
     }
     const injectionMap: Record<string, string> = {
@@ -84,6 +131,7 @@ function App(): React.ReactElement {
     if (injectionMap[cardId]) {
       const update = await postUpdate('/api/control/inject', { kind: injectionMap[cardId] });
       applyUpdate(update);
+      holdDemoSpotlight(2000);
     }
   }
 
@@ -102,9 +150,33 @@ function App(): React.ReactElement {
     applyUpdate(update);
   }
 
-  function applyUpdate(update: ApiUpdate): void {
+  function applyUpdate(update: ApiUpdate, replaceEvents = false): void {
     setSnapshot(update.snapshot);
-    setEvents((current) => mergeTwinEvents(current, update.events));
+    setEvents((current) => replaceEvents ? update.events : mergeTwinEvents(current, update.events));
+  }
+
+  function resetDemoSpotlight(): void {
+    setActiveDemoSpotlightId(null);
+    setDemoHoldUntil(null);
+    setActiveReplayId(null);
+    setActiveReplayStepIndex(0);
+    if (demoHoldTimerRef.current !== null) {
+      window.clearTimeout(demoHoldTimerRef.current);
+      demoHoldTimerRef.current = null;
+    }
+  }
+
+  function holdDemoSpotlight(ms: number): void {
+    setDemoHoldUntil(new Date(Date.now() + ms).toISOString());
+    void setPaused(true);
+    if (demoHoldTimerRef.current !== null) {
+      window.clearTimeout(demoHoldTimerRef.current);
+    }
+    demoHoldTimerRef.current = window.setTimeout(() => {
+      setDemoHoldUntil(null);
+      demoHoldTimerRef.current = null;
+      void setPaused(false);
+    }, ms);
   }
 
   if (!snapshot) {
@@ -320,6 +392,15 @@ function App(): React.ReactElement {
           </div>
         </section>
 
+        <DemoSpotlightPanel
+          spotlight={model.demoSpotlight}
+          holdUntil={demoHoldUntil}
+          controlRecord={model.demoSpotlight?.controlRecordId
+            ? model.controlRecords.find((record) => record.id === model.demoSpotlight?.controlRecordId) ?? null
+            : null}
+          onReplay={(record) => startReplayForRecord(record)}
+        />
+
         <section className="main-grid">
           <div className="floorplan-view">
             <div className="view-toggle" aria-label="Floorplan view">
@@ -532,6 +613,48 @@ function Floorplan2D({
         })}
       </div>
     </div>
+  );
+}
+
+function DemoSpotlightPanel({
+  spotlight,
+  holdUntil,
+  controlRecord,
+  onReplay
+}: {
+  spotlight: ReturnType<typeof createDashboardModel>['demoSpotlight'];
+  holdUntil: string | null;
+  controlRecord: ReturnType<typeof createDashboardModel>['controlRecords'][number] | null;
+  onReplay: (record: ReturnType<typeof createDashboardModel>['controlRecords'][number]) => void;
+}): React.ReactElement {
+  if (!spotlight) {
+    return (
+      <section className="panel demo-spotlight idle">
+        <span className="eyebrow">Demo spotlight</span>
+        <h2>Whole-home overview</h2>
+        <p className="muted">Select a scenario script to focus the 3D twin on the next explainable event.</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className={`panel demo-spotlight ${spotlight.kind}`}>
+      <div>
+        <span className="eyebrow">Demo spotlight</span>
+        <h2>{spotlight.headline}</h2>
+        <p>{spotlight.summary}</p>
+      </div>
+      <div className="demo-spotlight-meta">
+        <span>{spotlight.roomName}</span>
+        <span>{spotlight.kind === 'automation' ? 'Automation replay' : spotlight.kind}</span>
+        {holdUntil ? <span>Paused 2s</span> : <span>Live</span>}
+      </div>
+      {controlRecord ? (
+        <button className="story-action" onPointerDown={() => onReplay(controlRecord)} onClick={() => onReplay(controlRecord)}>
+          <Play size={15} /> Replay linked record
+        </button>
+      ) : null}
+    </section>
   );
 }
 

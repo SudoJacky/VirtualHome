@@ -329,6 +329,55 @@ button:hover {
   border-left: 4px solid #1f6e63;
 }
 
+.demo-spotlight {
+  border-left: 4px solid #2a7d8f;
+  display: grid;
+  gap: 10px;
+}
+
+.demo-spotlight.idle {
+  border-left-color: #9aabb0;
+}
+
+.demo-spotlight.automation {
+  border-left-color: #267e71;
+}
+
+.demo-spotlight.alert {
+  border-left-color: #bc2f2f;
+}
+
+.demo-spotlight.activity {
+  border-left-color: #4b708b;
+}
+
+.demo-spotlight h2 {
+  font-size: 18px;
+  margin: 2px 0 0;
+}
+
+.demo-spotlight p {
+  color: #40555b;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.demo-spotlight-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.demo-spotlight-meta span {
+  background: #eef4f5;
+  border: 1px solid #d5e0e2;
+  border-radius: 999px;
+  color: #40555b;
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
 .tag-row {
   display: flex;
   flex-wrap: wrap;
