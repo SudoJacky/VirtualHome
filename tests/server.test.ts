@@ -70,6 +70,7 @@ describe('server API', () => {
       '/api/control/advance',
       '/api/control/inject',
       '/api/control/resolve',
+      '/api/audit/access',
       '/ws'
     ]));
     expect(document.paths['/api/control/advance'].post.requestBody.content['application/json'].schema.properties).toHaveProperty('idempotencyKey');
@@ -78,6 +79,7 @@ describe('server API', () => {
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('markerKind');
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('animationHint');
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('defaultState');
+    expect(document.components.schemas).toHaveProperty('AccessAuditRecord');
 
     await server.close();
   });
@@ -357,6 +359,47 @@ describe('server API', () => {
     expect(publicState.activities).toEqual({});
     expect(JSON.stringify(publicState)).not.toContain('adult_1');
     expect(JSON.stringify(publicState)).not.toContain('breakfast');
+
+    await server.close();
+  });
+
+  it('records access audit entries for privacy-sensitive read APIs', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-access-audit-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 12 }
+    });
+    const state = (await server.inject({ method: 'GET', url: '/api/state?privacy=public' })).json();
+    await server.inject({ method: 'GET', url: '/api/events?limit=5&privacy=public' });
+
+    const audit = await server.inject({ method: 'GET', url: '/api/audit/access?limit=10' });
+    const records = audit.json();
+
+    expect(audit.statusCode).toBe(200);
+    expect(records).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        method: 'GET',
+        endpoint: '/api/state',
+        privacy: 'public',
+        runId: state.runId,
+        sequence: state.simClock.sequence
+      }),
+      expect.objectContaining({
+        method: 'GET',
+        endpoint: '/api/events',
+        privacy: 'public',
+        runId: state.runId
+      })
+    ]));
+    expect(records.every((record: { ts: string }) => typeof record.ts === 'string')).toBe(true);
 
     await server.close();
   });

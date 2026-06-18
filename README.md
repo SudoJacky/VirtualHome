@@ -61,6 +61,7 @@ This repository is still a single-home simulation sandbox. It now exposes protoc
 - `GET /api/device-twins` exposes adapter-facing device access records.
 - `GET /api/device-capabilities` exposes the serializable device capability registry.
 - `GET /api/telemetry/summary` returns aggregated telemetry metrics.
+- `GET /api/audit/access` returns recent read-access audit records for privacy-sensitive APIs.
 - `POST /api/daily/start`, `/api/scenarios/:id/start`, and `/api/control/*` mutate the simulation. Control requests accept `idempotencyKey` for safe retries.
 - `GET /ws` streams `twin.update` event deltas and `twin.heartbeat` messages. Clients reconnect with `runId` and `afterSequence`.
 

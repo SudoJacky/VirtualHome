@@ -35,6 +35,9 @@ const telemetrySummaryQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(1000).default(500),
   runId: z.string().min(1).optional()
 });
+const auditQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).default(100)
+});
 const privacyQuerySchema = z.object({
   privacy: z.enum(['admin', 'public']).default('admin')
 });
@@ -114,6 +117,23 @@ export function createServer(options: ServerOptions): FastifyInstance {
     }
   }
 
+  function recordAccess(
+    endpoint: string,
+    privacy: PrivacyMode,
+    runId: string | null,
+    sequence: number | null,
+    details?: Record<string, unknown>
+  ): void {
+    db.recordAccessAudit({
+      method: 'GET',
+      endpoint,
+      privacy,
+      runId,
+      sequence,
+      details
+    });
+  }
+
   app.get('/api/scenarios', async () => scenarioIds.map((id) => ({ id })));
 
   app.get('/api/home-definition', async () => structuredClone(homeDefinition));
@@ -123,7 +143,9 @@ export function createServer(options: ServerOptions): FastifyInstance {
     if (!result.success) {
       return sendValidationError(reply, result.error);
     }
-    return projectSnapshotForPrivacy(simulator.getSnapshot(), result.data.privacy);
+    const snapshot = simulator.getSnapshot();
+    recordAccess('/api/state', result.data.privacy, snapshot.runId, snapshot.simClock.sequence);
+    return projectSnapshotForPrivacy(snapshot, result.data.privacy);
   });
 
   app.get('/api/events', async (request, reply) => {
@@ -131,7 +153,9 @@ export function createServer(options: ServerOptions): FastifyInstance {
     if (!result.success) {
       return sendValidationError(reply, result.error);
     }
-    const runId = result.data.runId ?? simulator.getSnapshot().runId;
+    const snapshot = simulator.getSnapshot();
+    const runId = result.data.runId ?? snapshot.runId;
+    recordAccess('/api/events', result.data.privacy, runId, snapshot.simClock.sequence, { limit: result.data.limit });
     return projectEventsForPrivacy(db.getRecentEvents(result.data.limit, runId), result.data.privacy);
   });
 
@@ -140,7 +164,9 @@ export function createServer(options: ServerOptions): FastifyInstance {
     if (!result.success) {
       return sendValidationError(reply, result.error);
     }
-    const runId = result.data.runId ?? simulator.getSnapshot().runId;
+    const snapshot = simulator.getSnapshot();
+    const runId = result.data.runId ?? snapshot.runId;
+    recordAccess('/api/telemetry', result.data.privacy, runId, snapshot.simClock.sequence, { limit: result.data.limit });
     return db.getRecentTelemetry(result.data.limit, runId);
   });
 
@@ -149,16 +175,27 @@ export function createServer(options: ServerOptions): FastifyInstance {
     if (!result.success) {
       return sendValidationError(reply, result.error);
     }
-    const runId = result.data.runId ?? simulator.getSnapshot().runId;
+    const snapshot = simulator.getSnapshot();
+    const runId = result.data.runId ?? snapshot.runId;
+    recordAccess('/api/telemetry/summary', 'admin', runId, snapshot.simClock.sequence, { limit: result.data.limit });
     return summarizeTelemetry(db.getRecentTelemetry(result.data.limit, runId), result.data.limit, runId);
   });
 
   app.get('/api/device-twins', async () => {
     const snapshot = simulator.getSnapshot();
+    recordAccess('/api/device-twins', 'admin', snapshot.runId, snapshot.simClock.sequence);
     return createDeviceAccessRecords(snapshot, db.getRecentEvents(500, snapshot.runId));
   });
 
   app.get('/api/device-capabilities', async () => getDeviceCapabilityMetadata());
+
+  app.get('/api/audit/access', async (request, reply) => {
+    const result = auditQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return db.getRecentAccessAudit(result.data.limit);
+  });
 
   app.post('/api/scenarios/:id/start', async (request, reply) => {
     const params = request.params as { id: StaticScenarioId };

@@ -10,6 +10,20 @@ export interface IdempotencyRecord<T = unknown> {
   response: T;
 }
 
+export interface AccessAuditInput {
+  method: string;
+  endpoint: string;
+  privacy: 'admin' | 'public';
+  runId: string | null;
+  sequence: number | null;
+  details?: Record<string, unknown>;
+}
+
+export interface AccessAuditRecord extends AccessAuditInput {
+  id: number;
+  ts: string;
+}
+
 export class TwinDatabase {
   private readonly db: Database.Database;
   private readonly snapshotIntervalEvents: number;
@@ -58,6 +72,17 @@ export class TwinDatabase {
         ts TEXT NOT NULL,
         response_json TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS access_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        method TEXT NOT NULL,
+        endpoint TEXT NOT NULL,
+        privacy_mode TEXT NOT NULL,
+        run_id TEXT,
+        sequence INTEGER,
+        details_json TEXT NOT NULL
+      );
     `);
     this.ensureColumn('snapshots', 'home_id', "TEXT NOT NULL DEFAULT 'home_001'");
     this.ensureColumn('snapshots', 'run_id', 'TEXT');
@@ -77,6 +102,9 @@ export class TwinDatabase {
 
       CREATE INDEX IF NOT EXISTS telemetry_home_run_idx
         ON telemetry(home_id, run_id, sequence);
+
+      CREATE INDEX IF NOT EXISTS access_audit_ts_idx
+        ON access_audit(ts, id);
     `);
   }
 
@@ -157,6 +185,50 @@ export class TwinDatabase {
   recordIdempotencyResponse(key: string, requestHash: string, response: unknown): void {
     this.db.prepare('INSERT INTO idempotency_records (idempotency_key, request_hash, ts, response_json) VALUES (?, ?, ?, ?)')
       .run(key, requestHash, new Date().toISOString(), JSON.stringify(response));
+  }
+
+  recordAccessAudit(record: AccessAuditInput): void {
+    this.db.prepare(`
+      INSERT INTO access_audit (ts, method, endpoint, privacy_mode, run_id, sequence, details_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      new Date().toISOString(),
+      record.method,
+      record.endpoint,
+      record.privacy,
+      record.runId,
+      record.sequence,
+      JSON.stringify(record.details ?? {})
+    );
+  }
+
+  getRecentAccessAudit(limit: number): AccessAuditRecord[] {
+    const rows = this.db.prepare(`
+      SELECT id, ts, method, endpoint, privacy_mode, run_id, sequence, details_json
+      FROM access_audit
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(limit) as Array<{
+      id: number;
+      ts: string;
+      method: string;
+      endpoint: string;
+      privacy_mode: 'admin' | 'public';
+      run_id: string | null;
+      sequence: number | null;
+      details_json: string;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      ts: row.ts,
+      method: row.method,
+      endpoint: row.endpoint,
+      privacy: row.privacy_mode,
+      runId: row.run_id,
+      sequence: row.sequence,
+      details: JSON.parse(row.details_json) as Record<string, unknown>
+    }));
   }
 
   close(): void {

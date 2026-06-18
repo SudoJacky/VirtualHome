@@ -173,6 +173,21 @@ const idempotencyConflictSchema: JsonSchema = {
   }
 };
 
+const accessAuditRecordSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'ts', 'method', 'endpoint', 'privacy', 'runId', 'sequence', 'details'],
+  properties: {
+    id: { type: 'integer', minimum: 1 },
+    ts: isoDateTimeSchema,
+    method: stringSchema,
+    endpoint: stringSchema,
+    privacy: { type: 'string', enum: ['admin', 'public'] },
+    runId: { anyOf: [stringSchema, { type: 'null' }] },
+    sequence: { anyOf: [{ type: 'integer', minimum: 0 }, { type: 'null' }] },
+    details: { type: 'object', additionalProperties: true }
+  }
+};
+
 const deviceAccessRecordSchema: JsonSchema = {
   type: 'object',
   required: ['deviceId', 'roomId', 'deviceType', 'displayName', 'protocol', 'desiredState', 'reportedState', 'connectivity', 'lastSeenAt', 'dataQuality'],
@@ -398,6 +413,16 @@ export function buildOpenApiDocument(): Record<string, unknown> {
           })
         }
       },
+      '/api/audit/access': {
+        get: {
+          summary: 'Get recent read-access audit records',
+          parameters: [limitParameter()],
+          responses: okResponse({
+            type: 'array',
+            items: { $ref: '#/components/schemas/AccessAuditRecord' }
+          }, true)
+        }
+      },
       '/api/scenarios/{id}/start': {
         post: {
           summary: 'Start a built-in scenario run',
@@ -490,6 +515,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         DeviceAccessRecord: deviceAccessRecordSchema,
         DeviceCapability: deviceCapabilitySchema,
         TelemetrySummary: telemetrySummarySchema,
+        AccessAuditRecord: accessAuditRecordSchema,
         UpdateResponse: updateResponseSchema,
         ValidationError: validationErrorSchema,
         IdempotencyConflict: idempotencyConflictSchema
