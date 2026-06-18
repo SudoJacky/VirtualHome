@@ -225,11 +225,13 @@ const deviceAccessRecordSchema: JsonSchema = {
 
 const deviceCapabilitySchema: JsonSchema = {
   type: 'object',
-  required: ['displayName', 'shortLabel', 'icon', 'telemetry', 'supportedCommands'],
+  required: ['displayName', 'shortLabel', 'icon', 'markerKind', 'animationHint', 'telemetry', 'supportedCommands'],
   properties: {
     displayName: stringSchema,
     shortLabel: stringSchema,
     icon: stringSchema,
+    markerKind: { type: 'string', enum: ['sensor', 'actuator', 'appliance', 'security', 'mobile'] },
+    animationHint: { type: 'string', enum: ['airflow', 'curtain', 'glow', 'none', 'pulse', 'rotate', 'scan', 'vibrate'] },
     telemetry: {
       type: 'object',
       additionalProperties: {

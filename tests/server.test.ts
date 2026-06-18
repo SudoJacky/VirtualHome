@@ -75,6 +75,8 @@ describe('server API', () => {
     expect(document.paths['/api/control/advance'].post.requestBody.content['application/json'].schema.properties).toHaveProperty('idempotencyKey');
     expect(document.components.schemas).toHaveProperty('ValidationError');
     expect(document.components.schemas).toHaveProperty('DeviceCapability');
+    expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('markerKind');
+    expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('animationHint');
 
     await server.close();
   });
@@ -141,6 +143,8 @@ describe('server API', () => {
       displayName: 'Router',
       shortLabel: 'Router',
       icon: 'router',
+      markerKind: 'appliance',
+      animationHint: 'pulse',
       supportedCommands: ['restart'],
       telemetry: {
         online: { unit: 'bool' },

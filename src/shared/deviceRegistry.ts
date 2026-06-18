@@ -3,6 +3,8 @@ import { z } from 'zod';
 type DeviceStatePayload = Record<string, string | number | boolean | null | undefined>;
 type DeviceStatePatch = Record<string, string | number | boolean | null>;
 type DeviceStateSchema = z.ZodObject<z.ZodRawShape>;
+export type DeviceMarkerKind = 'sensor' | 'actuator' | 'appliance' | 'security' | 'mobile';
+export type DeviceAnimationHint = 'airflow' | 'curtain' | 'glow' | 'none' | 'pulse' | 'rotate' | 'scan' | 'vibrate';
 
 export interface DeviceMetricCapability {
   unit: string;
@@ -13,6 +15,8 @@ export interface DeviceCapability {
   displayName: string;
   shortLabel: string;
   icon: string;
+  markerKind: DeviceMarkerKind;
+  animationHint: DeviceAnimationHint;
   stateSchema: DeviceStateSchema;
   telemetry: Record<string, DeviceMetricCapability>;
   supportedCommands: string[];
@@ -25,11 +29,15 @@ export interface DeviceCapabilityMetadata {
   displayName: string;
   shortLabel: string;
   icon: string;
+  markerKind: DeviceMarkerKind;
+  animationHint: DeviceAnimationHint;
   telemetry: Record<string, DeviceMetricCapability>;
   supportedCommands: string[];
 }
 
-export const deviceCapabilities: Record<string, DeviceCapability> = {
+type DeviceCapabilityBase = Omit<DeviceCapability, 'markerKind' | 'animationHint'>;
+
+export const deviceCapabilities: Record<string, DeviceCapabilityBase> = {
   door_lock: capability('Door Lock', 'Lock', 'lock', schema({ locked: z.boolean() }), { locked: { unit: 'bool' } }, ['lock', 'unlock'], {
     isActive: (state) => state.locked === false,
     isAbnormal: (state) => state.locked === false,
@@ -143,8 +151,38 @@ export const deviceCapabilities: Record<string, DeviceCapability> = {
   })
 };
 
+const deviceVisuals: Record<string, { markerKind: DeviceMarkerKind; animationHint: DeviceAnimationHint }> = {
+  door_lock: { markerKind: 'security', animationHint: 'none' },
+  motion_sensor: { markerKind: 'sensor', animationHint: 'pulse' },
+  doorbell_camera: { markerKind: 'security', animationHint: 'scan' },
+  package_sensor: { markerKind: 'sensor', animationHint: 'pulse' },
+  light: { markerKind: 'actuator', animationHint: 'glow' },
+  tv: { markerKind: 'appliance', animationHint: 'glow' },
+  robot_vacuum: { markerKind: 'mobile', animationHint: 'rotate' },
+  curtain: { markerKind: 'actuator', animationHint: 'curtain' },
+  temperature_humidity_sensor: { markerKind: 'sensor', animationHint: 'pulse' },
+  fridge: { markerKind: 'appliance', animationHint: 'none' },
+  stove: { markerKind: 'appliance', animationHint: 'glow' },
+  range_hood: { markerKind: 'actuator', animationHint: 'airflow' },
+  air_quality_sensor: { markerKind: 'sensor', animationHint: 'pulse' },
+  smoke_sensor: { markerKind: 'sensor', animationHint: 'pulse' },
+  dishwasher: { markerKind: 'appliance', animationHint: 'vibrate' },
+  sleep_sensor: { markerKind: 'sensor', animationHint: 'pulse' },
+  air_conditioner: { markerKind: 'actuator', animationHint: 'airflow' },
+  router: { markerKind: 'appliance', animationHint: 'pulse' },
+  water_flow_sensor: { markerKind: 'sensor', animationHint: 'pulse' },
+  water_leak_sensor: { markerKind: 'sensor', animationHint: 'pulse' },
+  water_valve: { markerKind: 'actuator', animationHint: 'rotate' },
+  washer: { markerKind: 'appliance', animationHint: 'vibrate' },
+  soil_moisture_sensor: { markerKind: 'sensor', animationHint: 'pulse' },
+  security_camera: { markerKind: 'security', animationHint: 'scan' },
+  sprinkler: { markerKind: 'actuator', animationHint: 'airflow' }
+};
+
 export function getDeviceCapability(type: string): DeviceCapability {
-  return deviceCapabilities[type] ?? capability(type, type, 'circle-help', schema({}), {}, [], {});
+  const base = deviceCapabilities[type] ?? capability(type, type, 'circle-help', schema({}), {}, [], {});
+  const visual = deviceVisuals[type] ?? { markerKind: 'appliance' as const, animationHint: 'none' as const };
+  return { ...base, ...visual };
 }
 
 export function getDeviceShortLabel(type: string): string {
@@ -164,16 +202,21 @@ export function summarizeDeviceState(type: string, state: DeviceStatePayload): s
 }
 
 export function getDeviceCapabilityMetadata(): Record<string, DeviceCapabilityMetadata> {
-  return Object.fromEntries(Object.entries(deviceCapabilities).map(([type, capability]) => [
-    type,
-    {
-      displayName: capability.displayName,
-      shortLabel: capability.shortLabel,
-      icon: capability.icon,
-      telemetry: structuredClone(capability.telemetry),
-      supportedCommands: [...capability.supportedCommands]
-    }
-  ]));
+  return Object.fromEntries(Object.keys(deviceCapabilities).map((type) => {
+    const capability = getDeviceCapability(type);
+    return [
+      type,
+      {
+        displayName: capability.displayName,
+        shortLabel: capability.shortLabel,
+        icon: capability.icon,
+        markerKind: capability.markerKind,
+        animationHint: capability.animationHint,
+        telemetry: structuredClone(capability.telemetry),
+        supportedCommands: [...capability.supportedCommands]
+      }
+    ];
+  }));
 }
 
 export function validateDeviceStatePatch(type: string, patch: DeviceStatePayload): DeviceStatePatch {
@@ -188,7 +231,7 @@ function capability(
   telemetry: Record<string, DeviceMetricCapability>,
   supportedCommands: string[],
   overrides: Partial<Pick<DeviceCapability, 'isActive' | 'isAbnormal' | 'summarizeState'>>
-): DeviceCapability {
+): DeviceCapabilityBase {
   return {
     displayName,
     shortLabel,

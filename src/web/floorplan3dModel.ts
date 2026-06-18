@@ -1,5 +1,5 @@
 import type { RoomId, Severity, TwinEvent, TwinSnapshot } from '../shared/types';
-import { getDeviceShortLabel, isDeviceTypeAbnormal, isDeviceTypeActive, summarizeDeviceState } from '../shared/deviceRegistry';
+import { getDeviceCapability, isDeviceTypeAbnormal, isDeviceTypeActive, summarizeDeviceState } from '../shared/deviceRegistry';
 import { devicePoints, getRoomLayout, roomLayouts, type DeviceAnimationHint, type DeviceMarkerKind, type RoomLayout } from './floorplanLayout';
 
 export type FloorplanAlertSeverity = 'info' | 'warning' | 'critical';
@@ -84,16 +84,17 @@ export function createFloorplan3DModel(snapshot: TwinSnapshot, events: TwinEvent
 
   const devices = Object.values(snapshot.devices).map((device) => {
     const point = devicePoints.find((candidate) => candidate.deviceId === device.id);
+    const capability = getDeviceCapability(device.type);
     const active = isDeviceTypeActive(device.type, device.state);
     return {
       id: device.id,
       roomId: device.roomId,
-      label: getDeviceShortLabel(device.type),
+      label: capability.shortLabel,
       active,
       abnormal: active && isDeviceTypeAbnormal(device.type, device.state),
-      markerKind: point?.markerKind ?? inferMarkerKind(device.type),
+      markerKind: point?.markerKind ?? capability.markerKind,
       orientation: point?.orientation ?? 0,
-      animationHint: point?.animationHint ?? inferAnimationHint(device.type),
+      animationHint: point?.animationHint ?? capability.animationHint,
       statusLabel: summarizeDeviceState(device.type, device.state),
       x: point?.x ?? getRoomLayout(device.roomId).x,
       z: point?.z ?? getRoomLayout(device.roomId).z,
@@ -136,23 +137,4 @@ function getPersonLabel(personId: string): string {
     pet_1: 'P'
   };
   return labels[personId] ?? personId.slice(0, 2).toUpperCase();
-}
-
-function inferMarkerKind(type: string): DeviceMarkerKind {
-  if (type.includes('sensor')) return 'sensor';
-  if (type.includes('camera') || type.includes('lock')) return 'security';
-  if (type === 'robot_vacuum') return 'mobile';
-  if (['light', 'curtain', 'water_valve', 'sprinkler', 'air_conditioner', 'range_hood'].includes(type)) return 'actuator';
-  return 'appliance';
-}
-
-function inferAnimationHint(type: string): DeviceAnimationHint {
-  if (type === 'light' || type === 'tv' || type === 'stove') return 'glow';
-  if (type === 'curtain') return 'curtain';
-  if (type === 'water_valve' || type === 'robot_vacuum') return 'rotate';
-  if (type === 'washer' || type === 'dishwasher') return 'vibrate';
-  if (type.includes('camera')) return 'scan';
-  if (type === 'air_conditioner' || type === 'range_hood' || type === 'sprinkler') return 'airflow';
-  if (type.includes('sensor')) return 'pulse';
-  return 'none';
 }

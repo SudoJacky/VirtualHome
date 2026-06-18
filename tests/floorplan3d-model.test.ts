@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { getCatalog } from '../src/sim/catalog';
 import { createSimulator } from '../src/sim/engine';
+import { getDeviceCapability } from '../src/shared/deviceRegistry';
 import { createFloorplan3DModel } from '../src/web/floorplan3dModel';
 import { devicePoints, roomLayouts } from '../src/web/floorplanLayout';
 
@@ -35,6 +36,10 @@ describe('3D floorplan layout and model', () => {
     expect(model.devices.find((device) => device.id === 'water_leak_01')?.markerKind).toBe('sensor');
     expect(model.devices.find((device) => device.id === 'water_valve_01')?.markerKind).toBe('actuator');
     expect(model.devices.find((device) => device.id === 'washer_01')?.markerKind).toBe('appliance');
+    const robotVacuum = model.devices.find((device) => device.id === 'robot_vacuum_01');
+    const robotVacuumCapability = getDeviceCapability('robot_vacuum');
+    expect(robotVacuum?.markerKind).toBe(robotVacuumCapability.markerKind);
+    expect(robotVacuum?.animationHint).toBe(robotVacuumCapability.animationHint);
     expect(model.devices.every((device) => Number.isFinite(device.x) && Number.isFinite(device.z))).toBe(true);
   });
 });
