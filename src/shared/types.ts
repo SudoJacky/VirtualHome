@@ -14,6 +14,7 @@ export type HomeMode = 'morning' | 'away' | 'evening_home' | 'sleeping' | 'alert
 export type PersonKind = 'human' | 'pet';
 
 export type Severity = 'info' | 'warning' | 'high';
+export type AlertLifecycleStatus = 'active' | 'acknowledged' | 'resolved' | 'ignored';
 
 export interface RoomDefinition {
   id: RoomId;
@@ -118,7 +119,9 @@ export interface AlertState {
   roomId: RoomId;
   message: string;
   recommendedAction: string;
+  status: AlertLifecycleStatus;
   createdAt: string;
+  resolvedAt?: string;
 }
 
 export interface TwinSnapshot {

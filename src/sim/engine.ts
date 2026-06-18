@@ -1048,6 +1048,7 @@ class Simulator implements VirtualHomeSimulator {
     });
     const cooldownUntil = new Date(this.state.snapshot.simClock.currentTime);
     cooldownUntil.setMinutes(cooldownUntil.getMinutes() + ruleCooldownMinutes);
+    resolveAlertsForRule(this.state.snapshot, ruleId, this.state.snapshot.simClock.currentTime);
     return [this.createEvent({
       type: 'RuleRecovered',
       ruleId,
@@ -1064,6 +1065,7 @@ class Simulator implements VirtualHomeSimulator {
       roomId,
       message,
       recommendedAction,
+      status: 'active',
       createdAt: this.state.snapshot.simClock.currentTime
     };
     return this.createEvent({
@@ -1248,6 +1250,7 @@ function replayEventsOntoSnapshot(snapshot: TwinSnapshot, events: TwinEvent[]): 
           roomId: event.roomId,
           message: event.message,
           recommendedAction: event.recommendedAction,
+          status: 'active',
           createdAt: event.simTime
         };
         break;
@@ -1259,7 +1262,10 @@ function replayEventsOntoSnapshot(snapshot: TwinSnapshot, events: TwinEvent[]): 
         }
         break;
       case 'AutomationTriggered':
+        break;
       case 'RuleRecovered':
+        resolveAlertsForRule(snapshot, event.ruleId, event.simTime);
+        break;
       case 'AbnormalityInjected':
         break;
     }
@@ -1298,6 +1304,29 @@ function replayTelemetryEvent(snapshot: TwinSnapshot, event: DeviceTelemetryEven
       room.humidityPercent = event.measurements.humidity_percent;
     }
   }
+}
+
+function resolveAlertsForRule(snapshot: TwinSnapshot, ruleId: string, resolvedAt: string): void {
+  const alertIds = alertIdsForRule(ruleId);
+  for (const alertId of alertIds) {
+    const alert = snapshot.alerts[alertId];
+    if (!alert) {
+      continue;
+    }
+    alert.status = 'resolved';
+    alert.resolvedAt = resolvedAt;
+  }
+}
+
+function alertIdsForRule(ruleId: string): string[] {
+  const alertIds: Record<string, string[]> = {
+    close_water_valve_on_leak: ['water_leak_001'],
+    door_left_open: ['door_left_open_001'],
+    fridge_left_open: ['fridge_left_open_001'],
+    network_offline: ['network_offline_001'],
+    senior_no_activity: ['senior_inactive_001']
+  };
+  return alertIds[ruleId] ?? [];
 }
 
 function restoreRuleStates(events: TwinEvent[], elapsedMinutes: number, currentTime: string): Map<string, RuleLifecycleState> {

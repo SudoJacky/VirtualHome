@@ -345,7 +345,12 @@ describe('virtual home simulator MVP', () => {
 
     simulator.startScenario('weekday_normal');
     const firstOpen = simulator.injectAbnormality('fridge_left_open');
+    expect(simulator.getSnapshot().alerts.fridge_left_open_001.status).toBe('active');
     const resolved = simulator.resolveAbnormality('fridge_left_open');
+    expect(simulator.getSnapshot().alerts.fridge_left_open_001).toMatchObject({
+      status: 'resolved',
+      resolvedAt: '2026-06-17T06:20:00+08:00'
+    });
     const secondOpenDuringCooldown = simulator.injectAbnormality('fridge_left_open');
     const afterCooldown = simulator.advanceMinutes(5);
 
@@ -354,6 +359,7 @@ describe('virtual home simulator MVP', () => {
     expect(resolved.some((event): event is RuleRecoveredEvent => event.type === 'RuleRecovered' && event.ruleId === 'fridge_left_open')).toBe(true);
     expect(secondOpenDuringCooldown.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'fridge_left_open')).toBe(false);
     expect(afterCooldown.filter((event): event is AutomationTriggeredEvent => event.type === 'AutomationTriggered' && event.ruleId === 'fridge_left_open')).toHaveLength(1);
+    expect(simulator.getSnapshot().alerts.fridge_left_open_001.status).toBe('active');
   });
 
   it('rejects invalid device state fields before they enter the snapshot', () => {
