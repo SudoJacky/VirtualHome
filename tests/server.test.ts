@@ -84,6 +84,15 @@ describe('server API', () => {
     expect(document.components.schemas.DeviceCapability.properties.stateFields.additionalProperties.properties).toHaveProperty('unit');
     expect(document.components.schemas.DeviceCapability.properties.stateFields.additionalProperties.properties).toHaveProperty('normalRange');
     expect(document.components.schemas).toHaveProperty('AccessAuditRecord');
+    expect(document.components.schemas).toHaveProperty('AbnormalityInjectedEvent');
+    expect(document.components.schemas.AbnormalityInjectedEvent.required).toEqual(expect.arrayContaining(['type', 'kind', 'affectedEntities']));
+    expect(document.components.schemas.AbnormalityInjectedEvent.properties.kind.enum).toEqual([
+      'door_left_open',
+      'fridge_left_open',
+      'network_offline',
+      'senior_no_activity'
+    ]);
+    expect(document.components.schemas.TwinEvent.anyOf).toContainEqual({ $ref: '#/components/schemas/AbnormalityInjectedEvent' });
 
     await server.close();
   });

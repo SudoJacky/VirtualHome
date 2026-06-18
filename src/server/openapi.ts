@@ -42,7 +42,7 @@ const twinSnapshotSchema: JsonSchema = {
   }
 };
 
-const twinEventSchema: JsonSchema = {
+const twinEventBaseSchema: JsonSchema = {
   type: 'object',
   required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence'],
   properties: {
@@ -57,6 +57,37 @@ const twinEventSchema: JsonSchema = {
     reason: stringSchema
   },
   additionalProperties: true
+};
+
+const abnormalityInjectedEventSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'kind', 'affectedEntities'],
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    type: { type: 'string', enum: ['AbnormalityInjected'] },
+    ts: isoDateTimeSchema,
+    simTime: isoDateTimeSchema,
+    homeId: stringSchema,
+    scenarioId: stringSchema,
+    sequence: { type: 'integer', minimum: 1 },
+    reason: stringSchema,
+    kind: {
+      type: 'string',
+      enum: ['door_left_open', 'fridge_left_open', 'network_offline', 'senior_no_activity']
+    },
+    affectedEntities: {
+      type: 'array',
+      items: stringSchema
+    }
+  }
+};
+
+const twinEventSchema: JsonSchema = {
+  anyOf: [
+    { $ref: '#/components/schemas/AbnormalityInjectedEvent' },
+    twinEventBaseSchema
+  ]
 };
 
 const homeDefinitionSchema: JsonSchema = {
@@ -542,6 +573,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
       schemas: {
         TwinSnapshot: twinSnapshotSchema,
         TwinEvent: twinEventSchema,
+        AbnormalityInjectedEvent: abnormalityInjectedEventSchema,
         HomeDefinition: homeDefinitionSchema,
         DeviceAccessRecord: deviceAccessRecordSchema,
         DeviceCapability: deviceCapabilitySchema,
