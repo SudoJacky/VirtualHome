@@ -14,6 +14,7 @@ export interface ServerOptions {
   autoTick?: boolean;
   tickMs?: number;
   heartbeatMs?: number;
+  snapshotIntervalEvents?: number;
 }
 
 const limitQuerySchema = z.object({
@@ -45,7 +46,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
   mkdirSync(path.dirname(options.databasePath), { recursive: true });
   const app = Fastify({ logger: false });
   const simulator = createSimulator({ seed: 20260617 });
-  const db = new TwinDatabase(options.databasePath);
+  const db = new TwinDatabase(options.databasePath, { snapshotIntervalEvents: options.snapshotIntervalEvents });
   const latestSnapshot = db.getLatestSnapshot();
   const restoredFromDatabase = Boolean(latestSnapshot?.runId);
   if (latestSnapshot?.runId) {

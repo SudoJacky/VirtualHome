@@ -299,6 +299,36 @@ describe('server API', () => {
 
     await secondServer.close();
   });
+
+  it('restores state by replaying events after the latest snapshot checkpoint', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-checkpoint-recovery-'));
+    dirs.push(dir);
+    const databasePath = path.join(dir, 'twin.db');
+    const firstServer = createServer({ databasePath, autoTick: false, snapshotIntervalEvents: 1000 });
+
+    await firstServer.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    await firstServer.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 1 }
+    });
+    const beforeRestart = (await firstServer.inject({ method: 'GET', url: '/api/state' })).json();
+    await firstServer.close();
+
+    const secondServer = createServer({ databasePath, autoTick: false, snapshotIntervalEvents: 1000 });
+    await secondServer.ready();
+    const restored = (await secondServer.inject({ method: 'GET', url: '/api/state' })).json();
+
+    expect(restored.runId).toBe(beforeRestart.runId);
+    expect(restored.simClock.currentTime).toBe(beforeRestart.simClock.currentTime);
+    expect(restored.simClock.sequence).toBe(beforeRestart.simClock.sequence);
+    expect(restored.devices.kitchen_temp_01.state.temperatureC).toBe(beforeRestart.devices.kitchen_temp_01.state.temperatureC);
+
+    await secondServer.close();
+  });
 });
 
 function createMessagePromise(): {

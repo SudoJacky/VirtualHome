@@ -1,10 +1,16 @@
 import Database from 'better-sqlite3';
 import type { DeviceTelemetryEvent, TwinEvent, TwinSnapshot } from '../shared/types';
 
+export interface TwinDatabaseOptions {
+  snapshotIntervalEvents?: number;
+}
+
 export class TwinDatabase {
   private readonly db: Database.Database;
+  private readonly snapshotIntervalEvents: number;
 
-  constructor(filename: string) {
+  constructor(filename: string, options: TwinDatabaseOptions = {}) {
+    this.snapshotIntervalEvents = Math.max(1, options.snapshotIntervalEvents ?? 50);
     this.db = new Database(filename);
     this.db.pragma('journal_mode = WAL');
     this.db.exec(`
@@ -75,7 +81,9 @@ export class TwinDatabase {
 
   recordUpdate(snapshot: TwinSnapshot, events: TwinEvent[]): void {
     const transaction = this.db.transaction((nextSnapshot: TwinSnapshot, nextEvents: TwinEvent[]) => {
-      this.insertSnapshot(nextSnapshot);
+      if (this.shouldRecordSnapshot(nextSnapshot)) {
+        this.insertSnapshot(nextSnapshot);
+      }
       this.insertEvents(nextEvents);
     });
     transaction(snapshot, events);
@@ -89,6 +97,13 @@ export class TwinDatabase {
   getLatestSnapshotCheckpoint(): { snapshot: TwinSnapshot; coveredSequence: number } | null {
     const row = this.db.prepare('SELECT covered_sequence, payload_json FROM snapshots ORDER BY id DESC LIMIT 1').get() as { covered_sequence: number; payload_json: string } | undefined;
     return row ? { snapshot: JSON.parse(row.payload_json) as TwinSnapshot, coveredSequence: row.covered_sequence } : null;
+  }
+
+  getSnapshotCount(runId?: string): number {
+    const row = runId
+      ? this.db.prepare('SELECT COUNT(*) AS count FROM snapshots WHERE run_id = ?').get(runId) as { count: number }
+      : this.db.prepare('SELECT COUNT(*) AS count FROM snapshots').get() as { count: number };
+    return row.count;
   }
 
   getRecentEvents(limit: number, runId?: string): TwinEvent[] {
@@ -131,6 +146,20 @@ export class TwinDatabase {
   private insertSnapshot(snapshot: TwinSnapshot): void {
     this.db.prepare('INSERT INTO snapshots (home_id, run_id, covered_sequence, ts, scenario_id, payload_json) VALUES (?, ?, ?, ?, ?, ?)')
       .run(snapshot.homeId, snapshot.runId, snapshot.simClock.sequence, snapshot.simClock.currentTime, snapshot.scenarioId, JSON.stringify(snapshot));
+  }
+
+  private shouldRecordSnapshot(snapshot: TwinSnapshot): boolean {
+    const checkpoint = this.getLatestSnapshotCheckpointForRun(snapshot.homeId, snapshot.runId);
+    if (!checkpoint) {
+      return true;
+    }
+    return snapshot.simClock.sequence - checkpoint.coveredSequence >= this.snapshotIntervalEvents;
+  }
+
+  private getLatestSnapshotCheckpointForRun(homeId: string, runId: string): { coveredSequence: number } | null {
+    const row = this.db.prepare('SELECT covered_sequence FROM snapshots WHERE home_id = ? AND run_id = ? ORDER BY id DESC LIMIT 1')
+      .get(homeId, runId) as { covered_sequence: number } | undefined;
+    return row ? { coveredSequence: row.covered_sequence } : null;
   }
 
   private insertEvents(events: TwinEvent[]): void {

@@ -147,25 +147,30 @@ class Simulator implements VirtualHomeSimulator {
   restore(snapshot: TwinSnapshot, events: TwinEvent[]): void {
     const catalog = getCatalog();
     const activeScenario = getScenarioForSnapshot(snapshot);
-    const elapsedMinutes = minutesBetween(snapshot.runContext.startedAt, snapshot.simClock.currentTime);
+    const restoredSnapshot = structuredClone(snapshot);
+    const restoredEvents = structuredClone(events);
+    replayEventsOntoSnapshot(restoredSnapshot, restoredEvents.filter((event) => event.sequence > snapshot.simClock.sequence));
+    const elapsedMinutes = minutesBetween(restoredSnapshot.runContext.startedAt, restoredSnapshot.simClock.currentTime);
     this.state = {
       catalog,
       activeScenario,
-      snapshot: structuredClone(snapshot),
+      snapshot: restoredSnapshot,
       elapsedMinutes,
-      emittedEvents: structuredClone(events),
+      emittedEvents: restoredEvents,
       executedStepKeys: new Set(activeScenario.steps
         .filter((step) => step.minute <= elapsedMinutes)
         .map((step) => `${activeScenario.id}:${step.minute}`)),
-      profileLitRooms: new Set(Object.values(snapshot.rooms)
+      profileLitRooms: new Set(Object.values(restoredSnapshot.rooms)
         .filter((room) => room.lightsOn)
         .map((room) => room.id)),
-      triggeredRules: new Set(events
+      triggeredRules: new Set(restoredEvents
         .filter((event) => event.type === 'AutomationTriggered')
         .map((event) => event.ruleId)),
-      ruleStates: restoreRuleStates(events, elapsedMinutes, snapshot.simClock.currentTime),
-      random: new SeededRandom(snapshot.runContext.seed, snapshot.runContext.rngState)
+      ruleStates: restoreRuleStates(restoredEvents, elapsedMinutes, restoredSnapshot.simClock.currentTime),
+      random: new SeededRandom(restoredSnapshot.runContext.seed, restoredSnapshot.runContext.rngState)
     };
+    this.rebuildRooms();
+    this.updateOccupancy();
   }
 
   private startScenarioDefinition(scenario: ScenarioDefinition, eventValue: string, runSeed: number): TwinEvent[] {
@@ -1186,6 +1191,101 @@ function getScenarioForSnapshot(snapshot: TwinSnapshot): ScenarioDefinition {
     return generateDailyScenario({ date, seed: snapshot.runContext.seed });
   }
   return getScenario(snapshot.scenarioId as StaticScenarioId);
+}
+
+function replayEventsOntoSnapshot(snapshot: TwinSnapshot, events: TwinEvent[]): void {
+  for (const event of [...events].sort((a, b) => a.sequence - b.sequence)) {
+    if (event.runId !== snapshot.runId) {
+      continue;
+    }
+
+    switch (event.type) {
+      case 'DeviceStateChanged': {
+        const device = snapshot.devices[event.deviceId];
+        if (device) {
+          device.state = { ...device.state, ...event.state };
+          device.lastReason = event.reason ?? device.lastReason;
+        }
+        break;
+      }
+      case 'DeviceTelemetry':
+        replayTelemetryEvent(snapshot, event);
+        break;
+      case 'PersonMoved': {
+        const person = snapshot.people[event.personId];
+        if (person) {
+          person.location = event.to;
+          person.activity = event.activity;
+        }
+        break;
+      }
+      case 'ActivityStarted':
+        snapshot.activities[event.activityId] = {
+          activityId: event.activityId,
+          participants: [...event.participants],
+          roomId: event.roomId,
+          startedAt: event.simTime
+        };
+        break;
+      case 'ActivityEnded':
+        delete snapshot.activities[event.activityId];
+        break;
+      case 'AlertCreated':
+        snapshot.alerts[event.alertId] = {
+          id: event.alertId,
+          severity: event.severity,
+          roomId: event.roomId,
+          message: event.message,
+          recommendedAction: event.recommendedAction,
+          createdAt: event.simTime
+        };
+        break;
+      case 'ScenarioControl':
+        if (event.command === 'pause' || event.command === 'resume') {
+          snapshot.simClock.paused = Boolean(event.value);
+        } else if (event.command === 'speed' && typeof event.value === 'number') {
+          snapshot.simClock.speed = event.value;
+        }
+        break;
+      case 'AutomationTriggered':
+      case 'RuleRecovered':
+        break;
+    }
+
+    snapshot.simClock.currentTime = event.simTime;
+    snapshot.simClock.sequence = Math.max(snapshot.simClock.sequence, event.sequence);
+  }
+}
+
+function replayTelemetryEvent(snapshot: TwinSnapshot, event: DeviceTelemetryEvent): void {
+  const device = snapshot.devices[event.deviceId];
+  const room = snapshot.rooms[event.roomId];
+  const measurementStateKeys: Record<string, string> = {
+    temperature_c: 'temperatureC',
+    humidity_percent: 'humidityPercent',
+    pm25: 'pm25',
+    co2: 'co2',
+    flow_l_min: 'flowLMin',
+    total_l: 'totalL',
+    moisture_percent: 'moisturePercent'
+  };
+
+  if (device) {
+    for (const [measurement, value] of Object.entries(event.measurements)) {
+      const stateKey = measurementStateKeys[measurement];
+      if (stateKey) {
+        device.state[stateKey] = value;
+      }
+    }
+  }
+  if (room) {
+    if (typeof event.measurements.temperature_c === 'number') {
+      room.temperatureC = event.measurements.temperature_c;
+    }
+    if (typeof event.measurements.humidity_percent === 'number') {
+      room.humidityPercent = event.measurements.humidity_percent;
+    }
+  }
 }
 
 function restoreRuleStates(events: TwinEvent[], elapsedMinutes: number, currentTime: string): Map<string, RuleLifecycleState> {

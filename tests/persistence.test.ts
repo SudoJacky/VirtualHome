@@ -84,4 +84,26 @@ describe('twin persistence', () => {
 
     db.close();
   });
+
+  it('keeps events append-only while writing full snapshots only at checkpoint cadence', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-'));
+    dirs.push(dir);
+    const db = new TwinDatabase(path.join(dir, 'twin.db'), { snapshotIntervalEvents: 100 });
+    const simulator = createSimulator({ seed: 42 });
+
+    const startEvents = simulator.startScenario('weekday_normal');
+    const startSnapshot = simulator.getSnapshot();
+    db.recordUpdate(startSnapshot, startEvents);
+
+    const advanceEvents = simulator.advanceMinutes(1);
+    const laterSnapshot = simulator.getSnapshot();
+    db.recordUpdate(laterSnapshot, advanceEvents);
+
+    const checkpoint = db.getLatestSnapshotCheckpoint();
+    expect(db.getSnapshotCount(laterSnapshot.runId)).toBe(1);
+    expect(checkpoint?.coveredSequence).toBe(startSnapshot.simClock.sequence);
+    expect(db.getRecentEvents(500, laterSnapshot.runId).length).toBe(startEvents.length + advanceEvents.length);
+
+    db.close();
+  });
 });
