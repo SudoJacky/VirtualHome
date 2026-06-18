@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ApiClientError, postUpdate } from '../src/web/apiClient';
+import { ApiClientError, getJson, postUpdate } from '../src/web/apiClient';
 
 describe('web API client', () => {
   it('posts JSON updates through the configured endpoint', async () => {
@@ -51,5 +51,29 @@ describe('web API client', () => {
       message: 'Invalid request: minutes Too small'
     });
     await expect(postUpdate('/api/control/advance', { minutes: 0 }, fetchMock)).rejects.toBeInstanceOf(ApiClientError);
+  });
+
+  it('rejects non-2xx JSON reads with the same API error type', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      error: {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid query',
+        issues: [{ path: 'limit', message: 'Too large' }]
+      }
+    }), {
+      status: 400,
+      statusText: 'Bad Request',
+      headers: { 'Content-Type': 'application/json' }
+    }));
+
+    await expect(getJson('/api/events?limit=10000', fetchMock)).rejects.toMatchObject({
+      name: 'ApiClientError',
+      status: 400,
+      message: 'Invalid query: limit Too large'
+    });
+    expect(fetchMock).toHaveBeenCalledWith('/api/events?limit=10000', {
+      method: 'GET',
+      signal: expect.any(AbortSignal)
+    });
   });
 });

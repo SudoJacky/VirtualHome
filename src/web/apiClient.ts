@@ -23,6 +23,11 @@ export interface PostUpdateOptions {
   idempotencyKey?: string;
 }
 
+export interface GetJsonOptions {
+  fetcher?: FetchLike;
+  timeoutMs?: number;
+}
+
 export function createIdempotencyKey(): string {
   return `cmd_${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
 }
@@ -53,6 +58,33 @@ export async function postUpdate(
       throw new ApiClientError(formatApiError(body, response), response.status);
     }
     return body as ApiUpdate;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function getJson<T = unknown>(
+  url: string,
+  fetcherOrOptions: FetchLike | GetJsonOptions = fetch,
+  timeoutMs = 10000
+): Promise<T> {
+  const options = typeof fetcherOrOptions === 'function'
+    ? { fetcher: fetcherOrOptions, timeoutMs }
+    : fetcherOrOptions;
+  const fetcher = options.fetcher ?? fetch;
+  const requestTimeoutMs = options.timeoutMs ?? 10000;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+  try {
+    const response = await fetcher(url, {
+      method: 'GET',
+      signal: controller.signal
+    });
+    const body = await readJson(response);
+    if (!response.ok) {
+      throw new ApiClientError(formatApiError(body, response), response.status);
+    }
+    return body as T;
   } finally {
     clearTimeout(timeout);
   }

@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import type { DeviceState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { Floorplan3D, type FloorplanLayers, type FloorplanSelection } from './Floorplan3D';
-import { ApiClientError, createIdempotencyKey, postUpdate, type ApiUpdate } from './apiClient';
+import { ApiClientError, createIdempotencyKey, getJson, postUpdate, type ApiUpdate } from './apiClient';
 import { createFloorplan3DModel, type Floorplan3DDevice, type Floorplan3DRoom } from './floorplan3dModel';
 import { buildTwinSocketUrl, cursorFromSnapshot, cursorFromUpdate, nextReconnectDelayMs, parseTwinSocketMessage, type TwinSocketCursor } from './twinSocket';
 import { createDashboardModel, mergeTwinEvents } from './viewModel';
@@ -51,11 +51,7 @@ function App(): React.ReactElement {
     let socket: WebSocket | undefined;
 
     async function refreshSnapshotFromApi(): Promise<void> {
-      const response = await fetch('/api/state');
-      if (!response.ok) {
-        throw new Error(`State refresh failed with ${response.status}`);
-      }
-      const state = await response.json() as TwinSnapshot;
+      const state = await getJson<TwinSnapshot>('/api/state');
       if (disposed) return;
       socketCursorRef.current = cursorFromSnapshot(state);
       setSnapshot(state);
@@ -66,7 +62,11 @@ function App(): React.ReactElement {
         setSocketStatus('offline');
       }
     });
-    void fetch('/api/events?limit=80').then((response) => response.json()).then(setEvents);
+    void getJson<TwinEvent[]>('/api/events?limit=80').then(setEvents).catch(() => {
+      if (!disposed) {
+        setSocketStatus('offline');
+      }
+    });
 
     function connect(): void {
       if (disposed) return;
