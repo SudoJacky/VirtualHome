@@ -186,12 +186,16 @@ const updateResponseSchema: JsonSchema = {
 
 const twinSocketUpdateMessageSchema: JsonSchema = {
   type: 'object',
-  required: ['type', 'runId', 'sequence', 'events'],
+  required: ['type', 'runId', 'sequence', 'replayComplete', 'events'],
   properties: {
     type: { type: 'string', enum: ['twin.update'] },
     runId: stringSchema,
     sequence: { type: 'integer', minimum: 0 },
     snapshot: { $ref: '#/components/schemas/TwinSnapshot' },
+    replayComplete: {
+      type: 'boolean',
+      description: 'False when reconnect replay was truncated and the client should continue replaying or refresh the snapshot.'
+    },
     events: {
       type: 'array',
       items: { $ref: '#/components/schemas/TwinEvent' }

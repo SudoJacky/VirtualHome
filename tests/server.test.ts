@@ -318,6 +318,36 @@ describe('server API', () => {
     await server.close();
   });
 
+  it('marks WebSocket replay as incomplete when missed events exceed the replay window', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-ws-replay-window-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    const lastSeen = (await server.inject({ method: 'GET', url: '/api/state' })).json();
+    const advance = await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 120 }
+    });
+    expect(advance.json().events.length).toBeGreaterThan(500);
+
+    const firstMessage = createTypedMessagePromise('twin.update');
+    const ws = await server.injectWS(`/ws?runId=${lastSeen.runId}&afterSequence=${lastSeen.simClock.sequence}`, {}, {
+      onInit: firstMessage.attach
+    });
+    const update = await firstMessage.value;
+
+    expect(update.replayComplete).toBe(false);
+    expect((update.events as Array<unknown>)).toHaveLength(500);
+
+    ws.close();
+    await server.close();
+  });
+
   it('sends WebSocket heartbeats with the current run cursor', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-ws-heartbeat-'));
     dirs.push(dir);

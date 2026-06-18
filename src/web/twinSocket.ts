@@ -10,6 +10,7 @@ export interface TwinSocketUpdateMessage {
   runId: string;
   sequence: number;
   snapshot?: TwinSnapshot;
+  replayComplete: boolean;
   events: TwinEvent[];
 }
 

@@ -70,6 +70,8 @@ type UpdateResponse = {
   events: TwinEvent[];
 };
 
+const websocketReplayLimit = 500;
+
 export function createServer(options: ServerOptions): FastifyInstance {
   mkdirSync(path.dirname(options.databasePath), { recursive: true });
   const app = Fastify({ logger: false });
@@ -104,6 +106,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
         runId: snapshot.runId,
         sequence: snapshot.simClock.sequence,
         ...(snapshotRecorded ? { snapshot: projectSnapshotForPrivacy(snapshot, socket.privacy) } : {}),
+        replayComplete: true,
         events: projectEventsForPrivacy(events, socket.privacy)
       });
       socket.send(payload);
@@ -313,9 +316,11 @@ export function createServer(options: ServerOptions): FastifyInstance {
     fastify.get('/ws', { websocket: true }, (socket, request) => {
       const result = websocketQuerySchema.safeParse(request.query);
       const privacy = result.success ? result.data.privacy : 'public';
-      const replayEvents = result.success && result.data.runId && result.data.afterSequence !== undefined
-        ? db.getEventsAfter(result.data.runId, result.data.afterSequence)
+      const replayCandidates = result.success && result.data.runId && result.data.afterSequence !== undefined
+        ? db.getEventsAfter(result.data.runId, result.data.afterSequence, websocketReplayLimit + 1)
         : [];
+      const replayComplete = replayCandidates.length <= websocketReplayLimit;
+      const replayEvents = replayCandidates.slice(0, websocketReplayLimit);
       const client = { privacy, send: (payload: string) => socket.send(payload) };
       sockets.add(client);
       const snapshot = simulator.getSnapshot();
@@ -327,6 +332,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
         runId: snapshot.runId,
         sequence: snapshot.simClock.sequence,
         snapshot: projectSnapshotForPrivacy(snapshot, privacy),
+        replayComplete,
         events: projectEventsForPrivacy(replayEvents, privacy)
       }));
       socket.on('close', () => sockets.delete(client));
