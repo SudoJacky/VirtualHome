@@ -63,6 +63,8 @@ export interface RoomState {
   id: RoomId;
   name: string;
   occupancy: boolean;
+  humanOccupancy: boolean;
+  motionDetected: boolean;
   people: string[];
   temperatureC: number;
   humidityPercent: number;

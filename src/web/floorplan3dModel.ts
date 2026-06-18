@@ -1,5 +1,5 @@
 import type { RoomId, Severity, TwinEvent, TwinSnapshot } from '../shared/types';
-import { devicePoints, getRoomLayout, roomLayouts, type RoomLayout } from './floorplanLayout';
+import { devicePoints, getRoomLayout, roomLayouts, type DeviceAnimationHint, type DeviceMarkerKind, type RoomLayout } from './floorplanLayout';
 
 export type FloorplanAlertSeverity = 'info' | 'warning' | 'critical';
 
@@ -27,6 +27,10 @@ export interface Floorplan3DDevice {
   label: string;
   active: boolean;
   abnormal: boolean;
+  markerKind: DeviceMarkerKind;
+  orientation: number;
+  animationHint: DeviceAnimationHint;
+  statusLabel: string;
   x: number;
   z: number;
   y: number;
@@ -86,6 +90,10 @@ export function createFloorplan3DModel(snapshot: TwinSnapshot, events: TwinEvent
       label: getDeviceLabel(device.id),
       active,
       abnormal: active && isDeviceAbnormal(device.type, device.state),
+      markerKind: point?.markerKind ?? inferMarkerKind(device.type),
+      orientation: point?.orientation ?? 0,
+      animationHint: point?.animationHint ?? inferAnimationHint(device.type),
+      statusLabel: summarizeDeviceState(device.type, device.state),
       x: point?.x ?? getRoomLayout(device.roomId).x,
       z: point?.z ?? getRoomLayout(device.roomId).z,
       y: point?.y ?? 0.32
@@ -162,6 +170,16 @@ function isDeviceActive(type: string, state: Record<string, string | number | bo
   if (type === 'fridge') return state.doorOpen === true || Number(state.powerW ?? 0) > 100;
   if (type === 'stove') return Number(state.powerW ?? 0) > 0;
   if (type === 'range_hood') return state.power === 'on' || Number(state.speed ?? 0) > 0;
+  if (type === 'doorbell_camera') return state.motion === true || state.ringing === true;
+  if (type === 'package_sensor') return state.packagePresent === true;
+  if (type === 'robot_vacuum') return state.status === 'cleaning' || state.status === 'stuck';
+  if (type === 'curtain') return Number(state.positionPercent ?? 0) > 0;
+  if (type === 'smoke_sensor') return state.smokeDetected === true || Number(state.density ?? 0) > 0;
+  if (type === 'dishwasher') return state.status === 'running' || state.status === 'done' || Number(state.powerW ?? 0) > 0;
+  if (type === 'air_conditioner') return state.power === 'on';
+  if (type === 'router') return state.online !== true || Number(state.latencyMs ?? 0) > 100;
+  if (type === 'washer') return state.status === 'running' || state.status === 'done' || Number(state.powerW ?? 0) > 0;
+  if (type === 'security_camera') return state.motion === true || state.recording === true;
   if (type === 'water_flow_sensor') return Number(state.flowLMin ?? 0) > 0;
   if (type === 'water_leak_sensor') return state.leakDetected === true;
   if (type === 'water_valve') return state.valveOpen === true;
@@ -177,5 +195,40 @@ function isDeviceAbnormal(type: string, state: Record<string, string | number | 
   if (type === 'fridge') return state.doorOpen === true;
   if (type === 'water_flow_sensor') return Number(state.flowLMin ?? 0) > 6;
   if (type === 'water_leak_sensor') return state.leakDetected === true;
+  if (type === 'router') return state.online !== true;
+  if (type === 'robot_vacuum') return state.status === 'stuck';
+  if (type === 'smoke_sensor') return state.smokeDetected === true;
   return false;
+}
+
+function inferMarkerKind(type: string): DeviceMarkerKind {
+  if (type.includes('sensor')) return 'sensor';
+  if (type.includes('camera') || type.includes('lock')) return 'security';
+  if (type === 'robot_vacuum') return 'mobile';
+  if (['light', 'curtain', 'water_valve', 'sprinkler', 'air_conditioner', 'range_hood'].includes(type)) return 'actuator';
+  return 'appliance';
+}
+
+function inferAnimationHint(type: string): DeviceAnimationHint {
+  if (type === 'light' || type === 'tv' || type === 'stove') return 'glow';
+  if (type === 'curtain') return 'curtain';
+  if (type === 'water_valve' || type === 'robot_vacuum') return 'rotate';
+  if (type === 'washer' || type === 'dishwasher') return 'vibrate';
+  if (type.includes('camera')) return 'scan';
+  if (type === 'air_conditioner' || type === 'range_hood' || type === 'sprinkler') return 'airflow';
+  if (type.includes('sensor')) return 'pulse';
+  return 'none';
+}
+
+function summarizeDeviceState(type: string, state: Record<string, string | number | boolean | null>): string {
+  if (type === 'light') return state.power === 'on' ? `on ${Number(state.brightness ?? 0)}%` : 'off';
+  if (type === 'curtain') return `${Number(state.positionPercent ?? 0)}% open`;
+  if (type === 'water_valve' || type === 'sprinkler') return state.valveOpen === true ? 'open' : 'closed';
+  if (type === 'robot_vacuum') return String(state.status ?? 'idle');
+  if (type === 'washer' || type === 'dishwasher') return String(state.status ?? 'idle');
+  if (type === 'router') return state.online === true ? 'online' : 'offline';
+  if (type === 'fridge') return state.doorOpen === true ? 'door open' : 'closed';
+  if (type === 'door_lock') return state.locked === false ? 'unlocked' : 'locked';
+  if (type.includes('sensor')) return isDeviceActive(type, state) ? 'triggered' : 'idle';
+  return isDeviceActive(type, state) ? 'active' : 'idle';
 }

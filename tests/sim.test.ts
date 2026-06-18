@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createSimulator } from '../src/sim/engine';
 import { getCatalog } from '../src/sim/catalog';
 import { getScenarioIds } from '../src/sim/scenarios';
-import type { AutomationTriggeredEvent, DeviceTelemetryEvent, PersonMovedEvent } from '../src/shared/types';
+import type { AutomationTriggeredEvent, DeviceTelemetryEvent, PersonMovedEvent, RoomId } from '../src/shared/types';
 
 describe('virtual home simulator MVP', () => {
   it('defines the MVP home shape from MVP.md', () => {
@@ -82,6 +82,53 @@ describe('virtual home simulator MVP', () => {
     expect(new Set(petMoves.map((event) => event.to)).size).toBeGreaterThan(1);
     expect(snapshot.people.pet_1.location).not.toBe('away');
     expect(events.some((event) => event.type === 'DeviceStateChanged' && event.deviceType === 'motion_sensor')).toBe(true);
+  });
+
+  it('treats pet movement as low-risk motion without human occupancy', () => {
+    const simulator = createSimulator({ seed: 314 });
+
+    simulator.startScenario('away_day');
+    simulator.advanceMinutes(20);
+    const snapshot = simulator.getSnapshot();
+    const events = simulator.getEvents();
+    const petRoomId = snapshot.people.pet_1.location as RoomId;
+
+    expect(snapshot.homeState.occupancyCount).toBe(0);
+    expect(snapshot.rooms[petRoomId].people).toContain('pet_1');
+    expect(snapshot.rooms[petRoomId].humanOccupancy).toBe(false);
+    expect(snapshot.rooms[petRoomId].motionDetected).toBe(true);
+    expect(events.some((event) => event.type === 'DeviceStateChanged' && event.reason?.includes('pet_motion'))).toBe(true);
+  });
+
+  it('applies remote-work habits to study comfort and network state', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(90);
+    const snapshot = simulator.getSnapshot();
+    const events = simulator.getEvents();
+
+    expect(snapshot.people.adult_2.activity).toBe('remote_work');
+    expect(snapshot.devices.router_01.state.latencyMs).toBeGreaterThan(18);
+    expect(snapshot.devices.study_co2_01.state.co2).toBeGreaterThan(650);
+    expect(snapshot.rooms.study.lightsOn).toBe(true);
+    expect(events.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'remote_work_comfort')).toBe(true);
+  });
+
+  it('raises a senior wellness signal when morning activity does not start', () => {
+    const simulator = createSimulator({ seed: 9 });
+
+    simulator.startScenario('night_water_leak');
+    simulator.advanceMinutes(180);
+    const snapshot = simulator.getSnapshot();
+    const events = simulator.getEvents();
+
+    expect(snapshot.alerts.senior_inactive_001).toMatchObject({
+      severity: 'info',
+      roomId: 'master_bedroom',
+      recommendedAction: 'check_in_with_senior'
+    });
+    expect(events.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'senior_wellness_check')).toBe(true);
   });
 
   it('adds seeded random household events beyond scheduled scenario steps', () => {

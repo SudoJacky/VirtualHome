@@ -11,6 +11,19 @@ export type FixtureKind =
   | 'tub'
   | 'wardrobe';
 
+export type FloorMaterial = 'stone' | 'tile' | 'wood' | 'soft' | 'grass';
+export type OpeningKind = 'door' | 'window';
+export type WallSide = 'north' | 'south' | 'east' | 'west';
+export type DeviceMarkerKind = 'sensor' | 'actuator' | 'appliance' | 'security' | 'mobile';
+export type DeviceAnimationHint = 'airflow' | 'curtain' | 'glow' | 'none' | 'pulse' | 'rotate' | 'scan' | 'vibrate';
+
+export interface RoomOpening {
+  kind: OpeningKind;
+  side: WallSide;
+  offset: number;
+  width: number;
+}
+
 export interface RoomLayout {
   id: RoomId;
   label: string;
@@ -19,6 +32,10 @@ export interface RoomLayout {
   width: number;
   depth: number;
   floorColor: string;
+  floorMaterial: FloorMaterial;
+  wallHeight: number;
+  wallThickness: number;
+  openings: RoomOpening[];
 }
 
 export interface FixtureLayout {
@@ -30,6 +47,7 @@ export interface FixtureLayout {
   width: number;
   depth: number;
   rotation?: number;
+  height?: number;
 }
 
 export interface DevicePoint {
@@ -38,18 +56,49 @@ export interface DevicePoint {
   x: number;
   z: number;
   y?: number;
+  markerKind: DeviceMarkerKind;
+  orientation: number;
+  animationHint: DeviceAnimationHint;
 }
 
 export const roomLayouts: RoomLayout[] = [
-  { id: 'entrance', label: 'Entry', x: -5.3, z: -3.2, width: 1.8, depth: 2.2, floorColor: '#d8cbbb' },
-  { id: 'living_room', label: 'Living Room', x: -1.9, z: -3.2, width: 5, depth: 2.2, floorColor: '#e5d6c4' },
-  { id: 'kitchen', label: 'Kitchen', x: 2.9, z: -3.2, width: 3, depth: 2.2, floorColor: '#dbe4dc' },
-  { id: 'dining_room', label: 'Dining', x: -4.4, z: -0.9, width: 3.6, depth: 2.2, floorColor: '#eadbc5' },
-  { id: 'master_bedroom', label: 'Master', x: -0.4, z: -0.9, width: 3.6, depth: 2.2, floorColor: '#e6d8d0' },
-  { id: 'child_bedroom', label: 'Child Room', x: 2.9, z: -0.9, width: 1.6, depth: 2.2, floorColor: '#d9e2cf' },
-  { id: 'study', label: 'Study', x: 4.6, z: -0.9, width: 1.6, depth: 2.2, floorColor: '#d7ddd1' },
-  { id: 'bathroom', label: 'Bath', x: -5.3, z: 1.55, width: 1.8, depth: 2.3, floorColor: '#d6e5e8' },
-  { id: 'garden', label: 'Garden', x: 0.35, z: 2.4, width: 8.8, depth: 3.95, floorColor: '#cfe1c5' }
+  room('entrance', 'Entry', -5.3, -3.2, 1.8, 2.2, '#d8cbbb', 'stone', [
+    { kind: 'door', side: 'west', offset: 0, width: 0.62 },
+    { kind: 'door', side: 'east', offset: -0.15, width: 0.64 }
+  ]),
+  room('living_room', 'Living Room', -1.9, -3.2, 5, 2.2, '#e5d6c4', 'wood', [
+    { kind: 'door', side: 'west', offset: -0.1, width: 0.72 },
+    { kind: 'window', side: 'south', offset: 1.45, width: 1.12 },
+    { kind: 'door', side: 'north', offset: -1.65, width: 0.72 }
+  ]),
+  room('kitchen', 'Kitchen', 2.9, -3.2, 3, 2.2, '#dbe4dc', 'tile', [
+    { kind: 'door', side: 'west', offset: 0, width: 0.68 },
+    { kind: 'window', side: 'south', offset: 0.75, width: 0.86 }
+  ]),
+  room('dining_room', 'Dining', -4.4, -0.9, 3.6, 2.2, '#eadbc5', 'wood', [
+    { kind: 'door', side: 'north', offset: 0.85, width: 0.74 },
+    { kind: 'door', side: 'east', offset: -0.2, width: 0.68 }
+  ]),
+  room('master_bedroom', 'Master', -0.4, -0.9, 3.6, 2.2, '#e6d8d0', 'soft', [
+    { kind: 'door', side: 'north', offset: -1.05, width: 0.72 },
+    { kind: 'window', side: 'south', offset: 0.8, width: 0.95 }
+  ]),
+  room('child_bedroom', 'Child Room', 2.9, -0.9, 1.6, 2.2, '#d9e2cf', 'soft', [
+    { kind: 'door', side: 'north', offset: -0.2, width: 0.58 },
+    { kind: 'window', side: 'south', offset: 0.2, width: 0.58 }
+  ]),
+  room('study', 'Study', 4.6, -0.9, 1.6, 2.2, '#d7ddd1', 'wood', [
+    { kind: 'door', side: 'north', offset: -0.15, width: 0.58 },
+    { kind: 'window', side: 'east', offset: 0.15, width: 0.72 }
+  ]),
+  room('bathroom', 'Bath', -5.3, 1.55, 1.8, 2.3, '#d6e5e8', 'tile', [
+    { kind: 'door', side: 'north', offset: 0.2, width: 0.58 },
+    { kind: 'window', side: 'west', offset: 0.5, width: 0.5 }
+  ]),
+  room('garden', 'Garden', 0.35, 2.4, 8.8, 3.95, '#cfe1c5', 'grass', [
+    { kind: 'door', side: 'south', offset: -3.7, width: 0.9 },
+    { kind: 'door', side: 'north', offset: -2.8, width: 0.9 }
+  ], 0.24, 0.07)
 ];
 
 export const fixtureLayouts: FixtureLayout[] = [
@@ -72,36 +121,36 @@ export const fixtureLayouts: FixtureLayout[] = [
 ];
 
 export const devicePoints: DevicePoint[] = [
-  { deviceId: 'door_lock_01', roomId: 'entrance', x: -6, z: -3.1 },
-  { deviceId: 'entrance_motion_01', roomId: 'entrance', x: -5, z: -3.85, y: 0.45 },
-  { deviceId: 'doorbell_camera_01', roomId: 'entrance', x: -5.95, z: -2.45, y: 0.5 },
-  { deviceId: 'package_sensor_01', roomId: 'entrance', x: -4.75, z: -2.6 },
-  { deviceId: 'living_light_01', roomId: 'living_room', x: -2, z: -3.25, y: 0.5 },
-  { deviceId: 'tv_01', roomId: 'living_room', x: 0.25, z: -3.9 },
-  { deviceId: 'living_motion_01', roomId: 'living_room', x: -3.65, z: -2.5, y: 0.45 },
-  { deviceId: 'robot_vacuum_01', roomId: 'living_room', x: -0.25, z: -2.55 },
-  { deviceId: 'living_curtain_01', roomId: 'living_room', x: 0.35, z: -3.2, y: 0.55 },
-  { deviceId: 'kitchen_light_01', roomId: 'kitchen', x: 3, z: -3.3, y: 0.5 },
-  { deviceId: 'kitchen_temp_01', roomId: 'kitchen', x: 1.65, z: -3.95, y: 0.45 },
-  { deviceId: 'fridge_01', roomId: 'kitchen', x: 4.05, z: -2.65 },
-  { deviceId: 'stove_01', roomId: 'kitchen', x: 2.3, z: -3.8 },
-  { deviceId: 'range_hood_01', roomId: 'kitchen', x: 2.3, z: -3.95, y: 0.65 },
-  { deviceId: 'pm25_01', roomId: 'kitchen', x: 3.8, z: -3.9, y: 0.45 },
-  { deviceId: 'smoke_01', roomId: 'kitchen', x: 3.15, z: -2.35, y: 0.55 },
-  { deviceId: 'dishwasher_01', roomId: 'kitchen', x: 3.65, z: -3.8 },
-  { deviceId: 'dining_light_01', roomId: 'dining_room', x: -4.4, z: -0.95, y: 0.5 },
-  { deviceId: 'master_sleep_01', roomId: 'master_bedroom', x: -1.05, z: -0.45 },
-  { deviceId: 'master_ac_01', roomId: 'master_bedroom', x: 0.9, z: -0.45, y: 0.5 },
-  { deviceId: 'child_sleep_01', roomId: 'child_bedroom', x: 2.55, z: -0.55 },
-  { deviceId: 'study_co2_01', roomId: 'study', x: 5.1, z: -1.25, y: 0.45 },
-  { deviceId: 'router_01', roomId: 'study', x: 4.25, z: -1.25 },
-  { deviceId: 'bathroom_water_01', roomId: 'bathroom', x: -5.8, z: 2.2 },
-  { deviceId: 'water_leak_01', roomId: 'bathroom', x: -5.25, z: 2.25 },
-  { deviceId: 'water_valve_01', roomId: 'bathroom', x: -4.65, z: 2.25 },
-  { deviceId: 'washer_01', roomId: 'bathroom', x: -4.75, z: 1.1 },
-  { deviceId: 'garden_soil_01', roomId: 'garden', x: 2.1, z: 3.25 },
-  { deviceId: 'garden_camera_01', roomId: 'garden', x: -3.6, z: 1.1, y: 0.5 },
-  { deviceId: 'sprinkler_01', roomId: 'garden', x: 1.5, z: 2.6 }
+  device('door_lock_01', 'entrance', -6, -3.1, 'security', Math.PI / 2, 'pulse'),
+  device('entrance_motion_01', 'entrance', -5, -3.85, 'sensor', 0, 'pulse', 0.45),
+  device('doorbell_camera_01', 'entrance', -5.95, -2.45, 'security', Math.PI / 2, 'scan', 0.5),
+  device('package_sensor_01', 'entrance', -4.75, -2.6, 'sensor', 0, 'pulse'),
+  device('living_light_01', 'living_room', -2, -3.25, 'actuator', 0, 'glow', 0.5),
+  device('tv_01', 'living_room', 0.25, -3.9, 'appliance', Math.PI, 'glow'),
+  device('living_motion_01', 'living_room', -3.65, -2.5, 'sensor', 0, 'pulse', 0.45),
+  device('robot_vacuum_01', 'living_room', -0.25, -2.55, 'mobile', 0, 'rotate'),
+  device('living_curtain_01', 'living_room', 0.35, -3.2, 'actuator', Math.PI, 'curtain', 0.55),
+  device('kitchen_light_01', 'kitchen', 3, -3.3, 'actuator', 0, 'glow', 0.5),
+  device('kitchen_temp_01', 'kitchen', 1.65, -3.95, 'sensor', 0, 'pulse', 0.45),
+  device('fridge_01', 'kitchen', 4.05, -2.65, 'appliance', -Math.PI / 2, 'pulse'),
+  device('stove_01', 'kitchen', 2.3, -3.8, 'appliance', Math.PI, 'glow'),
+  device('range_hood_01', 'kitchen', 2.3, -3.95, 'actuator', Math.PI, 'airflow', 0.65),
+  device('pm25_01', 'kitchen', 3.8, -3.9, 'sensor', 0, 'pulse', 0.45),
+  device('smoke_01', 'kitchen', 3.15, -2.35, 'sensor', 0, 'pulse', 0.55),
+  device('dishwasher_01', 'kitchen', 3.65, -3.8, 'appliance', Math.PI, 'vibrate'),
+  device('dining_light_01', 'dining_room', -4.4, -0.95, 'actuator', 0, 'glow', 0.5),
+  device('master_sleep_01', 'master_bedroom', -1.05, -0.45, 'sensor', 0, 'pulse'),
+  device('master_ac_01', 'master_bedroom', 0.9, -0.45, 'actuator', -Math.PI / 2, 'airflow', 0.5),
+  device('child_sleep_01', 'child_bedroom', 2.55, -0.55, 'sensor', 0, 'pulse'),
+  device('study_co2_01', 'study', 5.1, -1.25, 'sensor', 0, 'pulse', 0.45),
+  device('router_01', 'study', 4.25, -1.25, 'appliance', 0, 'pulse'),
+  device('bathroom_water_01', 'bathroom', -5.8, 2.2, 'sensor', 0, 'pulse'),
+  device('water_leak_01', 'bathroom', -5.25, 2.25, 'sensor', 0, 'pulse'),
+  device('water_valve_01', 'bathroom', -4.65, 2.25, 'actuator', Math.PI / 2, 'rotate'),
+  device('washer_01', 'bathroom', -4.75, 1.1, 'appliance', 0, 'vibrate'),
+  device('garden_soil_01', 'garden', 2.1, 3.25, 'sensor', 0, 'pulse'),
+  device('garden_camera_01', 'garden', -3.6, 1.1, 'security', -Math.PI / 2, 'scan', 0.5),
+  device('sprinkler_01', 'garden', 1.5, 2.6, 'actuator', 0, 'airflow')
 ];
 
 export function getRoomLayout(roomId: RoomId): RoomLayout {
@@ -110,4 +159,33 @@ export function getRoomLayout(roomId: RoomId): RoomLayout {
     throw new Error(`Missing 3D layout for room ${roomId}`);
   }
   return layout;
+}
+
+function room(
+  id: RoomId,
+  label: string,
+  x: number,
+  z: number,
+  width: number,
+  depth: number,
+  floorColor: string,
+  floorMaterial: FloorMaterial,
+  openings: RoomOpening[],
+  wallHeight = 0.42,
+  wallThickness = 0.1
+): RoomLayout {
+  return { id, label, x, z, width, depth, floorColor, floorMaterial, wallHeight, wallThickness, openings };
+}
+
+function device(
+  deviceId: string,
+  roomId: RoomId,
+  x: number,
+  z: number,
+  markerKind: DeviceMarkerKind,
+  orientation: number,
+  animationHint: DeviceAnimationHint,
+  y?: number
+): DevicePoint {
+  return { deviceId, roomId, x, z, y, markerKind, orientation, animationHint };
 }

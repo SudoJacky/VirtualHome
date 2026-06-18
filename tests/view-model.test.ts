@@ -129,7 +129,7 @@ describe('dashboard view model', () => {
     expect(model.controlRecordFilters.devices).toContain('Induction Stove');
     expect(model.controlRecordFilters.people).toContain('Hybrid work adult');
     expect(model.controlRecordFilters.scenarios).toContain('weekday_normal');
-    expect(model.controlRecordFilters.alertSeverities).toEqual(['info']);
+    expect(model.controlRecordFilters.alertSeverities).toEqual(expect.arrayContaining(['info', 'warning']));
     expect(model.controlRecordFilters.timeRange?.from).toMatch(/T/);
     expect(model.controlRecordFilters.timeRange?.to).toMatch(/T/);
 

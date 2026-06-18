@@ -41,8 +41,15 @@ interface RuntimeState {
   elapsedMinutes: number;
   emittedEvents: TwinEvent[];
   executedStepKeys: Set<string>;
+  profileLitRooms: Set<RoomId>;
   triggeredRules: Set<string>;
   random: SeededRandom;
+}
+
+interface BehaviorProfile {
+  role: 'commuter' | 'remote_worker' | 'student' | 'senior' | 'pet';
+  preferredRooms: RoomId[];
+  activeLightLevel: number;
 }
 
 const defaultDeviceState: Record<string, Record<string, string | number | boolean | null>> = {
@@ -73,6 +80,20 @@ const defaultDeviceState: Record<string, Record<string, string | number | boolea
   sprinkler: { valveOpen: false }
 };
 
+const behaviorProfiles: Record<string, BehaviorProfile> = {
+  adult_1: { role: 'commuter', preferredRooms: ['bathroom', 'kitchen', 'entrance', 'living_room'], activeLightLevel: 68 },
+  adult_2: { role: 'remote_worker', preferredRooms: ['study', 'kitchen', 'living_room'], activeLightLevel: 62 },
+  child_1: { role: 'student', preferredRooms: ['child_bedroom', 'kitchen', 'living_room'], activeLightLevel: 70 },
+  senior_1: { role: 'senior', preferredRooms: ['master_bedroom', 'dining_room', 'living_room', 'garden'], activeLightLevel: 74 },
+  pet_1: { role: 'pet', preferredRooms: ['living_room', 'garden', 'kitchen', 'master_bedroom'], activeLightLevel: 0 }
+};
+
+const roomLightDevices: Partial<Record<RoomId, string>> = {
+  dining_room: 'dining_light_01',
+  kitchen: 'kitchen_light_01',
+  living_room: 'living_light_01'
+};
+
 class Simulator implements VirtualHomeSimulator {
   private readonly homeId: string;
   private state: RuntimeState;
@@ -88,6 +109,7 @@ class Simulator implements VirtualHomeSimulator {
       elapsedMinutes: 0,
       emittedEvents: [],
       executedStepKeys: new Set(),
+      profileLitRooms: new Set(),
       triggeredRules: new Set(),
       random
     };
@@ -110,6 +132,7 @@ class Simulator implements VirtualHomeSimulator {
       elapsedMinutes: 0,
       emittedEvents: [],
       executedStepKeys: new Set(),
+      profileLitRooms: new Set(),
       triggeredRules: new Set(),
       random: this.state.random
     };
@@ -181,6 +204,8 @@ class Simulator implements VirtualHomeSimulator {
         id: room.id,
         name: room.name,
         occupancy: false,
+        humanOccupancy: false,
+        motionDetected: false,
         people: [],
         temperatureC: room.id === 'garden' ? 21 : 25,
         humidityPercent: room.id === 'bathroom' ? 65 : 52,
@@ -253,6 +278,8 @@ class Simulator implements VirtualHomeSimulator {
     events.push(...this.movePetAroundHome());
     events.push(...this.advanceApplianceCycles());
     this.rebuildRooms();
+    events.push(...this.applyBehaviorProfileInteractions());
+    this.rebuildRooms();
     events.push(...this.syncMotionSensors());
     events.push(...this.syncSecurityCameras());
     events.push(...this.applyRandomHouseholdEvents());
@@ -306,6 +333,111 @@ class Simulator implements VirtualHomeSimulator {
     return [event];
   }
 
+  private applyBehaviorProfileInteractions(): TwinEvent[] {
+    const events: TwinEvent[] = [];
+    events.push(...this.applyHumanActivityLighting());
+    events.push(...this.applyRemoteWorkComfort());
+    events.push(...this.applySeniorWellnessCheck());
+    return events;
+  }
+
+  private applyHumanActivityLighting(): TwinEvent[] {
+    const events: TwinEvent[] = [];
+    const humanRooms = new Set<RoomId>();
+    for (const person of Object.values(this.state.snapshot.people)) {
+      if (person.kind !== 'human' || person.location === 'away' || person.activity === 'sleeping') {
+        continue;
+      }
+      const profile = behaviorProfiles[person.id];
+      humanRooms.add(person.location);
+      this.state.profileLitRooms.add(person.location);
+
+      const lightDeviceId = roomLightDevices[person.location];
+      const lightDevice = lightDeviceId ? this.state.snapshot.devices[lightDeviceId] : undefined;
+      if (lightDeviceId && lightDevice && lightDevice.state.power !== 'on') {
+        const brightness = profile?.activeLightLevel ?? 64;
+        const event = this.setDeviceStateIfChanged(lightDeviceId, { power: 'on', brightness }, `habit:${person.id}:${person.activity}:lights_on`);
+        if (event) {
+          events.push(event);
+        }
+      }
+    }
+
+    for (const roomId of [...this.state.profileLitRooms]) {
+      if (humanRooms.has(roomId)) {
+        continue;
+      }
+      this.state.profileLitRooms.delete(roomId);
+      const lightDeviceId = roomLightDevices[roomId];
+      const lightDevice = lightDeviceId ? this.state.snapshot.devices[lightDeviceId] : undefined;
+      if (lightDeviceId && lightDevice?.lastReason.startsWith('habit:')) {
+        const event = this.setDeviceStateIfChanged(lightDeviceId, { power: 'off', brightness: 0 }, `habit:${roomId}:vacant_lights_off`);
+        if (event) {
+          events.push(event);
+        }
+      }
+    }
+
+    return events;
+  }
+
+  private applyRemoteWorkComfort(): TwinEvent[] {
+    const worker = this.state.snapshot.people.adult_2;
+    if (!worker || worker.location !== 'study' || worker.activity !== 'remote_work') {
+      return [];
+    }
+
+    this.state.profileLitRooms.add('study');
+    if (this.state.triggeredRules.has('remote_work_comfort')) {
+      return [];
+    }
+
+    this.state.triggeredRules.add('remote_work_comfort');
+    return [
+      this.setDeviceState('study_co2_01', { co2: 680 }, 'habit:adult_2:remote_work:comfort'),
+      this.setDeviceState('router_01', { online: true, latencyMs: 42 }, 'habit:adult_2:remote_work:network_load'),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'remote_work_comfort',
+        explanation: 'Adult 2 is working from the study, so the twin raises study comfort and network context.',
+        actions: ['mark_study_active', 'track_study_co2', 'track_router_load'],
+        reason: 'habit:adult_2:remote_work'
+      })
+    ];
+  }
+
+  private applySeniorWellnessCheck(): TwinEvent[] {
+    const senior = this.state.snapshot.people.senior_1;
+    if (
+      !senior ||
+      this.state.elapsedMinutes < 120 ||
+      this.state.triggeredRules.has('senior_wellness_check') ||
+      senior.location !== 'master_bedroom' ||
+      !['sleeping', 'morning_rest', 'idle'].includes(senior.activity)
+    ) {
+      return [];
+    }
+
+    this.state.triggeredRules.add('senior_wellness_check');
+    return [
+      this.createAlertEvent(
+        'senior_inactive_001',
+        'info',
+        'master_bedroom',
+        'Senior has not started normal morning activity yet',
+        'check_in_with_senior',
+        'habit:senior_1:no_morning_activity'
+      ),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'senior_wellness_check',
+        explanation: 'Senior morning activity has not started within the expected window.',
+        actions: ['raise_wellness_signal', 'prepare_check_in'],
+        reason: 'habit:senior_1:no_morning_activity'
+      })
+    ];
+  }
+
   private syncMotionSensors(): TwinEvent[] {
     const events: TwinEvent[] = [];
     const sensors: Array<{ deviceId: string; roomId: RoomId }> = [
@@ -316,10 +448,10 @@ class Simulator implements VirtualHomeSimulator {
     for (const sensor of sensors) {
       const room = this.state.snapshot.rooms[sensor.roomId];
       const patch = {
-        motion: room.occupancy,
-        confidence: room.occupancy ? 0.84 : 0
+        motion: room.motionDetected,
+        confidence: room.motionDetected ? room.humanOccupancy ? 0.84 : 0.42 : 0
       };
-      const event = this.setDeviceStateIfChanged(sensor.deviceId, patch, `ambient:motion:${sensor.roomId}`);
+      const event = this.setDeviceStateIfChanged(sensor.deviceId, patch, `ambient:motion:${room.humanOccupancy ? 'human' : 'pet_motion'}:${sensor.roomId}`);
       if (event) {
         events.push(event);
       }
@@ -330,19 +462,19 @@ class Simulator implements VirtualHomeSimulator {
 
   private syncSecurityCameras(): TwinEvent[] {
     const events: TwinEvent[] = [];
-    const entranceOccupied = this.state.snapshot.rooms.entrance.occupancy;
-    const gardenOccupied = this.state.snapshot.rooms.garden.occupancy;
+    const entranceRoom = this.state.snapshot.rooms.entrance;
+    const gardenRoom = this.state.snapshot.rooms.garden;
     const doorbellEvent = this.setDeviceStateIfChanged('doorbell_camera_01', {
-      motion: entranceOccupied,
+      motion: entranceRoom.motionDetected,
       ringing: false
-    }, 'ambient:camera:entrance_motion');
+    }, `ambient:camera:${entranceRoom.humanOccupancy ? 'human' : 'pet_motion'}:entrance`);
     if (doorbellEvent) {
       events.push(doorbellEvent);
     }
     const gardenEvent = this.setDeviceStateIfChanged('garden_camera_01', {
-      motion: gardenOccupied,
-      recording: gardenOccupied
-    }, 'ambient:camera:garden_motion');
+      motion: gardenRoom.motionDetected,
+      recording: gardenRoom.motionDetected
+    }, `ambient:camera:${gardenRoom.humanOccupancy ? 'human' : 'pet_motion'}:garden`);
     if (gardenEvent) {
       events.push(gardenEvent);
     }
@@ -638,7 +770,7 @@ class Simulator implements VirtualHomeSimulator {
       const measurements: Record<string, number | boolean> = {};
       if (device.type === 'temperature_humidity_sensor') {
         const room = this.state.snapshot.rooms[device.roomId];
-        const roomOccupied = room.people.length > 0;
+        const roomOccupied = room.humanOccupancy;
         const stoveHeat = device.roomId === 'kitchen' ? Number(this.state.snapshot.devices.stove_01.state.powerW ?? 0) / 9000 : 0;
         const temperatureC = this.round(this.clamp((Number(state.temperatureC) || 25) + this.state.random.range(-0.12, 0.18) + (roomOccupied ? 0.03 : -0.02) + stoveHeat, 17, 31));
         const humidityPercent = this.round(this.clamp((Number(state.humidityPercent) || 55) + this.state.random.range(-0.25, 0.35) + (roomOccupied ? 0.04 : -0.03), 35, 78));
@@ -650,15 +782,18 @@ class Simulator implements VirtualHomeSimulator {
         measurements.humidity_percent = humidityPercent;
       } else if (device.type === 'air_quality_sensor') {
         const cooking = this.state.snapshot.activities.breakfast || this.state.snapshot.activities.cooking_dinner;
-        const occupancy = this.state.snapshot.rooms[device.roomId].people.length;
+        const humanOccupancy = this.state.snapshot.rooms[device.roomId].people
+          .filter((personId) => this.state.snapshot.people[personId]?.kind === 'human')
+          .length;
+        const remoteWorkLoad = device.roomId === 'study' && this.state.snapshot.people.adult_2?.location === 'study' && this.state.snapshot.people.adult_2.activity === 'remote_work' ? 145 : 0;
         const pm25 = this.round(this.clamp((cooking ? 18 : 8) + this.state.random.range(-1, 1), 2, 60));
-        const co2 = this.round(this.clamp((cooking ? 690 : 530) + occupancy * 42 + this.state.random.range(-8, 8), 420, 1200));
+        const co2 = this.round(this.clamp((cooking ? 690 : 530) + humanOccupancy * 42 + remoteWorkLoad + this.state.random.range(-8, 8), 420, 1200));
         state.pm25 = pm25;
         state.co2 = co2;
         measurements.pm25 = pm25;
         measurements.co2 = co2;
       } else if (device.type === 'water_flow_sensor') {
-        const roomOccupied = this.state.snapshot.rooms[device.roomId].occupancy;
+        const roomOccupied = this.state.snapshot.rooms[device.roomId].humanOccupancy;
         const leakActive = this.state.snapshot.devices.water_leak_01.state.leakDetected === true;
         const valveOpen = this.state.snapshot.devices.water_valve_01.state.valveOpen !== false;
         const currentFlow = Number(state.flowLMin) || 0;
@@ -777,6 +912,8 @@ class Simulator implements VirtualHomeSimulator {
       room.people = [];
       room.activeDevices = [];
       room.occupancy = false;
+      room.humanOccupancy = false;
+      room.motionDetected = false;
       room.lightsOn = false;
     }
     for (const person of Object.values(this.state.snapshot.people)) {
@@ -794,7 +931,10 @@ class Simulator implements VirtualHomeSimulator {
       }
     }
     for (const room of Object.values(this.state.snapshot.rooms)) {
-      room.occupancy = room.people.length > 0;
+      room.humanOccupancy = room.people.some((personId) => this.state.snapshot.people[personId]?.kind === 'human');
+      room.motionDetected = room.people.length > 0;
+      room.occupancy = room.humanOccupancy;
+      room.lightsOn ||= this.state.profileLitRooms.has(room.id);
     }
   }
 
