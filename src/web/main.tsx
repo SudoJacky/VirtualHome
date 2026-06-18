@@ -376,7 +376,11 @@ function App(): React.ReactElement {
           </div>
         </section>
 
-        <ControlRecordPanel records={model.controlRecords} filters={model.controlRecordFilters} />
+        <ControlRecordPanel
+          records={model.controlRecords}
+          filters={model.controlRecordFilters}
+          onFocusDevice={(deviceId) => setFloorplanSelection({ type: 'device', id: deviceId })}
+        />
         {sidebarMode === 'debug' ? <RawEventStream events={events} /> : null}
       </section>
     </main>
@@ -474,10 +478,12 @@ function Floorplan2D({
 
 function ControlRecordPanel({
   records,
-  filters
+  filters,
+  onFocusDevice
 }: {
   records: ReturnType<typeof createDashboardModel>['controlRecords'];
   filters: ReturnType<typeof createDashboardModel>['controlRecordFilters'];
+  onFocusDevice: (deviceId: string) => void;
 }): React.ReactElement {
   const [roomFilter, setRoomFilter] = React.useState('all');
   const [ruleFilter, setRuleFilter] = React.useState('all');
@@ -596,7 +602,14 @@ function ControlRecordPanel({
         </div>
         {filteredRecords.slice(0, 10).map((record) => (
           <React.Fragment key={record.id}>
-            <button className="record-row record-button" role="row" onClick={() => setExpandedRecordId(expandedRecordId === record.id ? null : record.id)}>
+            <button
+              className="record-row record-button"
+              role="row"
+              onClick={() => {
+                setExpandedRecordId(expandedRecordId === record.id ? null : record.id);
+                onFocusDevice(record.deviceId);
+              }}
+            >
               <time>{formatTime(record.time)}</time>
               <strong>{record.deviceName}<small>{record.roomName}</small></strong>
               <span>{record.ruleName}</span>
@@ -661,7 +674,8 @@ function SelectionPanel({
         <div className="detail-list">
           <Detail label="Device ID" value={device.id} />
           <Detail label="Room" value={device.roomId.replace('_', ' ')} />
-          <Detail label="Status" value={device.abnormal ? 'Attention needed' : device.active ? 'Active' : 'Idle'} intent={device.abnormal ? 'alert' : 'normal'} />
+          <Detail label="Marker" value={`${device.markerKind} / ${device.animationHint}`} />
+          <Detail label="Status" value={device.abnormal ? `Attention needed: ${device.statusLabel}` : device.active ? `Active: ${device.statusLabel}` : device.statusLabel} intent={device.abnormal ? 'alert' : 'normal'} />
           <Detail label="State" value={summarizeState(snapshotDevice.state)} />
         </div>
       </div>

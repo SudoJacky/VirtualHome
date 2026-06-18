@@ -13,6 +13,7 @@ describe('3D floorplan layout and model', () => {
     expect([...layoutRoomIds].sort()).toEqual(catalog.rooms.map((room) => room.id).sort());
     expect([...pointDeviceIds].sort()).toEqual(catalog.devices.map((device) => device.id).sort());
     expect(roomLayouts.every((room) => room.width > 0 && room.depth > 0)).toBe(true);
+    expect(roomLayouts.every((room) => room.materialKind && room.wallHeight > 0 && room.wallThickness > 0)).toBe(true);
   });
 
   it('maps snapshot people, active devices, and alerts onto stable 3D positions', () => {
@@ -27,5 +28,58 @@ describe('3D floorplan layout and model', () => {
     expect(model.people.every((person) => Number.isFinite(person.x) && Number.isFinite(person.z))).toBe(true);
     expect(model.devices.some((device) => device.id === 'water_leak_01' && device.active && device.abnormal)).toBe(true);
     expect(model.devices.every((device) => Number.isFinite(device.x) && Number.isFinite(device.z))).toBe(true);
+  });
+
+  it('classifies device markers and animation hints for a richer 3D scene', () => {
+    const simulator = createSimulator({ seed: 2026 });
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(360);
+
+    const model = createFloorplan3DModel(simulator.getSnapshot(), simulator.getEvents());
+
+    expect(model.devices.find((device) => device.id === 'package_sensor_01')).toMatchObject({
+      markerKind: 'sensor',
+      animationHint: 'pulse'
+    });
+    const robotVacuum = model.devices.find((device) => device.id === 'robot_vacuum_01');
+    expect(robotVacuum?.markerKind).toBe('mobile');
+    expect(robotVacuum?.animationHint).toBe(robotVacuum?.statusLabel === 'cleaning' ? 'patrol' : 'pulse');
+    expect(model.devices.find((device) => device.id === 'washer_01')).toMatchObject({
+      markerKind: 'appliance',
+      animationHint: 'vibrate'
+    });
+    expect(model.devices.find((device) => device.id === 'doorbell_camera_01')).toMatchObject({
+      markerKind: 'security',
+      animationHint: 'scan'
+    });
+    expect(model.devices.every((device) => device.statusLabel.length > 0)).toBe(true);
+  });
+
+  it('builds automation links for event-driven 3D highlights', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('night_water_leak');
+    simulator.advanceMinutes(10);
+
+    const model = createFloorplan3DModel(simulator.getSnapshot(), simulator.getEvents());
+
+    expect(model.automationLinks[0]).toMatchObject({
+      ruleId: 'close_water_valve_on_leak',
+      roomId: 'bathroom',
+      sourceDeviceId: 'water_leak_01',
+      targetDeviceId: 'water_valve_01',
+      severity: 'critical'
+    });
+  });
+
+  it('keeps recent person movement paths for smooth animation', () => {
+    const simulator = createSimulator({ seed: 314 });
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(14);
+
+    const model = createFloorplan3DModel(simulator.getSnapshot(), simulator.getEvents());
+    const recentPerson = model.people.find((person) => person.recent);
+
+    expect(recentPerson?.movementPath.length).toBeGreaterThanOrEqual(2);
+    expect(recentPerson?.movementPath.every((point) => Number.isFinite(point.x) && Number.isFinite(point.z))).toBe(true);
   });
 });

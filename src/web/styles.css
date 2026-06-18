@@ -373,10 +373,12 @@ button:hover {
 }
 
 .floorplan3d-shell {
-  background: #f6f8f7;
+  background:
+    radial-gradient(circle at 24% 18%, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0) 34%),
+    linear-gradient(145deg, #f6f8f7 0%, #e5eeec 100%);
   border: 1px solid #d3dee0;
   border-radius: 8px;
-  box-shadow: 0 10px 28px rgba(30, 49, 55, 0.08);
+  box-shadow: 0 14px 36px rgba(30, 49, 55, 0.12);
   min-height: 650px;
   overflow: hidden;
   position: relative;
@@ -494,6 +496,30 @@ button:hover {
   color: #40555b;
 }
 
+.room-status-card {
+  align-items: flex-start;
+  background: rgba(255, 255, 255, 0.88);
+  border-color: rgba(54, 74, 78, 0.18);
+  border-radius: 8px;
+  color: #33474d;
+  display: grid;
+  font-size: 10px;
+  font-weight: 700;
+  gap: 2px;
+  line-height: 1.15;
+  min-height: 0;
+  min-width: 94px;
+  padding: 6px 7px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.room-status-card.alert {
+  background: rgba(188, 47, 47, 0.92);
+  border-color: #9f2424;
+  color: #ffffff;
+}
+
 .room-chip.alert,
 .device-label.alert {
   background: #bc2f2f;
@@ -505,6 +531,62 @@ button:hover {
   background: #1f8a64;
   border-color: #17684b;
   color: #ffffff;
+}
+
+.device-label.kind-sensor {
+  background: #2b7c93;
+  border-color: #1f6679;
+}
+
+.device-label.kind-actuator {
+  background: #1f8a64;
+  border-color: #17684b;
+}
+
+.device-label.kind-appliance {
+  background: #5c6f7d;
+  border-color: #465967;
+}
+
+.device-label.kind-security {
+  background: #7e5aa6;
+  border-color: #65448b;
+}
+
+.device-label.kind-lighting {
+  background: #c9962a;
+  border-color: #aa7c1c;
+}
+
+.device-label.kind-climate {
+  background: #2a7ba8;
+  border-color: #1d6288;
+}
+
+.device-label.kind-media {
+  background: #5262a3;
+  border-color: #3e4d86;
+}
+
+.device-label.kind-mobile {
+  background: #386f55;
+  border-color: #285942;
+}
+
+.device-label.kind-network {
+  background: #3763a0;
+  border-color: #294f83;
+}
+
+.device-label.anim-pulse,
+.device-label.anim-scan,
+.device-label.anim-vibrate {
+  animation: deviceLabelPulse 1.6s ease-in-out infinite;
+}
+
+.device-label.anim-glow,
+.device-label.anim-airflow {
+  box-shadow: 0 0 0 4px rgba(201, 150, 42, 0.18), 0 6px 16px rgba(25, 48, 54, 0.12);
 }
 
 .person-label {
@@ -1444,6 +1526,17 @@ button:hover {
 
   50% {
     box-shadow: 0 0 0 7px rgba(31, 138, 100, 0.18);
+  }
+}
+
+@keyframes deviceLabelPulse {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-1px);
   }
 }
 

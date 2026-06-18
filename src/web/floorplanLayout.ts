@@ -19,6 +19,9 @@ export interface RoomLayout {
   width: number;
   depth: number;
   floorColor: string;
+  materialKind: 'wood' | 'tile' | 'carpet' | 'stone' | 'grass';
+  wallHeight: number;
+  wallThickness: number;
 }
 
 export interface FixtureLayout {
@@ -29,6 +32,8 @@ export interface FixtureLayout {
   z: number;
   width: number;
   depth: number;
+  height?: number;
+  materialKind?: 'fabric' | 'wood' | 'ceramic' | 'leaf' | 'metal';
   rotation?: number;
 }
 
@@ -41,15 +46,15 @@ export interface DevicePoint {
 }
 
 export const roomLayouts: RoomLayout[] = [
-  { id: 'entrance', label: 'Entry', x: -5.3, z: -3.2, width: 1.8, depth: 2.2, floorColor: '#d8cbbb' },
-  { id: 'living_room', label: 'Living Room', x: -1.9, z: -3.2, width: 5, depth: 2.2, floorColor: '#e5d6c4' },
-  { id: 'kitchen', label: 'Kitchen', x: 2.9, z: -3.2, width: 3, depth: 2.2, floorColor: '#dbe4dc' },
-  { id: 'dining_room', label: 'Dining', x: -4.4, z: -0.9, width: 3.6, depth: 2.2, floorColor: '#eadbc5' },
-  { id: 'master_bedroom', label: 'Master', x: -0.4, z: -0.9, width: 3.6, depth: 2.2, floorColor: '#e6d8d0' },
-  { id: 'child_bedroom', label: 'Child Room', x: 2.9, z: -0.9, width: 1.6, depth: 2.2, floorColor: '#d9e2cf' },
-  { id: 'study', label: 'Study', x: 4.6, z: -0.9, width: 1.6, depth: 2.2, floorColor: '#d7ddd1' },
-  { id: 'bathroom', label: 'Bath', x: -5.3, z: 1.55, width: 1.8, depth: 2.3, floorColor: '#d6e5e8' },
-  { id: 'garden', label: 'Garden', x: 0.35, z: 2.4, width: 8.8, depth: 3.95, floorColor: '#cfe1c5' }
+  { id: 'entrance', label: 'Entry', x: -5.3, z: -3.2, width: 1.8, depth: 2.2, floorColor: '#d8cbbb', materialKind: 'stone', wallHeight: 0.42, wallThickness: 0.1 },
+  { id: 'living_room', label: 'Living Room', x: -1.9, z: -3.2, width: 5, depth: 2.2, floorColor: '#e5d6c4', materialKind: 'wood', wallHeight: 0.42, wallThickness: 0.1 },
+  { id: 'kitchen', label: 'Kitchen', x: 2.9, z: -3.2, width: 3, depth: 2.2, floorColor: '#dbe4dc', materialKind: 'tile', wallHeight: 0.42, wallThickness: 0.1 },
+  { id: 'dining_room', label: 'Dining', x: -4.4, z: -0.9, width: 3.6, depth: 2.2, floorColor: '#eadbc5', materialKind: 'wood', wallHeight: 0.42, wallThickness: 0.1 },
+  { id: 'master_bedroom', label: 'Master', x: -0.4, z: -0.9, width: 3.6, depth: 2.2, floorColor: '#e6d8d0', materialKind: 'carpet', wallHeight: 0.42, wallThickness: 0.1 },
+  { id: 'child_bedroom', label: 'Child Room', x: 2.9, z: -0.9, width: 1.6, depth: 2.2, floorColor: '#d9e2cf', materialKind: 'carpet', wallHeight: 0.42, wallThickness: 0.1 },
+  { id: 'study', label: 'Study', x: 4.6, z: -0.9, width: 1.6, depth: 2.2, floorColor: '#d7ddd1', materialKind: 'wood', wallHeight: 0.42, wallThickness: 0.1 },
+  { id: 'bathroom', label: 'Bath', x: -5.3, z: 1.55, width: 1.8, depth: 2.3, floorColor: '#d6e5e8', materialKind: 'tile', wallHeight: 0.42, wallThickness: 0.1 },
+  { id: 'garden', label: 'Garden', x: 0.35, z: 2.4, width: 8.8, depth: 3.95, floorColor: '#cfe1c5', materialKind: 'grass', wallHeight: 0.28, wallThickness: 0.08 }
 ];
 
 export const fixtureLayouts: FixtureLayout[] = [
