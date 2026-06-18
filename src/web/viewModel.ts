@@ -226,7 +226,7 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
     occupancyCount: snapshot.homeState.occupancyCount,
     occupiedRooms,
     activeDeviceCount,
-    alerts: Object.values(snapshot.alerts).sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+    alerts: activeAlerts(snapshot).sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
     householdActivity: createHouseholdActivity(snapshot),
     controlRecords,
     controlRecordFilters: createControlRecordFilters(controlRecords),
@@ -372,7 +372,7 @@ function createFloorplanRooms(snapshot: TwinSnapshot, events: TwinEvent[]): Dash
 }
 
 function createHouseholdActivity(snapshot: TwinSnapshot): HouseholdActivity {
-  const activeAlert = Object.values(snapshot.alerts).sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+  const activeAlert = activeAlerts(snapshot).sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
   if (activeAlert) {
     return {
       title: `${formatRoomName(activeAlert.roomId)} ${formatAlertKind(activeAlert.message)} response`,
@@ -416,6 +416,10 @@ function createHouseholdActivity(snapshot: TwinSnapshot): HouseholdActivity {
     participants: [],
     nextAction: 'Watch for arrival or security events'
   };
+}
+
+function activeAlerts(snapshot: TwinSnapshot): AlertState[] {
+  return Object.values(snapshot.alerts).filter((alert) => alert.status === 'active');
 }
 
 function createControlRecords(events: TwinEvent[]): ControlRecord[] {
@@ -566,16 +570,30 @@ function createAlertWorkflows(snapshot: TwinSnapshot, events: TwinEvent[]): Aler
         title: alert.message,
         roomName: formatRoomName(alert.roomId),
         severity: alert.severity,
-        status: responded ? 'Automation responded' : 'Needs attention',
+        status: formatAlertWorkflowStatus(alert, responded),
         steps: [
           'Alert detected',
           responded ? 'Automation response started' : 'Awaiting automation or operator review',
           responded ? `Device action executed: ${action}` : `Recommended action: ${action}`,
           `User notification prepared: ${action}`,
-          'Status: waiting for manual confirmation'
+          formatAlertWorkflowFinalStep(alert)
         ]
       };
     });
+}
+
+function formatAlertWorkflowStatus(alert: AlertState, responded: boolean): string {
+  if (alert.status === 'resolved') return 'Resolved';
+  if (alert.status === 'acknowledged') return 'Acknowledged';
+  if (alert.status === 'ignored') return 'Ignored';
+  return responded ? 'Automation responded' : 'Needs attention';
+}
+
+function formatAlertWorkflowFinalStep(alert: AlertState): string {
+  if (alert.status === 'resolved') return 'Status: resolved';
+  if (alert.status === 'acknowledged') return 'Status: acknowledged';
+  if (alert.status === 'ignored') return 'Status: ignored';
+  return 'Status: waiting for manual confirmation';
 }
 
 function enrichTelemetrySeries(

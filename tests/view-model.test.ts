@@ -132,6 +132,22 @@ describe('dashboard view model', () => {
     expect(model.recentEvents.some((event) => event.label.includes('Home network is offline'))).toBe(true);
   });
 
+  it('keeps resolved alerts out of active alert counts while preserving workflow history', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('fridge_left_open');
+    simulator.resolveAbnormality('fridge_left_open');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const workflow = model.alertWorkflows.find((item) => item.alertId === 'fridge_left_open_001');
+
+    expect(model.alerts.map((alert) => alert.id)).not.toContain('fridge_left_open_001');
+    expect(workflow).toMatchObject({
+      status: 'Resolved'
+    });
+    expect(workflow?.steps.at(-1)).toBe('Status: resolved');
+  });
+
   it('explains pet-driven garden safety automation with readable facts', () => {
     const simulator = createSimulator({ seed: 1 });
     simulator.startScenario('weekday_normal');
