@@ -76,7 +76,5 @@ This repository is still a single-home simulation sandbox. It now exposes protoc
 
 ```bash
 npm ci
-npm test
-npm run typecheck
-npm run build
+npm run verify
 ```
