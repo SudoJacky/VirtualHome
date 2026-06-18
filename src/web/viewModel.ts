@@ -1,6 +1,6 @@
 import { getCatalog } from '../sim/catalog';
 import { getDeviceCapability, getDeviceShortLabel, isDeviceTypeActive } from '../shared/deviceRegistry';
-import type { AlertState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
+import type { AlertLifecycleStatus, AlertState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
 
 export interface DashboardEvent {
   id: string;
@@ -108,6 +108,7 @@ export interface AlertWorkflow {
   title: string;
   roomName: string;
   severity: AlertState['severity'];
+  lifecycleStatus: AlertLifecycleStatus;
   status: string;
   steps: string[];
 }
@@ -419,7 +420,7 @@ function createHouseholdActivity(snapshot: TwinSnapshot): HouseholdActivity {
 }
 
 function activeAlerts(snapshot: TwinSnapshot): AlertState[] {
-  return Object.values(snapshot.alerts).filter((alert) => alert.status === 'active');
+  return Object.values(snapshot.alerts).filter((alert) => getAlertLifecycleStatus(alert) === 'active');
 }
 
 function createControlRecords(events: TwinEvent[]): ControlRecord[] {
@@ -570,6 +571,7 @@ function createAlertWorkflows(snapshot: TwinSnapshot, events: TwinEvent[]): Aler
         title: alert.message,
         roomName: formatRoomName(alert.roomId),
         severity: alert.severity,
+        lifecycleStatus: getAlertLifecycleStatus(alert),
         status: formatAlertWorkflowStatus(alert, responded),
         steps: [
           'Alert detected',
@@ -583,17 +585,23 @@ function createAlertWorkflows(snapshot: TwinSnapshot, events: TwinEvent[]): Aler
 }
 
 function formatAlertWorkflowStatus(alert: AlertState, responded: boolean): string {
-  if (alert.status === 'resolved') return 'Resolved';
-  if (alert.status === 'acknowledged') return 'Acknowledged';
-  if (alert.status === 'ignored') return 'Ignored';
+  const status = getAlertLifecycleStatus(alert);
+  if (status === 'resolved') return 'Resolved';
+  if (status === 'acknowledged') return 'Acknowledged';
+  if (status === 'ignored') return 'Ignored';
   return responded ? 'Automation responded' : 'Needs attention';
 }
 
 function formatAlertWorkflowFinalStep(alert: AlertState): string {
-  if (alert.status === 'resolved') return 'Status: resolved';
-  if (alert.status === 'acknowledged') return 'Status: acknowledged';
-  if (alert.status === 'ignored') return 'Status: ignored';
+  const status = getAlertLifecycleStatus(alert);
+  if (status === 'resolved') return 'Status: resolved';
+  if (status === 'acknowledged') return 'Status: acknowledged';
+  if (status === 'ignored') return 'Status: ignored';
   return 'Status: waiting for manual confirmation';
+}
+
+function getAlertLifecycleStatus(alert: AlertState): AlertLifecycleStatus {
+  return alert.status ?? 'active';
 }
 
 function enrichTelemetrySeries(

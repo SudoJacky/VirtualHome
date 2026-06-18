@@ -4,20 +4,23 @@ import {
   Bell,
   Bug,
   CalendarDays,
+  CheckCircle2,
   Clock,
   Copy,
+  EyeOff,
   FileDown,
   Home,
   Pause,
   Play,
   Radar,
+  RotateCcw,
   Shuffle,
   StepForward,
   Zap
 } from 'lucide-react';
 import type { DeviceState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { Floorplan3D, type FloorplanLayers, type FloorplanSelection } from './Floorplan3D';
-import { ApiClientError, createIdempotencyKey, getJson, postUpdate, type ApiUpdate } from './apiClient';
+import { ApiClientError, createIdempotencyKey, getJson, postAlertStatus, postUpdate, type AlertStatusCommand, type ApiUpdate } from './apiClient';
 import { createFloorplan3DModel, type Floorplan3DDevice, type Floorplan3DRoom } from './floorplan3dModel';
 import { buildTwinSocketUrl, cursorFromSnapshot, cursorFromUpdate, nextReconnectDelayMs, parseTwinSocketMessage, type TwinSocketCursor } from './twinSocket';
 import { createDashboardModel, mergeTwinEvents } from './viewModel';
@@ -162,6 +165,11 @@ function App(): React.ReactElement {
 
   async function resolve(kind: string, idempotencyKey: string): Promise<void> {
     const update = await postUpdate('/api/control/resolve', { kind }, { idempotencyKey });
+    applyUpdate(update);
+  }
+
+  async function setAlertStatus(alertId: string, status: AlertStatusCommand, idempotencyKey: string): Promise<void> {
+    const update = await postAlertStatus(alertId, status, { idempotencyKey });
     applyUpdate(update);
   }
 
@@ -430,6 +438,11 @@ function App(): React.ReactElement {
                 <ol>
                   {workflow.steps.map((step) => <li key={step}>{step}</li>)}
                 </ol>
+                <AlertWorkflowActions
+                  alertId={workflow.alertId}
+                  lifecycleStatus={workflow.lifecycleStatus}
+                  onSetStatus={(status) => void runApiAction(`${formatAlertStatusAction(status)} alert`, (key) => setAlertStatus(workflow.alertId, status, key))}
+                />
               </div>
             ))}
           </div>
@@ -500,6 +513,41 @@ function Metric({ label, value, intent = 'normal' }: { label: string; value: num
       <strong>{value}</strong>
     </div>
   );
+}
+
+function AlertWorkflowActions({
+  alertId,
+  lifecycleStatus,
+  onSetStatus
+}: {
+  alertId: string;
+  lifecycleStatus: string;
+  onSetStatus: (status: AlertStatusCommand) => void;
+}): React.ReactElement {
+  if (lifecycleStatus === 'active') {
+    return (
+      <div className="workflow-actions" aria-label={`Actions for ${alertId}`}>
+        <button title="Confirm alert" onClick={() => onSetStatus('acknowledged')}><CheckCircle2 size={14} /> Confirm</button>
+        <button title="Ignore alert" onClick={() => onSetStatus('ignored')}><EyeOff size={14} /> Ignore</button>
+      </div>
+    );
+  }
+
+  if (lifecycleStatus === 'acknowledged' || lifecycleStatus === 'ignored') {
+    return (
+      <div className="workflow-actions" aria-label={`Actions for ${alertId}`}>
+        <button title="Reopen alert" onClick={() => onSetStatus('active')}><RotateCcw size={14} /> Reopen</button>
+      </div>
+    );
+  }
+
+  return <div className="workflow-actions settled" aria-label={`Actions for ${alertId}`}><span>Lifecycle closed</span></div>;
+}
+
+function formatAlertStatusAction(status: AlertStatusCommand): string {
+  if (status === 'acknowledged') return 'Confirm';
+  if (status === 'ignored') return 'Ignore';
+  return 'Reopen';
 }
 
 const roomOrder: RoomId[] = [

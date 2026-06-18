@@ -1221,6 +1221,26 @@ button:hover {
   padding-left: 18px;
 }
 
+.workflow-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.workflow-actions button {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  min-height: 30px;
+  padding: 6px 10px;
+}
+
+.workflow-actions.settled span {
+  color: #71858a;
+  font-size: 12px;
+}
+
 .decision-row time {
   color: #7b8c91;
   font-size: 11px;

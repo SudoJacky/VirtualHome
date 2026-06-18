@@ -143,9 +143,27 @@ describe('dashboard view model', () => {
 
     expect(model.alerts.map((alert) => alert.id)).not.toContain('fridge_left_open_001');
     expect(workflow).toMatchObject({
+      lifecycleStatus: 'resolved',
       status: 'Resolved'
     });
     expect(workflow?.steps.at(-1)).toBe('Status: resolved');
+  });
+
+  it('treats legacy alerts without lifecycle status as active', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('fridge_left_open');
+    const snapshot = simulator.getSnapshot();
+    delete (snapshot.alerts.fridge_left_open_001 as { status?: string }).status;
+
+    const model = createDashboardModel(snapshot, simulator.getEvents());
+    const workflow = model.alertWorkflows.find((item) => item.alertId === 'fridge_left_open_001');
+
+    expect(model.alerts.map((alert) => alert.id)).toContain('fridge_left_open_001');
+    expect(workflow).toMatchObject({
+      lifecycleStatus: 'active',
+      status: 'Needs attention'
+    });
   });
 
   it('explains pet-driven garden safety automation with readable facts', () => {

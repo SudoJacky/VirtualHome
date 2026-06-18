@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ApiClientError, getJson, postUpdate } from '../src/web/apiClient';
+import { ApiClientError, getJson, postAlertStatus, postUpdate } from '../src/web/apiClient';
 
 describe('web API client', () => {
   it('posts JSON updates through the configured endpoint', async () => {
@@ -30,6 +30,23 @@ describe('web API client', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/control/advance', expect.objectContaining({
       body: JSON.stringify({ minutes: 15, idempotencyKey: 'advance-key' })
     }));
+  });
+
+  it('posts alert lifecycle status changes through the alert endpoint', async () => {
+    const update = { snapshot: { runId: 'run_1' }, events: [] };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(update), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }));
+
+    await expect(postAlertStatus('fridge alert/1', 'acknowledged', { fetcher: fetchMock, idempotencyKey: 'alert-key' })).resolves.toStrictEqual(update);
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/alerts/fridge%20alert%2F1/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'acknowledged', idempotencyKey: 'alert-key' }),
+      signal: expect.any(AbortSignal)
+    });
   });
 
   it('rejects non-2xx responses with a displayable API error', async () => {

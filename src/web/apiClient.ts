@@ -28,6 +28,8 @@ export interface GetJsonOptions {
   timeoutMs?: number;
 }
 
+export type AlertStatusCommand = 'active' | 'acknowledged' | 'ignored';
+
 export function createIdempotencyKey(): string {
   return `cmd_${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
 }
@@ -88,6 +90,14 @@ export async function getJson<T = unknown>(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function postAlertStatus(
+  alertId: string,
+  status: AlertStatusCommand,
+  options: PostUpdateOptions = {}
+): Promise<ApiUpdate> {
+  return postUpdate(`/api/alerts/${encodeURIComponent(alertId)}/status`, { status }, options);
 }
 
 function withIdempotencyKey(payload: unknown, idempotencyKey: string | undefined): unknown {
