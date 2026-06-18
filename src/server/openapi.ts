@@ -111,6 +111,56 @@ const idempotencyConflictSchema: JsonSchema = {
   }
 };
 
+const deviceAccessRecordSchema: JsonSchema = {
+  type: 'object',
+  required: ['deviceId', 'roomId', 'deviceType', 'displayName', 'protocol', 'desiredState', 'reportedState', 'connectivity', 'lastSeenAt', 'dataQuality'],
+  properties: {
+    deviceId: stringSchema,
+    roomId: stringSchema,
+    deviceType: stringSchema,
+    displayName: stringSchema,
+    protocol: { type: 'string', enum: ['simulated'] },
+    desiredState: {
+      anyOf: [
+        { type: 'object', additionalProperties: true },
+        { type: 'null' }
+      ]
+    },
+    reportedState: { type: 'object', additionalProperties: true },
+    connectivity: { type: 'string', enum: ['online', 'offline', 'unknown'] },
+    lastSeenAt: isoDateTimeSchema,
+    dataQuality: {
+      type: 'object',
+      required: ['source', 'confidence', 'freshness'],
+      properties: {
+        source: { type: 'string', enum: ['simulator'] },
+        confidence: { type: 'number', minimum: 0, maximum: 1 },
+        freshness: { type: 'string', enum: ['live', 'stale'] }
+      }
+    },
+    lastCommand: {
+      anyOf: [
+        {
+          type: 'object',
+          required: ['commandId', 'status', 'requestedAt', 'acknowledgedAt', 'reason'],
+          properties: {
+            commandId: stringSchema,
+            status: { type: 'string', enum: ['acknowledged', 'none'] },
+            requestedAt: isoDateTimeSchema,
+            acknowledgedAt: {
+              anyOf: [isoDateTimeSchema, { type: 'null' }]
+            },
+            reason: {
+              anyOf: [stringSchema, { type: 'null' }]
+            }
+          }
+        },
+        { type: 'null' }
+      ]
+    }
+  }
+};
+
 export function buildOpenApiDocument(): Record<string, unknown> {
   return {
     openapi: '3.1.0',
@@ -165,6 +215,16 @@ export function buildOpenApiDocument(): Record<string, unknown> {
             type: 'array',
             items: { $ref: '#/components/schemas/TwinEvent' }
           }, true)
+        }
+      },
+      '/api/device-twins': {
+        get: {
+          summary: 'Get simulated device access records',
+          description: 'Projects devices into a bidirectional adapter-facing view with desired state, reported state, connectivity, freshness, and command acknowledgement metadata.',
+          responses: okResponse({
+            type: 'array',
+            items: { $ref: '#/components/schemas/DeviceAccessRecord' }
+          })
         }
       },
       '/api/scenarios/{id}/start': {
@@ -255,6 +315,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
       schemas: {
         TwinSnapshot: twinSnapshotSchema,
         TwinEvent: twinEventSchema,
+        DeviceAccessRecord: deviceAccessRecordSchema,
         UpdateResponse: updateResponseSchema,
         ValidationError: validationErrorSchema,
         IdempotencyConflict: idempotencyConflictSchema

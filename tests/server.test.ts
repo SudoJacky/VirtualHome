@@ -61,6 +61,7 @@ describe('server API', () => {
       '/api/state',
       '/api/events',
       '/api/telemetry',
+      '/api/device-twins',
       '/api/daily/start',
       '/api/control/advance',
       '/api/control/inject',
@@ -69,6 +70,43 @@ describe('server API', () => {
     ]));
     expect(document.paths['/api/control/advance'].post.requestBody.content['application/json'].schema.properties).toHaveProperty('idempotencyKey');
     expect(document.components.schemas).toHaveProperty('ValidationError');
+
+    await server.close();
+  });
+
+  it('projects devices into a bidirectional access model for adapters', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-device-access-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/inject',
+      payload: { kind: 'network_offline' }
+    });
+    const response = await server.inject({ method: 'GET', url: '/api/device-twins' });
+    const records = response.json();
+    const router = records.find((record: { deviceId: string }) => record.deviceId === 'router_01');
+
+    expect(response.statusCode).toBe(200);
+    expect(records.length).toBeGreaterThan(20);
+    expect(router).toMatchObject({
+      deviceId: 'router_01',
+      protocol: 'simulated',
+      connectivity: 'offline',
+      reportedState: { online: false, latencyMs: 0 },
+      desiredState: { online: false, latencyMs: 0 },
+      dataQuality: { source: 'simulator', confidence: 1 },
+      lastCommand: {
+        status: 'acknowledged',
+        reason: 'abnormality:network_offline'
+      }
+    });
+    expect(typeof router.lastSeenAt).toBe('string');
 
     await server.close();
   });

@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { createSimulator } from '../sim/engine';
 import { getScenarioIds } from '../sim/scenarios';
 import type { StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
+import { createDeviceAccessRecords } from './deviceAccess';
 import { buildOpenApiDocument } from './openapi';
 import { TwinDatabase } from './persistence';
 import { projectEventsForPrivacy, projectSnapshotForPrivacy, type PrivacyMode } from './privacy';
@@ -126,6 +127,11 @@ export function createServer(options: ServerOptions): FastifyInstance {
     }
     const runId = result.data.runId ?? simulator.getSnapshot().runId;
     return db.getRecentTelemetry(result.data.limit, runId);
+  });
+
+  app.get('/api/device-twins', async () => {
+    const snapshot = simulator.getSnapshot();
+    return createDeviceAccessRecords(snapshot, db.getRecentEvents(500, snapshot.runId));
   });
 
   app.post('/api/scenarios/:id/start', async (request, reply) => {
