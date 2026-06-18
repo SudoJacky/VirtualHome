@@ -3,6 +3,7 @@ import { generateDailyScenario, type DailyScenarioOptions } from './dailyPlan';
 import { randomUUID } from 'node:crypto';
 import { SeededRandom } from './random';
 import { getScenario, type ScenarioAction, type ScenarioDefinition } from './scenarios';
+import { validateDeviceStatePatch } from '../shared/deviceRegistry';
 import type {
   AlertCreatedEvent,
   Catalog,
@@ -936,7 +937,14 @@ class Simulator implements VirtualHomeSimulator {
 
   private setDeviceState(deviceId: string, patch: Record<string, string | number | boolean | null>, reason: string): DeviceStateChangedEvent {
     const device = this.state.snapshot.devices[deviceId];
-    device.state = { ...device.state, ...patch };
+    let validPatch: Record<string, string | number | boolean | null>;
+    try {
+      validPatch = validateDeviceStatePatch(device.type, patch);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Invalid state patch for ${deviceId} (${device.type}): ${message}`);
+    }
+    device.state = { ...device.state, ...validPatch };
     device.lastReason = reason;
     return this.createEvent({
       type: 'DeviceStateChanged',

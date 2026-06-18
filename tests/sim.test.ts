@@ -272,6 +272,39 @@ describe('virtual home simulator MVP', () => {
     expect(snapshot.devices.router_01.state.online).toBe(false);
   });
 
+  it('rejects invalid device state fields before they enter the snapshot', () => {
+    const simulator = createSimulator({ seed: 42 });
+    const runtime = simulator as unknown as {
+      state: {
+        activeScenario: {
+          steps: Array<{
+            minute: number;
+            actions: Array<{ kind: 'setDevice'; deviceId: string; state: Record<string, boolean>; reason: string }>;
+          }>;
+        };
+      };
+    };
+
+    simulator.startScenario('weekday_normal');
+    const originalSteps = runtime.state.activeScenario.steps;
+    runtime.state.activeScenario.steps = [{
+        minute: 1,
+        actions: [{
+          kind: 'setDevice',
+          deviceId: 'fridge_01',
+          state: { online: false },
+          reason: 'test:invalid_fridge_state'
+        }]
+      }];
+
+    try {
+      expect(() => simulator.advanceMinutes(1)).toThrow(/fridge_01/);
+      expect(simulator.getSnapshot().devices.fridge_01.state).not.toHaveProperty('online');
+    } finally {
+      runtime.state.activeScenario.steps = originalSteps;
+    }
+  });
+
   it('replays deterministically with the same scenario and random seed', () => {
     const first = createSimulator({ seed: 1234 });
     const second = createSimulator({ seed: 1234 });

@@ -1,4 +1,8 @@
+import { z } from 'zod';
+
 type DeviceStatePayload = Record<string, string | number | boolean | null | undefined>;
+type DeviceStatePatch = Record<string, string | number | boolean | null>;
+type DeviceStateSchema = z.ZodObject<z.ZodRawShape>;
 
 export interface DeviceMetricCapability {
   unit: string;
@@ -9,6 +13,7 @@ export interface DeviceCapability {
   displayName: string;
   shortLabel: string;
   icon: string;
+  stateSchema: DeviceStateSchema;
   telemetry: Record<string, DeviceMetricCapability>;
   supportedCommands: string[];
   isActive: (state: DeviceStatePayload) => boolean;
@@ -17,121 +22,121 @@ export interface DeviceCapability {
 }
 
 export const deviceCapabilities: Record<string, DeviceCapability> = {
-  door_lock: capability('Door Lock', 'Lock', 'lock', { locked: { unit: 'bool' } }, ['lock', 'unlock'], {
+  door_lock: capability('Door Lock', 'Lock', 'lock', schema({ locked: z.boolean() }), { locked: { unit: 'bool' } }, ['lock', 'unlock'], {
     isActive: (state) => state.locked === false,
     isAbnormal: (state) => state.locked === false,
     summarizeState: (state) => state.locked === false ? 'unlocked' : 'locked'
   }),
-  motion_sensor: capability('Motion Sensor', 'Motion', 'activity', { motion: { unit: 'bool' }, confidence: { unit: '%' } }, [], {
+  motion_sensor: capability('Motion Sensor', 'Motion', 'activity', schema({ motion: z.boolean(), confidence: z.number() }), { motion: { unit: 'bool' }, confidence: { unit: '%' } }, [], {
     isActive: (state) => state.motion === true,
     summarizeState: (state) => state.motion === true ? 'triggered' : 'idle'
   }),
-  doorbell_camera: capability('Doorbell Camera', 'Doorbell', 'camera', { motion: { unit: 'bool' }, ringing: { unit: 'bool' }, batteryPercent: { unit: '%' } }, ['ring', 'record'], {
+  doorbell_camera: capability('Doorbell Camera', 'Doorbell', 'camera', schema({ motion: z.boolean(), ringing: z.boolean(), batteryPercent: z.number() }), { motion: { unit: 'bool' }, ringing: { unit: 'bool' }, batteryPercent: { unit: '%' } }, ['ring', 'record'], {
     isActive: (state) => state.motion === true || state.ringing === true,
     summarizeState: (state) => state.ringing === true ? 'ringing' : state.motion === true ? 'motion' : 'idle'
   }),
-  package_sensor: capability('Package Sensor', 'Package', 'package', { packagePresent: { unit: 'bool' }, weightKg: { unit: 'kg' } }, [], {
+  package_sensor: capability('Package Sensor', 'Package', 'package', schema({ packagePresent: z.boolean(), weightKg: z.number() }), { packagePresent: { unit: 'bool' }, weightKg: { unit: 'kg' } }, [], {
     isActive: (state) => state.packagePresent === true,
     summarizeState: (state) => state.packagePresent === true ? `${numberValue(state.weightKg, 0)} kg` : 'empty'
   }),
-  light: capability('Light', 'Light', 'lightbulb', { power: { unit: 'state' }, brightness: { unit: '%' } }, ['turn_on', 'turn_off', 'set_brightness'], {
+  light: capability('Light', 'Light', 'lightbulb', schema({ power: z.enum(['on', 'off']), brightness: z.number() }), { power: { unit: 'state' }, brightness: { unit: '%' } }, ['turn_on', 'turn_off', 'set_brightness'], {
     isActive: (state) => state.power === 'on',
     summarizeState: (state) => state.power === 'on' ? `on ${numberValue(state.brightness, 0)}%` : 'off'
   }),
-  tv: capability('Television', 'TV', 'tv', { power: { unit: 'state' }, volume: { unit: '%' } }, ['turn_on', 'turn_off'], {
+  tv: capability('Television', 'TV', 'tv', schema({ power: z.enum(['on', 'off']), app: z.string().nullable(), volume: z.number() }), { power: { unit: 'state' }, volume: { unit: '%' } }, ['turn_on', 'turn_off'], {
     isActive: (state) => state.power === 'on',
     summarizeState: (state) => state.power === 'on' ? `on ${state.app ?? 'input'}` : 'off'
   }),
-  robot_vacuum: capability('Robot Vacuum', 'Vacuum', 'bot', { status: { unit: 'state' }, batteryPercent: { unit: '%' }, binFull: { unit: 'bool' } }, ['start', 'dock', 'pause'], {
+  robot_vacuum: capability('Robot Vacuum', 'Vacuum', 'bot', schema({ status: z.string(), batteryPercent: z.number(), binFull: z.boolean() }), { status: { unit: 'state' }, batteryPercent: { unit: '%' }, binFull: { unit: 'bool' } }, ['start', 'dock', 'pause'], {
     isActive: (state) => state.status === 'cleaning' || state.status === 'stuck',
     isAbnormal: (state) => state.status === 'stuck',
     summarizeState: (state) => String(state.status ?? 'idle')
   }),
-  curtain: capability('Curtain', 'Curtain', 'panel-top-open', { positionPercent: { unit: '%' } }, ['open', 'close', 'set_position'], {
+  curtain: capability('Curtain', 'Curtain', 'panel-top-open', schema({ positionPercent: z.number() }), { positionPercent: { unit: '%' } }, ['open', 'close', 'set_position'], {
     isActive: (state) => numberValue(state.positionPercent, 0) > 0,
     summarizeState: (state) => `${numberValue(state.positionPercent, 0)}% open`
   }),
-  temperature_humidity_sensor: capability('Climate Sensor', 'Temp', 'thermometer', {
+  temperature_humidity_sensor: capability('Climate Sensor', 'Temp', 'thermometer', schema({ temperatureC: z.number(), humidityPercent: z.number() }), {
     temperatureC: { unit: 'C', normalRange: [18, 28] },
     humidityPercent: { unit: '%', normalRange: [35, 65] }
   }, [], {
     summarizeState: (state) => `${numberValue(state.temperatureC, 0)} C`
   }),
-  fridge: capability('Fridge', 'Fridge', 'refrigerator', { doorOpen: { unit: 'bool' }, powerW: { unit: 'W' } }, [], {
+  fridge: capability('Fridge', 'Fridge', 'refrigerator', schema({ doorOpen: z.boolean(), compressorOn: z.boolean(), powerW: z.number() }), { doorOpen: { unit: 'bool' }, powerW: { unit: 'W' } }, [], {
     isActive: (state) => state.doorOpen === true || numberValue(state.powerW, 0) > 100,
     isAbnormal: (state) => state.doorOpen === true,
     summarizeState: (state) => state.doorOpen === true ? 'door open' : 'closed'
   }),
-  stove: capability('Stove', 'Stove', 'flame', { powerW: { unit: 'W' }, level: { unit: 'level' } }, ['turn_off', 'set_level'], {
+  stove: capability('Stove', 'Stove', 'flame', schema({ powerW: z.number(), level: z.number() }), { powerW: { unit: 'W' }, level: { unit: 'level' } }, ['turn_off', 'set_level'], {
     isActive: (state) => numberValue(state.powerW, 0) > 0,
     isAbnormal: (state) => numberValue(state.powerW, 0) > 700,
     summarizeState: (state) => numberValue(state.powerW, 0) > 0 ? `${numberValue(state.powerW, 0)} W` : 'off'
   }),
-  range_hood: capability('Range Hood', 'Hood', 'fan', { power: { unit: 'state' }, speed: { unit: 'level' } }, ['turn_on', 'turn_off', 'set_speed'], {
+  range_hood: capability('Range Hood', 'Hood', 'fan', schema({ power: z.enum(['on', 'off']), speed: z.number() }), { power: { unit: 'state' }, speed: { unit: 'level' } }, ['turn_on', 'turn_off', 'set_speed'], {
     isActive: (state) => state.power === 'on' || numberValue(state.speed, 0) > 0,
     summarizeState: (state) => state.power === 'on' ? `speed ${numberValue(state.speed, 0)}` : 'off'
   }),
-  air_quality_sensor: capability('Air Quality Sensor', 'Air', 'wind', {
+  air_quality_sensor: capability('Air Quality Sensor', 'Air', 'wind', schema({ pm25: z.number(), co2: z.number() }), {
     pm25: { unit: 'ug/m3', normalRange: [0, 35] },
     co2: { unit: 'ppm', normalRange: [400, 900] }
   }, [], {
     summarizeState: (state) => state.co2 !== undefined ? `${numberValue(state.co2, 0)} ppm` : `${numberValue(state.pm25, 0)} ug/m3`
   }),
-  smoke_sensor: capability('Smoke Sensor', 'Smoke', 'siren', { smokeDetected: { unit: 'bool' }, density: { unit: 'ppm' } }, [], {
+  smoke_sensor: capability('Smoke Sensor', 'Smoke', 'siren', schema({ smokeDetected: z.boolean(), density: z.number() }), { smokeDetected: { unit: 'bool' }, density: { unit: 'ppm' } }, [], {
     isActive: (state) => state.smokeDetected === true || numberValue(state.density, 0) > 0,
     isAbnormal: (state) => state.smokeDetected === true,
     summarizeState: (state) => state.smokeDetected === true ? 'smoke' : 'idle'
   }),
-  dishwasher: capability('Dishwasher', 'Dish', 'square-stack', { status: { unit: 'state' }, remainingMin: { unit: 'min' }, powerW: { unit: 'W' } }, ['start', 'stop'], {
+  dishwasher: capability('Dishwasher', 'Dish', 'square-stack', schema({ status: z.string(), remainingMin: z.number(), powerW: z.number() }), { status: { unit: 'state' }, remainingMin: { unit: 'min' }, powerW: { unit: 'W' } }, ['start', 'stop'], {
     isActive: (state) => state.status === 'running' || state.status === 'done' || numberValue(state.powerW, 0) > 0,
     summarizeState: (state) => String(state.status ?? 'idle')
   }),
-  sleep_sensor: capability('Sleep Sensor', 'Sleep', 'moon', { inBed: { unit: 'bool' }, heartRateSimulated: { unit: 'bpm' } }, [], {
+  sleep_sensor: capability('Sleep Sensor', 'Sleep', 'moon', schema({ inBed: z.boolean(), heartRateSimulated: z.number() }), { inBed: { unit: 'bool' }, heartRateSimulated: { unit: 'bpm' } }, [], {
     isActive: (state) => state.inBed === true,
     summarizeState: (state) => state.inBed === true ? 'in bed' : 'clear'
   }),
-  air_conditioner: capability('Air Conditioner', 'AC', 'snowflake', { power: { unit: 'state' }, targetC: { unit: 'C' }, mode: { unit: 'state' } }, ['turn_on', 'turn_off', 'set_target'], {
+  air_conditioner: capability('Air Conditioner', 'AC', 'snowflake', schema({ power: z.enum(['on', 'off']), targetC: z.number(), mode: z.string() }), { power: { unit: 'state' }, targetC: { unit: 'C' }, mode: { unit: 'state' } }, ['turn_on', 'turn_off', 'set_target'], {
     isActive: (state) => state.power === 'on',
     summarizeState: (state) => state.power === 'on' ? `${numberValue(state.targetC, 0)} C` : 'off'
   }),
-  router: capability('Router', 'Router', 'router', { online: { unit: 'bool' }, latencyMs: { unit: 'ms' } }, ['restart'], {
+  router: capability('Router', 'Router', 'router', schema({ online: z.boolean(), latencyMs: z.number() }), { online: { unit: 'bool' }, latencyMs: { unit: 'ms' } }, ['restart'], {
     isActive: (state) => state.online !== true || numberValue(state.latencyMs, 0) > 100,
     isAbnormal: (state) => state.online !== true,
     summarizeState: (state) => state.online === true ? 'online' : 'offline'
   }),
-  water_flow_sensor: capability('Water Flow Sensor', 'Water', 'droplets', { flowLMin: { unit: 'L/min', normalRange: [0, 6] }, totalL: { unit: 'L' } }, [], {
+  water_flow_sensor: capability('Water Flow Sensor', 'Water', 'droplets', schema({ flowLMin: z.number(), totalL: z.number() }), { flowLMin: { unit: 'L/min', normalRange: [0, 6] }, totalL: { unit: 'L' } }, [], {
     isActive: (state) => numberValue(state.flowLMin, 0) > 0,
     isAbnormal: (state) => numberValue(state.flowLMin, 0) > 6,
     summarizeState: (state) => `${numberValue(state.flowLMin, 0)} L/min`
   }),
-  water_leak_sensor: capability('Leak Sensor', 'Leak', 'badge-alert', { leakDetected: { unit: 'bool' } }, [], {
+  water_leak_sensor: capability('Leak Sensor', 'Leak', 'badge-alert', schema({ leakDetected: z.boolean() }), { leakDetected: { unit: 'bool' } }, [], {
     isActive: (state) => state.leakDetected === true,
     isAbnormal: (state) => state.leakDetected === true,
     summarizeState: (state) => state.leakDetected === true ? 'triggered' : 'idle'
   }),
-  water_valve: capability('Water Valve', 'Valve', 'gauge', { valveOpen: { unit: 'bool' } }, ['open', 'close'], {
+  water_valve: capability('Water Valve', 'Valve', 'gauge', schema({ valveOpen: z.boolean() }), { valveOpen: { unit: 'bool' } }, ['open', 'close'], {
     isActive: (state) => state.valveOpen === true,
     summarizeState: (state) => state.valveOpen === true ? 'open' : 'closed'
   }),
-  washer: capability('Washing Machine', 'Washer', 'washing-machine', { status: { unit: 'state' }, remainingMin: { unit: 'min' }, powerW: { unit: 'W' } }, ['start', 'stop'], {
+  washer: capability('Washing Machine', 'Washer', 'washing-machine', schema({ status: z.string(), remainingMin: z.number(), powerW: z.number() }), { status: { unit: 'state' }, remainingMin: { unit: 'min' }, powerW: { unit: 'W' } }, ['start', 'stop'], {
     isActive: (state) => state.status === 'running' || state.status === 'done' || numberValue(state.powerW, 0) > 0,
     summarizeState: (state) => String(state.status ?? 'idle')
   }),
-  soil_moisture_sensor: capability('Soil Moisture Sensor', 'Soil', 'sprout', { moisturePercent: { unit: '%', normalRange: [30, 65] } }, [], {
+  soil_moisture_sensor: capability('Soil Moisture Sensor', 'Soil', 'sprout', schema({ moisturePercent: z.number() }), { moisturePercent: { unit: '%', normalRange: [30, 65] } }, [], {
     summarizeState: (state) => `${numberValue(state.moisturePercent, 0)}%`
   }),
-  security_camera: capability('Security Camera', 'Camera', 'cctv', { motion: { unit: 'bool' }, recording: { unit: 'bool' } }, ['record'], {
+  security_camera: capability('Security Camera', 'Camera', 'cctv', schema({ motion: z.boolean(), recording: z.boolean() }), { motion: { unit: 'bool' }, recording: { unit: 'bool' } }, ['record'], {
     isActive: (state) => state.motion === true || state.recording === true,
     summarizeState: (state) => state.recording === true ? 'recording' : state.motion === true ? 'motion' : 'idle'
   }),
-  sprinkler: capability('Sprinkler', 'Sprinkler', 'waves', { valveOpen: { unit: 'bool' } }, ['open', 'close'], {
+  sprinkler: capability('Sprinkler', 'Sprinkler', 'waves', schema({ valveOpen: z.boolean() }), { valveOpen: { unit: 'bool' } }, ['open', 'close'], {
     isActive: (state) => state.valveOpen === true,
     summarizeState: (state) => state.valveOpen === true ? 'open' : 'closed'
   })
 };
 
 export function getDeviceCapability(type: string): DeviceCapability {
-  return deviceCapabilities[type] ?? capability(type, type, 'circle-help', {}, [], {});
+  return deviceCapabilities[type] ?? capability(type, type, 'circle-help', schema({}), {}, [], {});
 }
 
 export function getDeviceShortLabel(type: string): string {
@@ -150,10 +155,15 @@ export function summarizeDeviceState(type: string, state: DeviceStatePayload): s
   return getDeviceCapability(type).summarizeState(state);
 }
 
+export function validateDeviceStatePatch(type: string, patch: DeviceStatePayload): DeviceStatePatch {
+  return getDeviceCapability(type).stateSchema.parse(patch) as DeviceStatePatch;
+}
+
 function capability(
   displayName: string,
   shortLabel: string,
   icon: string,
+  stateSchema: DeviceStateSchema,
   telemetry: Record<string, DeviceMetricCapability>,
   supportedCommands: string[],
   overrides: Partial<Pick<DeviceCapability, 'isActive' | 'isAbnormal' | 'summarizeState'>>
@@ -162,12 +172,17 @@ function capability(
     displayName,
     shortLabel,
     icon,
+    stateSchema,
     telemetry,
     supportedCommands,
     isActive: overrides.isActive ?? (() => false),
     isAbnormal: overrides.isAbnormal ?? (() => false),
     summarizeState: overrides.summarizeState ?? ((state) => defaultSummary(displayName, state))
   };
+}
+
+function schema(shape: z.ZodRawShape): DeviceStateSchema {
+  return z.object(shape).partial().strict();
 }
 
 function numberValue(value: DeviceStatePayload[string], fallback: number): number {

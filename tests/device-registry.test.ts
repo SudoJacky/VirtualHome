@@ -12,6 +12,7 @@ describe('device capability registry', () => {
       expect(capability.displayName).not.toBe('');
       expect(capability.shortLabel).not.toBe('');
       expect(capability.icon).not.toBe('');
+      expect(capability.stateSchema.safeParse({}).success).toBe(true);
       expect(capability.supportedCommands).toBeDefined();
       expect(capability.telemetry).toBeDefined();
       expect(typeof capability.isActive).toBe('function');
@@ -26,5 +27,12 @@ describe('device capability registry', () => {
     expect(getDeviceCapability('router').isActive({ online: true, latencyMs: 180 })).toBe(true);
     expect(getDeviceCapability('router').isAbnormal({ online: false })).toBe(true);
     expect(getDeviceCapability('water_leak_sensor').summarizeState({ leakDetected: true })).toBe('triggered');
+  });
+
+  it('validates state shape per device type instead of accepting arbitrary fields', () => {
+    expect(getDeviceCapability('fridge').stateSchema.safeParse({ doorOpen: true, powerW: 120 }).success).toBe(true);
+    expect(getDeviceCapability('fridge').stateSchema.safeParse({ online: false, latencyMs: 0 }).success).toBe(false);
+    expect(getDeviceCapability('router').stateSchema.safeParse({ online: false, latencyMs: 0 }).success).toBe(true);
+    expect(getDeviceCapability('router').stateSchema.safeParse({ doorOpen: true }).success).toBe(false);
   });
 });
