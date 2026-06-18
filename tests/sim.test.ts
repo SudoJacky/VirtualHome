@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { createSimulator } from '../src/sim/engine';
-import { getCatalog } from '../src/sim/catalog';
+import { getCatalog, getHomeDefinition } from '../src/sim/catalog';
 import { getScenarioIds } from '../src/sim/scenarios';
 import type { AlertCreatedEvent, AutomationTriggeredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent, RoomId, RuleRecoveredEvent, TwinSnapshot } from '../src/shared/types';
 
 describe('virtual home simulator MVP', () => {
   it('defines the MVP home shape from MVP.md', () => {
     const catalog = getCatalog();
+    const homeDefinition = getHomeDefinition();
 
+    expect(homeDefinition.building.id).toBe('default_home');
+    expect(homeDefinition.floors[0].rooms).toHaveLength(9);
+    expect(homeDefinition.floors[0].fixtures.devices).toHaveLength(catalog.devices.length);
     expect(catalog.rooms).toHaveLength(9);
     expect(catalog.people.filter((person) => person.kind === 'human')).toHaveLength(4);
     expect(catalog.people.filter((person) => person.kind === 'pet')).toHaveLength(1);

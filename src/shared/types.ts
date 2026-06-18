@@ -43,6 +43,29 @@ export interface Catalog {
   devices: DeviceDefinition[];
 }
 
+export interface HomeDefinition {
+  building: {
+    id: string;
+    name: string;
+  };
+  floors: Array<{
+    id: string;
+    name: string;
+    level: number;
+    rooms: RoomDefinition[];
+    fixtures: {
+      devices: DeviceDefinition[];
+    };
+  }>;
+  topology: {
+    connections: Array<{
+      from: RoomId;
+      to: RoomId;
+    }>;
+  };
+  people: PersonDefinition[];
+}
+
 export interface SimClock {
   currentTime: string;
   speed: number;

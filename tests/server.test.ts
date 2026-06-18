@@ -62,6 +62,7 @@ describe('server API', () => {
       '/api/events',
       '/api/telemetry',
       '/api/device-twins',
+      '/api/home-definition',
       '/api/daily/start',
       '/api/control/advance',
       '/api/control/inject',
@@ -70,6 +71,23 @@ describe('server API', () => {
     ]));
     expect(document.paths['/api/control/advance'].post.requestBody.content['application/json'].schema.properties).toHaveProperty('idempotencyKey');
     expect(document.components.schemas).toHaveProperty('ValidationError');
+
+    await server.close();
+  });
+
+  it('serves the model-driven default home definition', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-home-definition-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    const response = await server.inject({ method: 'GET', url: '/api/home-definition' });
+    const definition = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(definition.building.id).toBe('default_home');
+    expect(definition.floors[0].rooms.map((room: { id: string }) => room.id)).toContain('kitchen');
+    expect(definition.floors[0].fixtures.devices.map((device: { id: string }) => device.id)).toContain('router_01');
+    expect(definition.topology.connections.some((connection: { from: string; to: string }) => connection.from === 'living_room' && connection.to === 'study')).toBe(true);
 
     await server.close();
   });

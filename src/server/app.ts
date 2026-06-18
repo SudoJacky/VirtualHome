@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
+import { getHomeDefinition } from '../sim/catalog';
 import { createSimulator } from '../sim/engine';
 import { getScenarioIds } from '../sim/scenarios';
 import type { StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
@@ -107,6 +108,8 @@ export function createServer(options: ServerOptions): FastifyInstance {
   }
 
   app.get('/api/scenarios', async () => scenarioIds.map((id) => ({ id })));
+
+  app.get('/api/home-definition', async () => getHomeDefinition());
 
   app.get('/api/state', async (request, reply) => {
     const result = privacyQuerySchema.safeParse(request.query);

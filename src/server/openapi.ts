@@ -59,6 +59,68 @@ const twinEventSchema: JsonSchema = {
   additionalProperties: true
 };
 
+const homeDefinitionSchema: JsonSchema = {
+  type: 'object',
+  required: ['building', 'floors', 'topology', 'people'],
+  properties: {
+    building: {
+      type: 'object',
+      required: ['id', 'name'],
+      properties: {
+        id: stringSchema,
+        name: stringSchema
+      }
+    },
+    floors: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['id', 'name', 'level', 'rooms', 'fixtures'],
+        properties: {
+          id: stringSchema,
+          name: stringSchema,
+          level: { type: 'integer' },
+          rooms: {
+            type: 'array',
+            items: { type: 'object', additionalProperties: true }
+          },
+          fixtures: {
+            type: 'object',
+            required: ['devices'],
+            properties: {
+              devices: {
+                type: 'array',
+                items: { type: 'object', additionalProperties: true }
+              }
+            }
+          }
+        }
+      }
+    },
+    topology: {
+      type: 'object',
+      required: ['connections'],
+      properties: {
+        connections: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['from', 'to'],
+            properties: {
+              from: stringSchema,
+              to: stringSchema
+            }
+          }
+        }
+      }
+    },
+    people: {
+      type: 'array',
+      items: { type: 'object', additionalProperties: true }
+    }
+  }
+};
+
 const updateResponseSchema: JsonSchema = {
   type: 'object',
   required: ['snapshot', 'events'],
@@ -238,6 +300,12 @@ export function buildOpenApiDocument(): Record<string, unknown> {
           })
         }
       },
+      '/api/home-definition': {
+        get: {
+          summary: 'Get the default model-driven home definition',
+          responses: okResponse({ $ref: '#/components/schemas/HomeDefinition' })
+        }
+      },
       '/api/state': {
         get: {
           summary: 'Get the current twin state',
@@ -375,6 +443,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
       schemas: {
         TwinSnapshot: twinSnapshotSchema,
         TwinEvent: twinEventSchema,
+        HomeDefinition: homeDefinitionSchema,
         DeviceAccessRecord: deviceAccessRecordSchema,
         TelemetrySummary: telemetrySummarySchema,
         UpdateResponse: updateResponseSchema,
