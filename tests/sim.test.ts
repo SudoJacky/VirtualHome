@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createSimulator } from '../src/sim/engine';
 import { getCatalog } from '../src/sim/catalog';
 import { getScenarioIds } from '../src/sim/scenarios';
-import type { AutomationTriggeredEvent, DeviceTelemetryEvent, PersonMovedEvent, RoomId } from '../src/shared/types';
+import type { AlertCreatedEvent, AutomationTriggeredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent, RoomId } from '../src/shared/types';
 
 describe('virtual home simulator MVP', () => {
   it('defines the MVP home shape from MVP.md', () => {
@@ -229,6 +229,47 @@ describe('virtual home simulator MVP', () => {
     expect(snapshot.alerts.water_leak_001.severity).toBe('high');
     expect(events.some((event) => event.type === 'AlertCreated' && event.alertId === 'water_leak_001')).toBe(true);
     expect(events.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'close_water_valve_on_leak')).toBe(true);
+  });
+
+  it('injects abnormalities as device facts before rules create alerts', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const fridgeEvents = simulator.injectAbnormality('fridge_left_open');
+    const networkEvents = simulator.injectAbnormality('network_offline');
+    const snapshot = simulator.getSnapshot();
+
+    const fridgeFactIndex = fridgeEvents.findIndex((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'fridge_01' &&
+      event.state.doorOpen === true &&
+      event.reason === 'abnormality:fridge_left_open'
+    ));
+    const fridgeAlertIndex = fridgeEvents.findIndex((event): event is AlertCreatedEvent => (
+      event.type === 'AlertCreated' &&
+      event.alertId === 'fridge_left_open_001' &&
+      event.reason === 'rule:fridge_left_open'
+    ));
+    const networkFactIndex = networkEvents.findIndex((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'router_01' &&
+      event.state.online === false &&
+      event.reason === 'abnormality:network_offline'
+    ));
+    const networkAlertIndex = networkEvents.findIndex((event): event is AlertCreatedEvent => (
+      event.type === 'AlertCreated' &&
+      event.alertId === 'network_offline_001' &&
+      event.reason === 'rule:network_offline'
+    ));
+
+    expect(fridgeFactIndex).toBeGreaterThanOrEqual(0);
+    expect(fridgeAlertIndex).toBeGreaterThan(fridgeFactIndex);
+    expect(fridgeEvents.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'fridge_left_open')).toBe(true);
+    expect(networkFactIndex).toBeGreaterThanOrEqual(0);
+    expect(networkAlertIndex).toBeGreaterThan(networkFactIndex);
+    expect(networkEvents.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'network_offline')).toBe(true);
+    expect(snapshot.devices.fridge_01.state.doorOpen).toBe(true);
+    expect(snapshot.devices.router_01.state.online).toBe(false);
   });
 
   it('replays deterministically with the same scenario and random seed', () => {

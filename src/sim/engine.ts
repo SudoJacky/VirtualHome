@@ -218,16 +218,27 @@ class Simulator implements VirtualHomeSimulator {
   }
 
   injectAbnormality(kind: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity'): TwinEvent[] {
-    const alertMap = {
-      door_left_open: ['door_left_open_001', 'warning', 'entrance', 'Front door has remained open', 'check_front_door'],
-      fridge_left_open: ['fridge_left_open_001', 'warning', 'kitchen', 'Fridge door has remained open', 'close_fridge_door'],
-      network_offline: ['network_offline_001', 'warning', 'study', 'Home network is offline', 'restart_router'],
-      senior_no_activity: ['senior_no_activity_001', 'info', 'master_bedroom', 'Senior has no morning activity yet', 'check_in_with_senior']
-    } as const;
-    const [alertId, severity, roomId, message, recommendedAction] = alertMap[kind];
-    const event = this.createAlertEvent(alertId, severity, roomId, message, recommendedAction, `manual_injection:${kind}`);
-    this.state.emittedEvents.push(event);
-    return [event];
+    const events: TwinEvent[] = [];
+    if (kind === 'door_left_open') {
+      events.push(this.setDeviceState('door_lock_01', { locked: false }, 'abnormality:door_left_open'));
+      events.push(this.setDeviceState('doorbell_camera_01', { motion: true, ringing: false }, 'abnormality:door_left_open'));
+    } else if (kind === 'fridge_left_open') {
+      events.push(this.setDeviceState('fridge_01', { doorOpen: true, powerW: 148 }, 'abnormality:fridge_left_open'));
+    } else if (kind === 'network_offline') {
+      events.push(this.setDeviceState('router_01', { online: false, latencyMs: 0 }, 'abnormality:network_offline'));
+    } else if (kind === 'senior_no_activity') {
+      const senior = this.state.snapshot.people.senior_1;
+      const event = this.createPersonMovedEvent('senior_1', senior.location, 'master_bedroom', 'no_activity');
+      senior.location = 'master_bedroom';
+      senior.activity = 'no_activity';
+      events.push(event);
+      events.push(this.setDeviceState('master_sleep_01', { inBed: true, heartRateSimulated: 60 }, 'abnormality:senior_no_activity'));
+    }
+    this.rebuildRooms();
+    this.updateOccupancy();
+    events.push(...this.applyRules());
+    this.state.emittedEvents.push(...events);
+    return events;
   }
 
   private createInitialSnapshot(catalog: Catalog, scenarioId: ScenarioId, startTime: string, mode: HomeMode, speed: number, runContext: RunContext): TwinSnapshot {
@@ -789,6 +800,71 @@ class Simulator implements VirtualHomeSimulator {
         explanation: 'Bathroom leak sensor is active while the home is sleeping.',
         actions: ['close_water_valve', 'raise_high_alert'],
         reason: 'water_leak_sensor:true'
+      }));
+    }
+
+    if (
+      snapshot.devices.fridge_01.state.doorOpen === true &&
+      snapshot.devices.fridge_01.lastReason === 'abnormality:fridge_left_open' &&
+      !this.state.triggeredRules.has('fridge_left_open')
+    ) {
+      this.state.triggeredRules.add('fridge_left_open');
+      events.push(this.createAlertEvent('fridge_left_open_001', 'warning', 'kitchen', 'Fridge door has remained open', 'close_fridge_door', 'rule:fridge_left_open'));
+      events.push(this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'fridge_left_open',
+        explanation: 'The fridge reported doorOpen=true, so the twin raised a kitchen appliance warning.',
+        actions: ['notify_close_fridge_door', 'track_fridge_power'],
+        reason: 'fridge_01.doorOpen:true'
+      }));
+    }
+
+    if (
+      snapshot.devices.router_01.state.online === false &&
+      snapshot.devices.router_01.lastReason === 'abnormality:network_offline' &&
+      !this.state.triggeredRules.has('network_offline')
+    ) {
+      this.state.triggeredRules.add('network_offline');
+      events.push(this.createAlertEvent('network_offline_001', 'warning', 'study', 'Home network is offline', 'restart_router', 'rule:network_offline'));
+      events.push(this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'network_offline',
+        explanation: 'The router reported offline, so the twin prepared a network recovery recommendation.',
+        actions: ['notify_network_offline', 'recommend_router_restart'],
+        reason: 'router_01.online:false'
+      }));
+    }
+
+    if (
+      snapshot.devices.door_lock_01.state.locked === false &&
+      snapshot.devices.doorbell_camera_01.state.motion === true &&
+      snapshot.devices.door_lock_01.lastReason === 'abnormality:door_left_open' &&
+      !this.state.triggeredRules.has('door_left_open')
+    ) {
+      this.state.triggeredRules.add('door_left_open');
+      events.push(this.createAlertEvent('door_left_open_001', 'warning', 'entrance', 'Front door has remained open', 'check_front_door', 'rule:door_left_open'));
+      events.push(this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'door_left_open',
+        explanation: 'The front lock is unlocked while entrance camera motion is active.',
+        actions: ['notify_front_door', 'focus_entrance_camera'],
+        reason: 'door_lock_01.locked:false'
+      }));
+    }
+
+    if (
+      snapshot.people.senior_1?.activity === 'no_activity' &&
+      snapshot.devices.master_sleep_01.state.inBed === true &&
+      !this.state.triggeredRules.has('senior_no_activity')
+    ) {
+      this.state.triggeredRules.add('senior_no_activity');
+      events.push(this.createAlertEvent('senior_no_activity_001', 'info', 'master_bedroom', 'Senior has no morning activity yet', 'check_in_with_senior', 'rule:senior_no_activity'));
+      events.push(this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'senior_no_activity',
+        explanation: 'The senior activity fact remains no_activity while the sleep sensor still reports in bed.',
+        actions: ['prepare_check_in', 'notify_caregiver'],
+        reason: 'senior_1.activity:no_activity'
       }));
     }
 
