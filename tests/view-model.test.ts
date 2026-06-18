@@ -132,6 +132,22 @@ describe('dashboard view model', () => {
     expect(model.recentEvents.some((event) => event.label.includes('Home network is offline'))).toBe(true);
   });
 
+  it('explains pet-driven garden safety automation with readable facts', () => {
+    const simulator = createSimulator({ seed: 1 });
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(258);
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const explanation = model.automationExplanations.find((item) => item.ruleId === 'pet_garden_sprinkler_pause');
+
+    expect(explanation).toMatchObject({
+      ruleName: 'Pet garden sprinkler pause',
+      matchedFacts: ['pet is in the garden sprinkler zone'],
+      actions: ['pause garden sprinkler']
+    });
+    expect(explanation?.decisionChain[0]).toEqual({ label: 'Human activity', value: 'Pet garden activity' });
+  });
+
   it('adds scenario cards and telemetry meaning for demo mode', () => {
     const simulator = createSimulator({ seed: 7 });
     simulator.startScenario('weekday_normal');

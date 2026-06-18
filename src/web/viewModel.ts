@@ -664,7 +664,8 @@ function formatMatchedFact(reason: string): string {
     kitchen_occupied_and_stove_power: 'kitchen is occupied and stove power is high',
     stove_power_without_kitchen_occupancy: 'stove power is high while kitchen is empty',
     'occupancy_count:0': 'human occupancy count is 0',
-    'water_leak_sensor:true': 'water leak sensor is true'
+    'water_leak_sensor:true': 'water leak sensor is true',
+    'habit:pet_1:garden': 'pet is in the garden sprinkler zone'
   };
   return facts[reason] ?? formatReason(reason);
 }
@@ -704,6 +705,7 @@ function inferHumanActivity(ruleId: string): string {
   if (ruleId === 'cooking_ventilation') return 'Cooking in kitchen';
   if (ruleId === 'stove_unattended_safety') return 'Kitchen empty';
   if (ruleId === 'away_mode') return 'Family away';
+  if (ruleId === 'pet_garden_sprinkler_pause') return 'Pet garden activity';
   return 'Household activity';
 }
 
