@@ -129,7 +129,7 @@ describe('dashboard view model', () => {
     expect(model.controlRecordFilters.devices).toContain('Induction Stove');
     expect(model.controlRecordFilters.people).toContain('Hybrid work adult');
     expect(model.controlRecordFilters.scenarios).toContain('weekday_normal');
-    expect(model.controlRecordFilters.alertSeverities).toEqual([]);
+    expect(model.controlRecordFilters.alertSeverities).toEqual(['info']);
     expect(model.controlRecordFilters.timeRange?.from).toMatch(/T/);
     expect(model.controlRecordFilters.timeRange?.to).toMatch(/T/);
 
@@ -141,5 +141,24 @@ describe('dashboard view model', () => {
     expect(pm25?.thresholdStatus).toMatch(/normal|watch|alert/);
     expect(pm25?.insight).toContain('Kitchen PM2.5');
     expect(pm25?.relatedAutomation).toBe('Cooking ventilation');
+  });
+
+  it('surfaces expanded random household devices on the floorplan', () => {
+    const simulator = createSimulator({ seed: 2026 });
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(360);
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+
+    const packageSensor = model.floorplanRooms.entrance.devices.find((device) => device.id === 'package_sensor_01');
+    const robotVacuum = model.floorplanRooms.living_room.devices.find((device) => device.id === 'robot_vacuum_01');
+    const washer = model.floorplanRooms.bathroom.devices.find((device) => device.id === 'washer_01');
+
+    expect(packageSensor?.label).toBe('Package');
+    expect(packageSensor?.active).toBe(true);
+    expect(robotVacuum?.label).toBe('Vacuum');
+    expect(robotVacuum?.active).toBe(true);
+    expect(washer?.label).toBe('Washer');
+    expect(washer?.active).toBe(true);
   });
 });

@@ -48,18 +48,28 @@ interface RuntimeState {
 const defaultDeviceState: Record<string, Record<string, string | number | boolean | null>> = {
   door_lock: { locked: true },
   motion_sensor: { motion: false, confidence: 0 },
+  doorbell_camera: { motion: false, ringing: false, batteryPercent: 96 },
+  package_sensor: { packagePresent: false, weightKg: 0 },
   light: { power: 'off', brightness: 0 },
   tv: { power: 'off', app: null, volume: 0 },
+  robot_vacuum: { status: 'docked', batteryPercent: 100, binFull: false },
+  curtain: { positionPercent: 35 },
   temperature_humidity_sensor: { temperatureC: 25, humidityPercent: 55 },
   fridge: { doorOpen: false, compressorOn: true, powerW: 90 },
   stove: { powerW: 0, level: 0 },
   range_hood: { power: 'off', speed: 0 },
   air_quality_sensor: { pm25: 8, co2: 520 },
+  smoke_sensor: { smokeDetected: false, density: 0 },
+  dishwasher: { status: 'idle', remainingMin: 0, powerW: 0 },
   sleep_sensor: { inBed: true, heartRateSimulated: 62 },
+  air_conditioner: { power: 'off', targetC: 26, mode: 'auto' },
+  router: { online: true, latencyMs: 18 },
   water_flow_sensor: { flowLMin: 0, totalL: 0 },
   water_leak_sensor: { leakDetected: false },
   water_valve: { valveOpen: true },
+  washer: { status: 'idle', remainingMin: 0, powerW: 0 },
   soil_moisture_sensor: { moisturePercent: 38 },
+  security_camera: { motion: false, recording: false },
   sprinkler: { valveOpen: false }
 };
 
@@ -241,9 +251,37 @@ class Simulator implements VirtualHomeSimulator {
   private applyAmbientDynamics(): TwinEvent[] {
     const events: TwinEvent[] = [];
     events.push(...this.movePetAroundHome());
+    events.push(...this.advanceApplianceCycles());
     this.rebuildRooms();
     events.push(...this.syncMotionSensors());
+    events.push(...this.syncSecurityCameras());
+    events.push(...this.applyRandomHouseholdEvents());
     return events;
+  }
+
+  private advanceApplianceCycles(): TwinEvent[] {
+    const events: TwinEvent[] = [];
+    events.push(...this.advanceTimedDevice('dishwasher_01', 'dishwasher_cycle_done', 'Dishwasher cycle completed', 'empty_dishwasher'));
+    events.push(...this.advanceTimedDevice('washer_01', 'washer_cycle_done', 'Washing machine cycle completed', 'move_laundry_to_dryer'));
+    return events;
+  }
+
+  private advanceTimedDevice(deviceId: string, alertId: string, message: string, recommendedAction: string): TwinEvent[] {
+    const device = this.state.snapshot.devices[deviceId];
+    if (!device || device.state.status !== 'running') {
+      return [];
+    }
+
+    const remainingMin = Math.max(0, Number(device.state.remainingMin ?? 0) - 1);
+    if (remainingMin > 0) {
+      const event = this.setDeviceStateIfChanged(deviceId, { remainingMin }, `ambient:${device.type}:countdown`);
+      return event ? [event] : [];
+    }
+
+    return [
+      this.setDeviceState(deviceId, { status: 'done', remainingMin: 0, powerW: 3 }, `ambient:${device.type}:done`),
+      this.createAlertEvent(alertId, 'info', device.roomId, message, recommendedAction, `device:${deviceId}:done`)
+    ];
   }
 
   private movePetAroundHome(): TwinEvent[] {
@@ -288,6 +326,164 @@ class Simulator implements VirtualHomeSimulator {
     }
 
     return events;
+  }
+
+  private syncSecurityCameras(): TwinEvent[] {
+    const events: TwinEvent[] = [];
+    const entranceOccupied = this.state.snapshot.rooms.entrance.occupancy;
+    const gardenOccupied = this.state.snapshot.rooms.garden.occupancy;
+    const doorbellEvent = this.setDeviceStateIfChanged('doorbell_camera_01', {
+      motion: entranceOccupied,
+      ringing: false
+    }, 'ambient:camera:entrance_motion');
+    if (doorbellEvent) {
+      events.push(doorbellEvent);
+    }
+    const gardenEvent = this.setDeviceStateIfChanged('garden_camera_01', {
+      motion: gardenOccupied,
+      recording: gardenOccupied
+    }, 'ambient:camera:garden_motion');
+    if (gardenEvent) {
+      events.push(gardenEvent);
+    }
+    return events;
+  }
+
+  private applyRandomHouseholdEvents(): TwinEvent[] {
+    const events: TwinEvent[] = [];
+    events.push(...this.maybeDeliverPackage());
+    events.push(...this.maybeStartRobotCleaning());
+    events.push(...this.maybeStartDishwasher());
+    events.push(...this.maybeStartWasher());
+    events.push(...this.maybeNetworkJitter());
+    return events;
+  }
+
+  private maybeDeliverPackage(): TwinEvent[] {
+    if (this.state.triggeredRules.has('package_delivery') || this.state.elapsedMinutes < 45 || this.state.elapsedMinutes > 420) {
+      return [];
+    }
+    if (this.state.random.next() >= 0.018) {
+      return [];
+    }
+
+    this.state.triggeredRules.add('package_delivery');
+    return [
+      this.setDeviceState('doorbell_camera_01', { motion: true, ringing: true }, 'random:package_delivery'),
+      this.setDeviceState('package_sensor_01', {
+        packagePresent: true,
+        weightKg: this.round(this.state.random.range(0.4, 3.6))
+      }, 'random:package_delivery'),
+      this.createAlertEvent('package_delivery_001', 'info', 'entrance', 'Package delivered at the front door', 'bring_package_inside', 'random:package_delivery'),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'package_delivery',
+        explanation: 'Doorbell camera and package sensor detected a delivery.',
+        actions: ['ring_doorbell_camera', 'mark_package_present', 'notify_household'],
+        reason: 'random:delivery'
+      })
+    ];
+  }
+
+  private maybeStartRobotCleaning(): TwinEvent[] {
+    const vacuum = this.state.snapshot.devices.robot_vacuum_01;
+    if (this.state.triggeredRules.has('robot_cleaning') || this.state.elapsedMinutes < 90 || this.state.elapsedMinutes > 540 || vacuum.state.status !== 'docked') {
+      return [];
+    }
+    if (this.state.snapshot.homeState.mode === 'sleeping' || this.state.random.next() >= 0.014) {
+      return [];
+    }
+
+    this.state.triggeredRules.add('robot_cleaning');
+    const stuck = this.state.random.next() < 0.22;
+    const events: TwinEvent[] = [
+      this.setDeviceState('robot_vacuum_01', {
+        status: stuck ? 'stuck' : 'cleaning',
+        batteryPercent: stuck ? 78 : 92,
+        binFull: false
+      }, stuck ? 'random:robot_stuck' : 'random:robot_cleaning'),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'robot_cleaning',
+        explanation: stuck ? 'Robot vacuum started but reported it is stuck.' : 'Robot vacuum started a daytime cleaning run.',
+        actions: stuck ? ['pause_robot_vacuum', 'raise_robot_help_alert'] : ['start_robot_vacuum'],
+        reason: stuck ? 'random:robot_stuck' : 'random:cleaning'
+      })
+    ];
+    if (stuck) {
+      events.push(this.createAlertEvent('robot_vacuum_stuck_001', 'warning', 'living_room', 'Robot vacuum needs help in the living room', 'clear_robot_path', 'random:robot_stuck'));
+    }
+    return events;
+  }
+
+  private maybeStartDishwasher(): TwinEvent[] {
+    const dishwasher = this.state.snapshot.devices.dishwasher_01;
+    const dinnerDone = !this.state.snapshot.activities.family_dinner && this.state.elapsedMinutes > 760;
+    const breakfastDone = !this.state.snapshot.activities.breakfast && this.state.elapsedMinutes > 85;
+    if (this.state.triggeredRules.has('dishwasher_cycle') || dishwasher.state.status !== 'idle' || (!breakfastDone && !dinnerDone)) {
+      return [];
+    }
+    if (this.state.random.next() >= 0.02) {
+      return [];
+    }
+
+    this.state.triggeredRules.add('dishwasher_cycle');
+    return [
+      this.setDeviceState('dishwasher_01', { status: 'running', remainingMin: 45, powerW: 620 }, 'random:dishwasher_cycle'),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'dishwasher_cycle',
+        explanation: 'Recent meal activity made the dishwasher likely to run.',
+        actions: ['start_dishwasher_cycle'],
+        reason: 'random:post_meal_cleanup'
+      })
+    ];
+  }
+
+  private maybeStartWasher(): TwinEvent[] {
+    const washer = this.state.snapshot.devices.washer_01;
+    const humansHome = Object.values(this.state.snapshot.people).some((person) => person.kind === 'human' && person.location !== 'away');
+    if (this.state.triggeredRules.has('washer_cycle') || washer.state.status !== 'idle' || !humansHome || this.state.elapsedMinutes < 180 || this.state.elapsedMinutes > 780) {
+      return [];
+    }
+    if (this.state.random.next() >= 0.012) {
+      return [];
+    }
+
+    this.state.triggeredRules.add('washer_cycle');
+    return [
+      this.setDeviceState('washer_01', { status: 'running', remainingMin: 55, powerW: 480 }, 'random:washer_cycle'),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'washer_cycle',
+        explanation: 'Household routine started a washing machine cycle.',
+        actions: ['start_washer_cycle'],
+        reason: 'random:laundry'
+      })
+    ];
+  }
+
+  private maybeNetworkJitter(): TwinEvent[] {
+    const router = this.state.snapshot.devices.router_01;
+    if (this.state.triggeredRules.has('network_jitter') || router.state.online !== true || this.state.elapsedMinutes < 60) {
+      return [];
+    }
+    if (this.state.random.next() >= 0.01) {
+      return [];
+    }
+
+    this.state.triggeredRules.add('network_jitter');
+    return [
+      this.setDeviceState('router_01', { online: true, latencyMs: 145 }, 'random:network_jitter'),
+      this.createAlertEvent('network_jitter_001', 'warning', 'study', 'Home network latency is elevated', 'check_router', 'random:network_jitter'),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'network_jitter',
+        explanation: 'Router telemetry reported elevated latency.',
+        actions: ['notify_network_jitter'],
+        reason: 'random:router_latency'
+      })
+    ];
   }
 
   private applyAction(action: ScenarioAction): TwinEvent[] {
