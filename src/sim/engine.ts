@@ -1,4 +1,4 @@
-import { getCatalog } from './catalog';
+import { createCatalogFromHomeDefinition, getHomeDefinition } from './catalog';
 import { generateDailyScenario, type DailyScenarioOptions } from './dailyPlan';
 import { randomUUID } from 'node:crypto';
 import { SeededRandom } from './random';
@@ -20,12 +20,14 @@ import type {
   RunContext,
   RuleRecoveredEvent,
   TwinEvent,
-  TwinSnapshot
+  TwinSnapshot,
+  HomeDefinition
 } from '../shared/types';
 
 export interface SimulatorOptions {
   seed?: number;
   homeId?: string;
+  homeDefinition?: HomeDefinition;
 }
 
 export interface VirtualHomeSimulator {
@@ -113,13 +115,15 @@ const ruleCooldownMinutes = 5;
 class Simulator implements VirtualHomeSimulator {
   private readonly homeId: string;
   private readonly baseSeed: number;
+  private readonly homeDefinition: HomeDefinition;
   private state: RuntimeState;
 
   constructor(options: SimulatorOptions = {}) {
-    const catalog = getCatalog();
+    this.homeDefinition = structuredClone(options.homeDefinition ?? getHomeDefinition());
+    const catalog = createCatalogFromHomeDefinition(this.homeDefinition);
     this.baseSeed = options.seed ?? 1;
     const random = new SeededRandom(this.baseSeed);
-    this.homeId = options.homeId ?? 'home_001';
+    this.homeId = options.homeId ?? this.homeDefinition.building.id;
     const runContext = this.createRunContext(this.baseSeed, '2026-06-17T00:00:00+08:00', random);
     this.state = {
       catalog,
@@ -145,7 +149,7 @@ class Simulator implements VirtualHomeSimulator {
   }
 
   restore(snapshot: TwinSnapshot, events: TwinEvent[]): void {
-    const catalog = getCatalog();
+    const catalog = createCatalogFromHomeDefinition(this.homeDefinition);
     const activeScenario = getScenarioForSnapshot(snapshot);
     const restoredSnapshot = structuredClone(snapshot);
     const restoredEvents = structuredClone(events);
@@ -174,7 +178,7 @@ class Simulator implements VirtualHomeSimulator {
   }
 
   private startScenarioDefinition(scenario: ScenarioDefinition, eventValue: string, runSeed: number): TwinEvent[] {
-    const catalog = getCatalog();
+    const catalog = createCatalogFromHomeDefinition(this.homeDefinition);
     const random = new SeededRandom(runSeed);
     const runContext = this.createRunContext(runSeed, scenario.startTime, random);
     this.state = {

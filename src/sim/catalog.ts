@@ -7,11 +7,14 @@ export function getHomeDefinition(): HomeDefinition {
   return structuredClone(defaultHomeDefinition);
 }
 
-export function getCatalog(): Catalog {
-  const homeDefinition = getHomeDefinition();
+export function createCatalogFromHomeDefinition(homeDefinition: HomeDefinition): Catalog {
   return {
     rooms: homeDefinition.floors.flatMap((floor) => floor.rooms),
     people: homeDefinition.people,
     devices: homeDefinition.floors.flatMap((floor) => floor.fixtures.devices)
   };
+}
+
+export function getCatalog(): Catalog {
+  return createCatalogFromHomeDefinition(getHomeDefinition());
 }

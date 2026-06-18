@@ -7,8 +7,9 @@ import { z } from 'zod';
 import { getHomeDefinition } from '../sim/catalog';
 import { createSimulator } from '../sim/engine';
 import { getScenarioIds } from '../sim/scenarios';
-import type { StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
+import type { HomeDefinition, StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { createDeviceAccessRecords } from './deviceAccess';
+import { loadHomeDefinitionFromFile } from './homeDefinitionLoader';
 import { buildOpenApiDocument } from './openapi';
 import { TwinDatabase } from './persistence';
 import { projectEventsForPrivacy, projectSnapshotForPrivacy, type PrivacyMode } from './privacy';
@@ -20,6 +21,8 @@ export interface ServerOptions {
   tickMs?: number;
   heartbeatMs?: number;
   snapshotIntervalEvents?: number;
+  homeDefinition?: HomeDefinition;
+  homeDefinitionPath?: string;
 }
 
 const limitQuerySchema = z.object({
@@ -62,7 +65,10 @@ type UpdateResponse = {
 export function createServer(options: ServerOptions): FastifyInstance {
   mkdirSync(path.dirname(options.databasePath), { recursive: true });
   const app = Fastify({ logger: false });
-  const simulator = createSimulator({ seed: 20260617 });
+  const homeDefinition = options.homeDefinition ?? (options.homeDefinitionPath
+    ? loadHomeDefinitionFromFile(options.homeDefinitionPath)
+    : getHomeDefinition());
+  const simulator = createSimulator({ seed: 20260617, homeDefinition });
   const db = new TwinDatabase(options.databasePath, { snapshotIntervalEvents: options.snapshotIntervalEvents });
   const latestSnapshot = db.getLatestSnapshot();
   const restoredFromDatabase = Boolean(latestSnapshot?.runId);
@@ -109,7 +115,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
 
   app.get('/api/scenarios', async () => scenarioIds.map((id) => ({ id })));
 
-  app.get('/api/home-definition', async () => getHomeDefinition());
+  app.get('/api/home-definition', async () => structuredClone(homeDefinition));
 
   app.get('/api/state', async (request, reply) => {
     const result = privacyQuerySchema.safeParse(request.query);

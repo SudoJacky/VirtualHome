@@ -16,6 +16,13 @@ Start the API server:
 npm run server
 ```
 
+To run the server with a different compatible home template in PowerShell:
+
+```powershell
+$env:VIRTUALHOME_HOME_DEFINITION = ".\my-home-definition.json"
+npm run server
+```
+
 Start the web console in another terminal:
 
 ```bash

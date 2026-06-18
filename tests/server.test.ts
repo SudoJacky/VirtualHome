@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { WebSocket } from '@fastify/websocket';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer } from '../src/server/app';
+import { getHomeDefinition } from '../src/sim/catalog';
 
 describe('server API', () => {
   const dirs: string[] = [];
@@ -88,6 +89,37 @@ describe('server API', () => {
     expect(definition.floors[0].rooms.map((room: { id: string }) => room.id)).toContain('kitchen');
     expect(definition.floors[0].fixtures.devices.map((device: { id: string }) => device.id)).toContain('router_01');
     expect(definition.topology.connections.some((connection: { from: string; to: string }) => connection.from === 'living_room' && connection.to === 'study')).toBe(true);
+
+    await server.close();
+  });
+
+  it('loads a configured home definition JSON into the API and simulator state', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-custom-home-definition-'));
+    dirs.push(dir);
+    const homeDefinition = getHomeDefinition();
+    homeDefinition.building.id = 'custom_home';
+    homeDefinition.building.name = 'Custom Loft';
+    homeDefinition.floors[0].rooms = homeDefinition.floors[0].rooms.map((room) => (
+      room.id === 'kitchen' ? { ...room, name: 'Chef Kitchen' } : room
+    ));
+    const homeDefinitionPath = path.join(dir, 'home-definition.json');
+    writeFileSync(homeDefinitionPath, JSON.stringify(homeDefinition), 'utf8');
+    const server = createServer({
+      databasePath: path.join(dir, 'twin.db'),
+      autoTick: false,
+      homeDefinitionPath
+    });
+
+    const definitionResponse = await server.inject({ method: 'GET', url: '/api/home-definition' });
+    const stateResponse = await server.inject({ method: 'GET', url: '/api/state' });
+
+    expect(definitionResponse.statusCode).toBe(200);
+    expect(definitionResponse.json().building).toMatchObject({
+      id: 'custom_home',
+      name: 'Custom Loft'
+    });
+    expect(stateResponse.json().homeId).toBe('custom_home');
+    expect(stateResponse.json().rooms.kitchen.name).toBe('Chef Kitchen');
 
     await server.close();
   });

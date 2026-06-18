@@ -5,6 +5,7 @@ import { createServer } from './app';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const server = createServer({
   databasePath: path.join(root, 'data', 'virtualhome.db'),
+  homeDefinitionPath: process.env.VIRTUALHOME_HOME_DEFINITION,
   autoTick: true,
   tickMs: 1000
 });
