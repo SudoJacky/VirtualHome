@@ -111,6 +111,34 @@ describe('server API', () => {
     await server.close();
   });
 
+  it('summarizes recent telemetry by device and metric', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-telemetry-summary-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 3 }
+    });
+    const response = await server.inject({ method: 'GET', url: '/api/telemetry/summary?limit=200' });
+    const summary = response.json();
+    const kitchenClimate = summary.devices.find((device: { deviceId: string }) => device.deviceId === 'kitchen_temp_01');
+
+    expect(response.statusCode).toBe(200);
+    expect(summary.runId).toBeDefined();
+    expect(summary.window.eventLimit).toBe(200);
+    expect(kitchenClimate.metrics.temperature_c.count).toBeGreaterThan(0);
+    expect(kitchenClimate.metrics.temperature_c.avg).toBeTypeOf('number');
+    expect(kitchenClimate.metrics.temperature_c.min).toBeLessThanOrEqual(kitchenClimate.metrics.temperature_c.max);
+
+    await server.close();
+  });
+
   it('accepts WebSocket clients and sends the current twin snapshot', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-ws-'));
     dirs.push(dir);

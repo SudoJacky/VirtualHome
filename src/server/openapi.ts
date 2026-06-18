@@ -161,6 +161,54 @@ const deviceAccessRecordSchema: JsonSchema = {
   }
 };
 
+const telemetrySummarySchema: JsonSchema = {
+  type: 'object',
+  required: ['runId', 'window', 'devices'],
+  properties: {
+    runId: {
+      anyOf: [stringSchema, { type: 'null' }]
+    },
+    window: {
+      type: 'object',
+      required: ['eventLimit', 'eventCount', 'firstSeenAt', 'lastSeenAt'],
+      properties: {
+        eventLimit: { type: 'integer', minimum: 1 },
+        eventCount: { type: 'integer', minimum: 0 },
+        firstSeenAt: { anyOf: [isoDateTimeSchema, { type: 'null' }] },
+        lastSeenAt: { anyOf: [isoDateTimeSchema, { type: 'null' }] }
+      }
+    },
+    devices: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['deviceId', 'roomId', 'deviceType', 'metrics'],
+        properties: {
+          deviceId: stringSchema,
+          roomId: stringSchema,
+          deviceType: stringSchema,
+          metrics: {
+            type: 'object',
+            additionalProperties: {
+              type: 'object',
+              required: ['count', 'min', 'max', 'avg', 'latest'],
+              properties: {
+                count: { type: 'integer', minimum: 1 },
+                min: { type: 'number' },
+                max: { type: 'number' },
+                avg: { type: 'number' },
+                latest: {
+                  anyOf: [{ type: 'number' }, { type: 'boolean' }]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+};
+
 export function buildOpenApiDocument(): Record<string, unknown> {
   return {
     openapi: '3.1.0',
@@ -215,6 +263,18 @@ export function buildOpenApiDocument(): Record<string, unknown> {
             type: 'array',
             items: { $ref: '#/components/schemas/TwinEvent' }
           }, true)
+        }
+      },
+      '/api/telemetry/summary': {
+        get: {
+          summary: 'Get aggregated telemetry metrics',
+          parameters: [{
+            name: 'limit',
+            in: 'query',
+            required: false,
+            schema: { type: 'integer', minimum: 1, maximum: 1000, default: 500 }
+          }, runIdParameter()],
+          responses: okResponse({ $ref: '#/components/schemas/TelemetrySummary' }, true)
         }
       },
       '/api/device-twins': {
@@ -316,6 +376,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         TwinSnapshot: twinSnapshotSchema,
         TwinEvent: twinEventSchema,
         DeviceAccessRecord: deviceAccessRecordSchema,
+        TelemetrySummary: telemetrySummarySchema,
         UpdateResponse: updateResponseSchema,
         ValidationError: validationErrorSchema,
         IdempotencyConflict: idempotencyConflictSchema

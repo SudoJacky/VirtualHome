@@ -11,6 +11,7 @@ import { createDeviceAccessRecords } from './deviceAccess';
 import { buildOpenApiDocument } from './openapi';
 import { TwinDatabase } from './persistence';
 import { projectEventsForPrivacy, projectSnapshotForPrivacy, type PrivacyMode } from './privacy';
+import { summarizeTelemetry } from './telemetrySummary';
 
 export interface ServerOptions {
   databasePath: string;
@@ -24,6 +25,10 @@ const limitQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(100),
   runId: z.string().min(1).optional(),
   privacy: z.enum(['admin', 'public']).default('admin')
+});
+const telemetrySummaryQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(1000).default(500),
+  runId: z.string().min(1).optional()
 });
 const privacyQuerySchema = z.object({
   privacy: z.enum(['admin', 'public']).default('admin')
@@ -127,6 +132,15 @@ export function createServer(options: ServerOptions): FastifyInstance {
     }
     const runId = result.data.runId ?? simulator.getSnapshot().runId;
     return db.getRecentTelemetry(result.data.limit, runId);
+  });
+
+  app.get('/api/telemetry/summary', async (request, reply) => {
+    const result = telemetrySummaryQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const runId = result.data.runId ?? simulator.getSnapshot().runId;
+    return summarizeTelemetry(db.getRecentTelemetry(result.data.limit, runId), result.data.limit, runId);
   });
 
   app.get('/api/device-twins', async () => {
