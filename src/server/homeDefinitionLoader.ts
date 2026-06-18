@@ -106,6 +106,13 @@ function validateHomeDefinitionReferences(homeDefinition: HomeDefinition): strin
       }
       if (!deviceCapabilities[device.type]) {
         issues.push(`unsupported device type ${device.type} for device ${device.id}`);
+        continue;
+      }
+      const supportedMetrics = supportedMetricNamesForDeviceType(device.type);
+      for (const metric of device.metrics) {
+        if (!supportedMetrics.has(metric)) {
+          issues.push(`device ${device.id} declares unsupported metric ${metric}`);
+        }
       }
     }
   }
@@ -130,4 +137,21 @@ function findDuplicateIds(ids: string[], label: string): string[] {
     seen.add(id);
   }
   return [...duplicates].map((id) => `duplicate ${label} id ${id}`);
+}
+
+function supportedMetricNamesForDeviceType(deviceType: string): Set<string> {
+  const capability = deviceCapabilities[deviceType];
+  const names = new Set<string>();
+  for (const metric of Object.keys(capability.telemetry)) {
+    names.add(metric);
+    names.add(toSnakeCase(metric));
+  }
+  return names;
+}
+
+function toSnakeCase(value: string): string {
+  return value
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase();
 }

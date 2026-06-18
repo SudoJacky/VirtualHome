@@ -30,4 +30,26 @@ describe('home definition loader', () => {
     expect(() => parseHomeDefinition(definition)).toThrow(/duplicate device id door_lock_01/);
     expect(() => parseHomeDefinition(definition)).toThrow(/duplicate person id adult_1/);
   });
+
+  it('rejects device metrics that are not declared by the device capability registry', () => {
+    const definition = getHomeDefinition();
+    const fridge = definition.floors[0].fixtures.devices.find((device) => device.id === 'fridge_01');
+    if (!fridge) {
+      throw new Error('missing fridge fixture');
+    }
+    fridge.metrics = ['door_open', 'not_a_fridge_metric'];
+
+    expect(() => parseHomeDefinition(definition)).toThrow(/device fridge_01 declares unsupported metric not_a_fridge_metric/);
+  });
+
+  it('accepts snake_case aliases for camelCase metrics with acronym boundaries', () => {
+    const definition = getHomeDefinition();
+    const waterFlow = definition.floors[0].fixtures.devices.find((device) => device.id === 'bathroom_water_01');
+    if (!waterFlow) {
+      throw new Error('missing water flow fixture');
+    }
+    waterFlow.metrics = ['flow_l_min'];
+
+    expect(parseHomeDefinition(definition).building.id).toBe('default_home');
+  });
 });
