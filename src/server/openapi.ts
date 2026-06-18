@@ -224,6 +224,21 @@ const idempotencyConflictSchema: JsonSchema = {
   }
 };
 
+const notFoundErrorSchema: JsonSchema = {
+  type: 'object',
+  required: ['error'],
+  properties: {
+    error: {
+      type: 'object',
+      required: ['code', 'message'],
+      properties: {
+        code: { type: 'string', example: 'NOT_FOUND' },
+        message: stringSchema
+      }
+    }
+  }
+};
+
 const accessAuditRecordSchema: JsonSchema = {
   type: 'object',
   required: ['id', 'ts', 'method', 'endpoint', 'privacy', 'runId', 'sequence', 'details'],
@@ -615,6 +630,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         AccessAuditRecord: accessAuditRecordSchema,
         UpdateResponse: updateResponseSchema,
         ValidationError: validationErrorSchema,
+        NotFoundError: notFoundErrorSchema,
         IdempotencyConflict: idempotencyConflictSchema
       }
     }
@@ -644,13 +660,10 @@ function updateResponses(includeNotFound = false): Record<string, unknown> {
     },
     ...(includeNotFound ? {
       '404': {
-        description: 'Unknown scenario',
+        description: 'Resource not found',
         content: {
           'application/json': {
-            schema: {
-              type: 'object',
-              properties: { error: stringSchema }
-            }
+            schema: { $ref: '#/components/schemas/NotFoundError' }
           }
         }
       }

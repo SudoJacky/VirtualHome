@@ -76,6 +76,7 @@ describe('server API', () => {
     ]));
     expect(document.paths['/api/control/advance'].post.requestBody.content['application/json'].schema.properties).toHaveProperty('idempotencyKey');
     expect(document.components.schemas).toHaveProperty('ValidationError');
+    expect(document.components.schemas).toHaveProperty('NotFoundError');
     expect(document.components.schemas).toHaveProperty('DeviceCapability');
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('markerKind');
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('animationHint');
@@ -104,6 +105,8 @@ describe('server API', () => {
       'senior_no_activity'
     ]);
     expect(document.components.schemas.TwinEvent.anyOf).toContainEqual({ $ref: '#/components/schemas/AbnormalityInjectedEvent' });
+    expect(document.paths['/api/alerts/{alertId}/status'].post.responses['404'].content['application/json'].schema)
+      .toEqual({ $ref: '#/components/schemas/NotFoundError' });
 
     await server.close();
   });
