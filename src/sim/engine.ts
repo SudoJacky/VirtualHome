@@ -1,6 +1,7 @@
 import { getCatalog } from './catalog';
+import { generateDailyScenario, type DailyScenarioOptions } from './dailyPlan';
 import { SeededRandom } from './random';
-import { getScenario, type ScenarioAction } from './scenarios';
+import { getScenario, type ScenarioAction, type ScenarioDefinition } from './scenarios';
 import type {
   AlertCreatedEvent,
   Catalog,
@@ -13,6 +14,7 @@ import type {
   RoomId,
   ScenarioControlEvent,
   ScenarioId,
+  StaticScenarioId,
   TwinEvent,
   TwinSnapshot
 } from '../shared/types';
@@ -23,7 +25,8 @@ export interface SimulatorOptions {
 }
 
 export interface VirtualHomeSimulator {
-  startScenario(id: ScenarioId): TwinEvent[];
+  startScenario(id: StaticScenarioId): TwinEvent[];
+  startDailyScenario(options: DailyScenarioOptions): TwinEvent[];
   advanceMinutes(minutes: number): TwinEvent[];
   setPaused(paused: boolean): TwinEvent[];
   getSnapshot(): TwinSnapshot;
@@ -33,6 +36,7 @@ export interface VirtualHomeSimulator {
 
 interface RuntimeState {
   catalog: Catalog;
+  activeScenario: ScenarioDefinition;
   snapshot: TwinSnapshot;
   elapsedMinutes: number;
   emittedEvents: TwinEvent[];
@@ -69,6 +73,7 @@ class Simulator implements VirtualHomeSimulator {
     this.homeId = options.homeId ?? 'home_001';
     this.state = {
       catalog,
+      activeScenario: getScenario('weekday_normal'),
       snapshot: this.createInitialSnapshot(catalog, 'weekday_normal', '2026-06-17T00:00:00+08:00', 'morning', 60),
       elapsedMinutes: 0,
       emittedEvents: [],
@@ -78,11 +83,20 @@ class Simulator implements VirtualHomeSimulator {
     };
   }
 
-  startScenario(id: ScenarioId): TwinEvent[] {
-    const scenario = getScenario(id);
+  startScenario(id: StaticScenarioId): TwinEvent[] {
+    return this.startScenarioDefinition(getScenario(id), id);
+  }
+
+  startDailyScenario(options: DailyScenarioOptions): TwinEvent[] {
+    const scenario = generateDailyScenario(options);
+    return this.startScenarioDefinition(scenario, options.date);
+  }
+
+  private startScenarioDefinition(scenario: ScenarioDefinition, eventValue: string): TwinEvent[] {
     this.state = {
       catalog: getCatalog(),
-      snapshot: this.createInitialSnapshot(getCatalog(), id, scenario.startTime, scenario.initialMode, scenario.speed),
+      activeScenario: scenario,
+      snapshot: this.createInitialSnapshot(getCatalog(), scenario.id, scenario.startTime, scenario.initialMode, scenario.speed),
       elapsedMinutes: 0,
       emittedEvents: [],
       executedStepKeys: new Set(),
@@ -96,7 +110,7 @@ class Simulator implements VirtualHomeSimulator {
     }
     this.rebuildRooms();
     this.updateOccupancy();
-    return [this.createScenarioEvent('start', id)];
+    return [this.createScenarioEvent('start', eventValue)];
   }
 
   advanceMinutes(minutes: number): TwinEvent[] {
@@ -210,7 +224,7 @@ class Simulator implements VirtualHomeSimulator {
   }
 
   private runDueScenarioSteps(): TwinEvent[] {
-    const scenario = getScenario(this.state.snapshot.scenarioId as ScenarioId);
+    const scenario = this.state.activeScenario;
     const events: TwinEvent[] = [];
     for (const step of scenario.steps) {
       const key = `${scenario.id}:${step.minute}`;
@@ -597,7 +611,7 @@ class Simulator implements VirtualHomeSimulator {
   private advanceClockOneMinute(): void {
     const current = new Date(this.state.snapshot.simClock.currentTime);
     current.setMinutes(current.getMinutes() + 1);
-    this.state.snapshot.simClock.currentTime = current.toISOString().replace('.000Z', '+00:00');
+    this.state.snapshot.simClock.currentTime = formatShanghaiTime(current);
   }
 
   private round(value: number): number {
@@ -611,4 +625,18 @@ class Simulator implements VirtualHomeSimulator {
 
 export function createSimulator(options?: SimulatorOptions): VirtualHomeSimulator {
   return new Simulator(options);
+}
+
+function formatShanghaiTime(value: Date): string {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).formatToParts(value).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}+08:00`;
 }

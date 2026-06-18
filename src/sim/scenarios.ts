@@ -1,4 +1,4 @@
-import type { RoomId, ScenarioId } from '../shared/types';
+import type { RoomId, ScenarioId, StaticScenarioId } from '../shared/types';
 
 export type ScenarioAction =
   | { kind: 'movePerson'; personId: string; to: RoomId | 'away'; activity: string }
@@ -20,10 +20,17 @@ export interface ScenarioDefinition {
   speed: number;
   initialMode: 'morning' | 'away' | 'evening_home' | 'sleeping' | 'alert';
   initialPeople: Record<string, { location: RoomId | 'away'; activity: string }>;
+  calendar?: {
+    date: string;
+    dayType: 'weekday' | 'weekend';
+    season: 'spring' | 'summer' | 'autumn' | 'winter';
+    month: number;
+    dayOfWeek: number;
+  };
   steps: ScenarioStep[];
 }
 
-export const scenarios: Record<ScenarioId, ScenarioDefinition> = {
+export const scenarios: Record<StaticScenarioId, ScenarioDefinition> = {
   weekday_normal: {
     id: 'weekday_normal',
     name: '普通工作日',
@@ -235,10 +242,10 @@ export const scenarios: Record<ScenarioId, ScenarioDefinition> = {
   }
 };
 
-export function getScenarioIds(): ScenarioId[] {
+export function getScenarioIds(): StaticScenarioId[] {
   return ['weekday_normal', 'away_day', 'night_water_leak'];
 }
 
-export function getScenario(id: ScenarioId): ScenarioDefinition {
+export function getScenario(id: StaticScenarioId): ScenarioDefinition {
   return scenarios[id];
 }

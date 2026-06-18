@@ -4,7 +4,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { createSimulator } from '../sim/engine';
 import { getScenarioIds } from '../sim/scenarios';
-import type { ScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
+import type { StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { TwinDatabase } from './persistence';
 
 export interface ServerOptions {
@@ -19,6 +19,11 @@ interface AdvancePayload {
 
 interface InjectPayload {
   kind?: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity';
+}
+
+interface DailyStartPayload {
+  date?: string;
+  seed?: number;
 }
 
 export function createServer(options: ServerOptions): FastifyInstance {
@@ -58,11 +63,23 @@ export function createServer(options: ServerOptions): FastifyInstance {
   });
 
   app.post('/api/scenarios/:id/start', async (request, reply) => {
-    const params = request.params as { id: ScenarioId };
+    const params = request.params as { id: StaticScenarioId };
     if (!scenarioIds.includes(params.id)) {
       return reply.status(404).send({ error: 'Unknown scenario' });
     }
     const events = simulator.startScenario(params.id);
+    const snapshot = recordAndBroadcast(events);
+    return { snapshot, events };
+  });
+
+  app.post('/api/daily/start', async (request, reply) => {
+    const payload = request.body as DailyStartPayload;
+    const date = payload.date ?? todayInShanghai();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return reply.status(400).send({ error: 'Date must use YYYY-MM-DD' });
+    }
+    const seed = payload.seed === undefined ? undefined : Number(payload.seed);
+    const events = simulator.startDailyScenario({ date, seed: Number.isFinite(seed) ? seed : undefined });
     const snapshot = recordAndBroadcast(events);
     return { snapshot, events };
   });
@@ -106,7 +123,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
   });
 
   app.addHook('onReady', async () => {
-    recordAndBroadcast(simulator.startScenario('weekday_normal'));
+    recordAndBroadcast(simulator.startDailyScenario({ date: todayInShanghai(), seed: 20260617 }));
     if (options.autoTick !== false) {
       tickHandle = setInterval(() => {
         const events = simulator.advanceMinutes(1);
@@ -125,4 +142,13 @@ export function createServer(options: ServerOptions): FastifyInstance {
   });
 
   return app;
+}
+
+function todayInShanghai(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
 }

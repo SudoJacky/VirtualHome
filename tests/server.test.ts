@@ -73,4 +73,31 @@ describe('server API', () => {
 
     await server.close();
   });
+
+  it('starts a generated daily routine through date and seed controls', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-daily-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    const start = await server.inject({
+      method: 'POST',
+      url: '/api/daily/start',
+      payload: { date: '2026-07-18', seed: 42 }
+    });
+
+    expect(start.statusCode).toBe(200);
+    expect(start.json().snapshot.scenarioId).toBe('daily_2026_07_18');
+    expect(start.json().events[0].type).toBe('ScenarioControl');
+
+    const advance = await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 600 }
+    });
+    const events = advance.json().events as Array<{ type: string; activity?: string }>;
+    expect(events.some((event) => event.type === 'PersonMoved' && event.activity === 'weekend_cleaning')).toBe(true);
+    expect(events.some((event) => event.type === 'PersonMoved' && event.activity === 'school')).toBe(false);
+
+    await server.close();
+  });
 });

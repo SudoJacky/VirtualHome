@@ -30,6 +30,22 @@ button {
   padding: 8px 10px;
 }
 
+.control-input {
+  background: #ffffff;
+  border: 1px solid #cfd8dc;
+  border-radius: 6px;
+  color: #17202a;
+  font: inherit;
+  min-height: 38px;
+  padding: 8px 10px;
+  width: 100%;
+}
+
+.control-input:focus {
+  border-color: #86b9aa;
+  outline: 2px solid rgba(134, 185, 170, 0.32);
+}
+
 button:hover {
   background: #edf7f4;
   border-color: #86b9aa;
@@ -79,6 +95,18 @@ button:hover {
   gap: 8px;
 }
 
+.field-label {
+  color: #b5c6ca;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.seed-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 40px;
+}
+
 .control-group h2,
 .panel h2 {
   font-size: 14px;
@@ -88,6 +116,13 @@ button:hover {
 .control-group button {
   justify-content: flex-start;
   width: 100%;
+}
+
+.control-group .sidebar-icon-button {
+  justify-content: center;
+  min-height: 38px;
+  padding: 8px;
+  width: 40px;
 }
 
 .workspace {

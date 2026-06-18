@@ -1,6 +1,6 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { AlertTriangle, Bell, Clock, Home, Pause, Play, Radar, StepForward, Zap } from 'lucide-react';
+import { Bell, CalendarDays, Clock, Home, Pause, Radar, Shuffle, StepForward, Zap } from 'lucide-react';
 import type { DeviceState, TwinEvent, TwinSnapshot } from '../shared/types';
 import { Floorplan3D, type FloorplanLayers, type FloorplanSelection } from './Floorplan3D';
 import { createFloorplan3DModel, type Floorplan3DDevice, type Floorplan3DRoom } from './floorplan3dModel';
@@ -15,6 +15,8 @@ interface ApiUpdate {
 function App(): React.ReactElement {
   const [snapshot, setSnapshot] = React.useState<TwinSnapshot | null>(null);
   const [events, setEvents] = React.useState<TwinEvent[]>([]);
+  const [dailyDate, setDailyDate] = React.useState(() => todayInShanghai());
+  const [dailySeed, setDailySeed] = React.useState(20260617);
   const [floorplanLayers, setFloorplanLayers] = React.useState<FloorplanLayers>({
     people: true,
     devices: true,
@@ -36,8 +38,8 @@ function App(): React.ReactElement {
     return () => ws.close();
   }, []);
 
-  async function startScenario(id: string): Promise<void> {
-    const update = await postUpdate(`/api/scenarios/${id}/start`, {});
+  async function startDailySimulation(): Promise<void> {
+    const update = await postUpdate('/api/daily/start', { date: dailyDate, seed: dailySeed });
     applyUpdate(update);
   }
 
@@ -90,10 +92,30 @@ function App(): React.ReactElement {
         </div>
 
         <section className="control-group">
-          <h2>Scenarios</h2>
-          <button onClick={() => startScenario('weekday_normal')}><Play size={16} /> Weekday</button>
-          <button onClick={() => startScenario('away_day')}><Home size={16} /> Away</button>
-          <button onClick={() => startScenario('night_water_leak')}><AlertTriangle size={16} /> Leak</button>
+          <h2>Daily Simulation</h2>
+          <label className="field-label" htmlFor="daily-date">Date</label>
+          <input
+            id="daily-date"
+            className="control-input"
+            type="date"
+            value={dailyDate}
+            onChange={(event) => setDailyDate(event.target.value)}
+          />
+          <label className="field-label" htmlFor="daily-seed">Seed</label>
+          <div className="seed-row">
+            <input
+              id="daily-seed"
+              className="control-input"
+              inputMode="numeric"
+              type="number"
+              value={dailySeed}
+              onChange={(event) => setDailySeed(Number(event.target.value || 0))}
+            />
+            <button className="icon-button sidebar-icon-button" title="Random seed" onClick={() => setDailySeed(Math.floor(Math.random() * 99999999))}>
+              <Shuffle size={16} />
+            </button>
+          </div>
+          <button onClick={() => startDailySimulation()}><CalendarDays size={16} /> Generate day</button>
         </section>
 
         <section className="control-group">
@@ -279,6 +301,15 @@ async function postUpdate(url: string, payload: unknown): Promise<ApiUpdate> {
     body: JSON.stringify(payload)
   });
   return response.json() as Promise<ApiUpdate>;
+}
+
+function todayInShanghai(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
 }
 
 function summarizeState(state: Record<string, string | number | boolean | null>): string {
