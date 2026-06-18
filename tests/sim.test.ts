@@ -114,6 +114,33 @@ describe('virtual home simulator MVP', () => {
     expect(events.some((event) => event.type === 'DeviceStateChanged' && event.reason?.includes('pet_motion'))).toBe(true);
   });
 
+  it('pauses garden watering when the pet enters the sprinkler zone', () => {
+    const simulator = createSimulator({ seed: 1 });
+
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(258);
+    const snapshot = simulator.getSnapshot();
+    const events = simulator.getEvents();
+
+    expect(events.some((event): event is PersonMovedEvent => (
+      event.type === 'PersonMoved' &&
+      event.personId === 'pet_1' &&
+      event.to === 'garden' &&
+      event.simTime === '2026-06-17T10:18:00+08:00'
+    ))).toBe(true);
+    expect(snapshot.devices.sprinkler_01.state.valveOpen).toBe(false);
+    expect(events.some((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'sprinkler_01' &&
+      event.state.valveOpen === false &&
+      event.reason === 'habit:pet_1:garden:sprinkler_pause'
+    ))).toBe(true);
+    expect(events.some((event): event is AutomationTriggeredEvent => (
+      event.type === 'AutomationTriggered' &&
+      event.ruleId === 'pet_garden_sprinkler_pause'
+    ))).toBe(true);
+  });
+
   it('applies remote-work habits to study comfort and network state', () => {
     const simulator = createSimulator({ seed: 42 });
 

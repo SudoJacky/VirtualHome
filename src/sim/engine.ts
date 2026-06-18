@@ -416,6 +416,7 @@ class Simulator implements VirtualHomeSimulator {
   private applyBehaviorProfileInteractions(): TwinEvent[] {
     const events: TwinEvent[] = [];
     events.push(...this.applyHumanActivityLighting());
+    events.push(...this.applyPetGardenSafety());
     events.push(...this.applyRemoteWorkComfort());
     events.push(...this.applySeniorWellnessCheck());
     return events;
@@ -459,6 +460,30 @@ class Simulator implements VirtualHomeSimulator {
     }
 
     return events;
+  }
+
+  private applyPetGardenSafety(): TwinEvent[] {
+    const pet = this.state.snapshot.people.pet_1;
+    const sprinkler = this.state.snapshot.devices.sprinkler_01;
+    if (!pet || pet.location !== 'garden' || sprinkler?.state.valveOpen !== true) {
+      return [];
+    }
+
+    const stateEvent = this.setDeviceStateIfChanged('sprinkler_01', { valveOpen: false }, 'habit:pet_1:garden:sprinkler_pause');
+    if (!stateEvent) {
+      return [];
+    }
+
+    return [
+      stateEvent,
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'pet_garden_sprinkler_pause',
+        explanation: 'Pet movement is detected in the garden, so watering pauses to keep the zone safe.',
+        actions: ['pause_garden_sprinkler'],
+        reason: 'habit:pet_1:garden'
+      })
+    ];
   }
 
   private applyRemoteWorkComfort(): TwinEvent[] {
