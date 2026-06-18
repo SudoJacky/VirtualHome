@@ -23,6 +23,11 @@ const limitQuerySchema = z.object({
 const privacyQuerySchema = z.object({
   privacy: z.enum(['admin', 'public']).default('admin')
 });
+const websocketQuerySchema = z.object({
+  privacy: z.enum(['admin', 'public']).default('admin'),
+  runId: z.string().min(1).optional(),
+  afterSequence: z.coerce.number().int().min(0).optional()
+});
 const advancePayloadSchema = z.object({
   minutes: z.coerce.number().int().min(1).max(1440).default(1)
 });
@@ -148,14 +153,17 @@ export function createServer(options: ServerOptions): FastifyInstance {
 
   app.register(async (fastify) => {
     fastify.get('/ws', { websocket: true }, (socket, request) => {
-      const result = privacyQuerySchema.safeParse(request.query);
+      const result = websocketQuerySchema.safeParse(request.query);
       const privacy = result.success ? result.data.privacy : 'admin';
+      const replayEvents = result.success && result.data.runId && result.data.afterSequence !== undefined
+        ? db.getEventsAfter(result.data.runId, result.data.afterSequence)
+        : [];
       const client = { privacy, send: (payload: string) => socket.send(payload) };
       sockets.add(client);
       socket.send(JSON.stringify({
         type: 'twin.update',
         snapshot: projectSnapshotForPrivacy(simulator.getSnapshot(), privacy),
-        events: []
+        events: projectEventsForPrivacy(replayEvents, privacy)
       }));
       socket.on('close', () => sockets.delete(client));
     });

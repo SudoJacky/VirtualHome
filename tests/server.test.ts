@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import type { WebSocket } from '@fastify/websocket';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer } from '../src/server/app';
 
@@ -55,6 +56,42 @@ describe('server API', () => {
     expect(ws.readyState).toBe(1);
     ws.close();
 
+    await server.close();
+  });
+
+  it('replays missed events when a WebSocket client reconnects with the last sequence', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-ws-replay-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 12 }
+    });
+    const lastSeen = (await server.inject({ method: 'GET', url: '/api/state' })).json();
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 2 }
+    });
+
+    const firstMessage = createMessagePromise();
+    const ws = await server.injectWS(`/ws?runId=${lastSeen.runId}&afterSequence=${lastSeen.simClock.sequence}`, {}, {
+      onInit: firstMessage.attach
+    });
+    const update = await firstMessage.value;
+
+    expect(update.snapshot.runId).toBe(lastSeen.runId);
+    expect(update.events.length).toBeGreaterThan(0);
+    expect(update.events.every((event: { runId: string; sequence: number }) => event.runId === lastSeen.runId && event.sequence > lastSeen.simClock.sequence)).toBe(true);
+
+    ws.close();
     await server.close();
   });
 
@@ -205,3 +242,32 @@ describe('server API', () => {
     await secondServer.close();
   });
 });
+
+function createMessagePromise(): {
+  value: Promise<{ snapshot: { runId: string }; events: Array<{ runId: string; sequence: number }> }>;
+  attach: (ws: WebSocket) => void;
+} {
+  let resolveMessage: (message: { snapshot: { runId: string }; events: Array<{ runId: string; sequence: number }> }) => void = () => {};
+  let rejectMessage: (error: Error) => void = () => {};
+  let cleanup = (): void => {};
+  const value = new Promise<{ snapshot: { runId: string }; events: Array<{ runId: string; sequence: number }> }>((resolve, reject) => {
+    resolveMessage = resolve;
+    rejectMessage = reject;
+    const timer = setTimeout(() => reject(new Error('Timed out waiting for WebSocket message')), 2000);
+    cleanup = () => clearTimeout(timer);
+  });
+
+  return {
+    value,
+    attach: (ws) => {
+      ws.once('message', (data: { toString(): string }) => {
+        cleanup();
+        resolveMessage(JSON.parse(data.toString()) as { snapshot: { runId: string }; events: Array<{ runId: string; sequence: number }> });
+      });
+      ws.once('error', (error: Error) => {
+        cleanup();
+        rejectMessage(error);
+      });
+    }
+  };
+}
