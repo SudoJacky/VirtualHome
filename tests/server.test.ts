@@ -79,6 +79,7 @@ describe('server API', () => {
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('markerKind');
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('animationHint');
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('defaultState');
+    expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('stateFields');
     expect(document.components.schemas).toHaveProperty('AccessAuditRecord');
 
     await server.close();
@@ -153,6 +154,10 @@ describe('server API', () => {
       telemetry: {
         online: { unit: 'bool' },
         latencyMs: { unit: 'ms' }
+      },
+      stateFields: {
+        online: { type: 'boolean', required: false },
+        latencyMs: { type: 'number', required: false }
       }
     });
     expect(capabilities.router).not.toHaveProperty('isActive');

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { getCatalog } from '../src/sim/catalog';
-import { deviceCapabilities, getDeviceCapability } from '../src/shared/deviceRegistry';
+import { deviceCapabilities, getDeviceCapability, getDeviceCapabilityMetadata } from '../src/shared/deviceRegistry';
 
 describe('device capability registry', () => {
   it('defines display and state rules for every catalog device type', () => {
@@ -38,5 +38,24 @@ describe('device capability registry', () => {
     expect(getDeviceCapability('fridge').stateSchema.safeParse({ online: false, latencyMs: 0 }).success).toBe(false);
     expect(getDeviceCapability('router').stateSchema.safeParse({ online: false, latencyMs: 0 }).success).toBe(true);
     expect(getDeviceCapability('router').stateSchema.safeParse({ doorOpen: true }).success).toBe(false);
+  });
+
+  it('serializes device state fields for protocol adapters', () => {
+    const metadata = getDeviceCapabilityMetadata();
+
+    expect(metadata.router.stateFields).toEqual({
+      online: { type: 'boolean', required: false },
+      latencyMs: { type: 'number', required: false }
+    });
+    expect(metadata.light.stateFields.power).toEqual({
+      type: 'string',
+      required: false,
+      enum: ['on', 'off']
+    });
+    expect(metadata.tv.stateFields.app).toEqual({
+      type: 'string',
+      required: false,
+      nullable: true
+    });
   });
 });

@@ -11,6 +11,15 @@ export interface DeviceMetricCapability {
   normalRange?: [number, number];
 }
 
+export type DeviceStateFieldType = 'boolean' | 'number' | 'string' | 'unknown';
+
+export interface DeviceStateFieldMetadata {
+  type: DeviceStateFieldType;
+  required: boolean;
+  nullable?: boolean;
+  enum?: string[];
+}
+
 export interface DeviceCapability {
   displayName: string;
   shortLabel: string;
@@ -33,6 +42,7 @@ export interface DeviceCapabilityMetadata {
   markerKind: DeviceMarkerKind;
   animationHint: DeviceAnimationHint;
   defaultState: DeviceStatePatch;
+  stateFields: Record<string, DeviceStateFieldMetadata>;
   telemetry: Record<string, DeviceMetricCapability>;
   supportedCommands: string[];
 }
@@ -244,6 +254,7 @@ export function getDeviceCapabilityMetadata(): Record<string, DeviceCapabilityMe
         markerKind: capability.markerKind,
         animationHint: capability.animationHint,
         defaultState: structuredClone(capability.defaultState),
+        stateFields: serializeStateFields(capability.stateSchema),
         telemetry: structuredClone(capability.telemetry),
         supportedCommands: [...capability.supportedCommands]
       }
@@ -279,6 +290,48 @@ function capability(
 
 function schema(shape: z.ZodRawShape): DeviceStateSchema {
   return z.object(shape).partial().strict();
+}
+
+function serializeStateFields(stateSchema: DeviceStateSchema): Record<string, DeviceStateFieldMetadata> {
+  return Object.fromEntries(Object.entries(stateSchema.shape).map(([name, fieldSchema]) => [
+    name,
+    describeStateField(fieldSchema)
+  ]));
+}
+
+function describeStateField(fieldSchema: unknown): DeviceStateFieldMetadata {
+  let current = fieldSchema;
+  let required = true;
+  let nullable = false;
+
+  while (current instanceof z.ZodOptional || current instanceof z.ZodNullable) {
+    if (current instanceof z.ZodOptional) {
+      required = false;
+    }
+    if (current instanceof z.ZodNullable) {
+      nullable = true;
+    }
+    current = current.unwrap();
+  }
+
+  const metadata: DeviceStateFieldMetadata = {
+    type: stateFieldType(current),
+    required
+  };
+  if (nullable) {
+    metadata.nullable = true;
+  }
+  if (current instanceof z.ZodEnum) {
+    metadata.enum = current.options.filter((value): value is string => typeof value === 'string');
+  }
+  return metadata;
+}
+
+function stateFieldType(fieldSchema: unknown): DeviceStateFieldType {
+  if (fieldSchema instanceof z.ZodBoolean) return 'boolean';
+  if (fieldSchema instanceof z.ZodNumber) return 'number';
+  if (fieldSchema instanceof z.ZodString || fieldSchema instanceof z.ZodEnum) return 'string';
+  return 'unknown';
 }
 
 function numberValue(value: DeviceStatePayload[string], fallback: number): number {
