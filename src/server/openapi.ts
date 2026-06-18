@@ -223,6 +223,36 @@ const deviceAccessRecordSchema: JsonSchema = {
   }
 };
 
+const deviceCapabilitySchema: JsonSchema = {
+  type: 'object',
+  required: ['displayName', 'shortLabel', 'icon', 'telemetry', 'supportedCommands'],
+  properties: {
+    displayName: stringSchema,
+    shortLabel: stringSchema,
+    icon: stringSchema,
+    telemetry: {
+      type: 'object',
+      additionalProperties: {
+        type: 'object',
+        required: ['unit'],
+        properties: {
+          unit: stringSchema,
+          normalRange: {
+            type: 'array',
+            items: { type: 'number' },
+            minItems: 2,
+            maxItems: 2
+          }
+        }
+      }
+    },
+    supportedCommands: {
+      type: 'array',
+      items: stringSchema
+    }
+  }
+};
+
 const telemetrySummarySchema: JsonSchema = {
   type: 'object',
   required: ['runId', 'window', 'devices'],
@@ -355,6 +385,16 @@ export function buildOpenApiDocument(): Record<string, unknown> {
           })
         }
       },
+      '/api/device-capabilities': {
+        get: {
+          summary: 'Get device capability metadata',
+          description: 'Returns the serializable device capability registry used by simulation, adapters, and clients.',
+          responses: okResponse({
+            type: 'object',
+            additionalProperties: { $ref: '#/components/schemas/DeviceCapability' }
+          })
+        }
+      },
       '/api/scenarios/{id}/start': {
         post: {
           summary: 'Start a built-in scenario run',
@@ -445,6 +485,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         TwinEvent: twinEventSchema,
         HomeDefinition: homeDefinitionSchema,
         DeviceAccessRecord: deviceAccessRecordSchema,
+        DeviceCapability: deviceCapabilitySchema,
         TelemetrySummary: telemetrySummarySchema,
         UpdateResponse: updateResponseSchema,
         ValidationError: validationErrorSchema,

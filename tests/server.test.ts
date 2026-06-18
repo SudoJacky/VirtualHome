@@ -5,6 +5,7 @@ import type { WebSocket } from '@fastify/websocket';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer } from '../src/server/app';
 import { getHomeDefinition } from '../src/sim/catalog';
+import { deviceCapabilities } from '../src/shared/deviceRegistry';
 
 describe('server API', () => {
   const dirs: string[] = [];
@@ -63,6 +64,7 @@ describe('server API', () => {
       '/api/events',
       '/api/telemetry',
       '/api/device-twins',
+      '/api/device-capabilities',
       '/api/home-definition',
       '/api/daily/start',
       '/api/control/advance',
@@ -72,6 +74,7 @@ describe('server API', () => {
     ]));
     expect(document.paths['/api/control/advance'].post.requestBody.content['application/json'].schema.properties).toHaveProperty('idempotencyKey');
     expect(document.components.schemas).toHaveProperty('ValidationError');
+    expect(document.components.schemas).toHaveProperty('DeviceCapability');
 
     await server.close();
   });
@@ -120,6 +123,32 @@ describe('server API', () => {
     });
     expect(stateResponse.json().homeId).toBe('custom_home');
     expect(stateResponse.json().rooms.kitchen.name).toBe('Chef Kitchen');
+
+    await server.close();
+  });
+
+  it('exposes serializable device capability metadata for clients and adapters', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-device-capabilities-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    const response = await server.inject({ method: 'GET', url: '/api/device-capabilities' });
+    const capabilities = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(Object.keys(capabilities).sort()).toEqual(Object.keys(deviceCapabilities).sort());
+    expect(capabilities.router).toMatchObject({
+      displayName: 'Router',
+      shortLabel: 'Router',
+      icon: 'router',
+      supportedCommands: ['restart'],
+      telemetry: {
+        online: { unit: 'bool' },
+        latencyMs: { unit: 'ms' }
+      }
+    });
+    expect(capabilities.router).not.toHaveProperty('isActive');
+    expect(capabilities.router).not.toHaveProperty('stateSchema');
 
     await server.close();
   });

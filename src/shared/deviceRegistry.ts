@@ -21,6 +21,14 @@ export interface DeviceCapability {
   summarizeState: (state: DeviceStatePayload) => string;
 }
 
+export interface DeviceCapabilityMetadata {
+  displayName: string;
+  shortLabel: string;
+  icon: string;
+  telemetry: Record<string, DeviceMetricCapability>;
+  supportedCommands: string[];
+}
+
 export const deviceCapabilities: Record<string, DeviceCapability> = {
   door_lock: capability('Door Lock', 'Lock', 'lock', schema({ locked: z.boolean() }), { locked: { unit: 'bool' } }, ['lock', 'unlock'], {
     isActive: (state) => state.locked === false,
@@ -153,6 +161,19 @@ export function isDeviceTypeAbnormal(type: string, state: DeviceStatePayload): b
 
 export function summarizeDeviceState(type: string, state: DeviceStatePayload): string {
   return getDeviceCapability(type).summarizeState(state);
+}
+
+export function getDeviceCapabilityMetadata(): Record<string, DeviceCapabilityMetadata> {
+  return Object.fromEntries(Object.entries(deviceCapabilities).map(([type, capability]) => [
+    type,
+    {
+      displayName: capability.displayName,
+      shortLabel: capability.shortLabel,
+      icon: capability.icon,
+      telemetry: structuredClone(capability.telemetry),
+      supportedCommands: [...capability.supportedCommands]
+    }
+  ]));
 }
 
 export function validateDeviceStatePatch(type: string, patch: DeviceStatePayload): DeviceStatePatch {

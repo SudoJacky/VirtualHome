@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { getHomeDefinition } from '../sim/catalog';
 import { createSimulator } from '../sim/engine';
 import { getScenarioIds } from '../sim/scenarios';
+import { getDeviceCapabilityMetadata } from '../shared/deviceRegistry';
 import type { HomeDefinition, StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { createDeviceAccessRecords } from './deviceAccess';
 import { loadHomeDefinitionFromFile } from './homeDefinitionLoader';
@@ -156,6 +157,8 @@ export function createServer(options: ServerOptions): FastifyInstance {
     const snapshot = simulator.getSnapshot();
     return createDeviceAccessRecords(snapshot, db.getRecentEvents(500, snapshot.runId));
   });
+
+  app.get('/api/device-capabilities', async () => getDeviceCapabilityMetadata());
 
   app.post('/api/scenarios/:id/start', async (request, reply) => {
     const params = request.params as { id: StaticScenarioId };
