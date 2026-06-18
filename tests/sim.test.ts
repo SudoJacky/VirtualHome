@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createSimulator } from '../src/sim/engine';
 import { getCatalog } from '../src/sim/catalog';
 import { getScenarioIds } from '../src/sim/scenarios';
-import type { DeviceTelemetryEvent, PersonMovedEvent } from '../src/shared/types';
+import type { AutomationTriggeredEvent, DeviceTelemetryEvent, PersonMovedEvent } from '../src/shared/types';
 
 describe('virtual home simulator MVP', () => {
   it('defines the MVP home shape from MVP.md', () => {
@@ -11,8 +11,15 @@ describe('virtual home simulator MVP', () => {
     expect(catalog.rooms).toHaveLength(9);
     expect(catalog.people.filter((person) => person.kind === 'human')).toHaveLength(4);
     expect(catalog.people.filter((person) => person.kind === 'pet')).toHaveLength(1);
-    expect(catalog.devices.length).toBeGreaterThanOrEqual(15);
-    expect(catalog.devices.length).toBeLessThanOrEqual(20);
+    expect(catalog.devices.length).toBeGreaterThan(20);
+    expect(catalog.devices.map((device) => device.id)).toEqual(expect.arrayContaining([
+      'doorbell_camera_01',
+      'package_sensor_01',
+      'robot_vacuum_01',
+      'dishwasher_01',
+      'router_01',
+      'washer_01'
+    ]));
     expect(getScenarioIds()).toEqual(['weekday_normal', 'away_day', 'night_water_leak']);
   });
 
@@ -75,6 +82,48 @@ describe('virtual home simulator MVP', () => {
     expect(new Set(petMoves.map((event) => event.to)).size).toBeGreaterThan(1);
     expect(snapshot.people.pet_1.location).not.toBe('away');
     expect(events.some((event) => event.type === 'DeviceStateChanged' && event.deviceType === 'motion_sensor')).toBe(true);
+  });
+
+  it('adds seeded random household events beyond scheduled scenario steps', () => {
+    const simulator = createSimulator({ seed: 2026 });
+
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(360);
+    const snapshot = simulator.getSnapshot();
+    const events = simulator.getEvents();
+    const randomRuleIds = events
+      .filter((event): event is AutomationTriggeredEvent => event.type === 'AutomationTriggered')
+      .map((event) => event.ruleId);
+
+    expect(randomRuleIds).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^(package_delivery|robot_cleaning|dishwasher_cycle|washer_cycle|network_jitter)$/)
+    ]));
+    expect(Object.keys(snapshot.devices)).toEqual(expect.arrayContaining([
+      'doorbell_camera_01',
+      'package_sensor_01',
+      'robot_vacuum_01',
+      'dishwasher_01',
+      'router_01',
+      'washer_01'
+    ]));
+  });
+
+  it('keeps random household events deterministic for the same seed', () => {
+    const first = createSimulator({ seed: 2027 });
+    const second = createSimulator({ seed: 2027 });
+
+    first.startScenario('weekday_normal');
+    second.startScenario('weekday_normal');
+
+    first.advanceMinutes(360);
+    second.advanceMinutes(360);
+
+    const randomEvents = (simulator: ReturnType<typeof createSimulator>) => simulator.getEvents()
+      .filter((event): event is AutomationTriggeredEvent => event.type === 'AutomationTriggered' && ['package_delivery', 'robot_cleaning', 'dishwasher_cycle', 'washer_cycle', 'network_jitter'].includes(event.ruleId))
+      .map((event) => ({ ruleId: event.ruleId, simTime: event.simTime, actions: event.actions }));
+
+    expect(randomEvents(first)).toEqual(randomEvents(second));
+    expect(first.getSnapshot().devices).toEqual(second.getSnapshot().devices);
   });
 
   it('continues the weekday scenario into evening routines and sleep', () => {

@@ -42,4 +42,23 @@ describe('dashboard view model', () => {
 
     expect(activePeople.some((person) => person.id === 'pet_1' && person.recent)).toBe(true);
   });
+
+  it('surfaces expanded random household devices on the floorplan', () => {
+    const simulator = createSimulator({ seed: 2026 });
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(360);
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+
+    const packageSensor = model.floorplanRooms.entrance.devices.find((device) => device.id === 'package_sensor_01');
+    const robotVacuum = model.floorplanRooms.living_room.devices.find((device) => device.id === 'robot_vacuum_01');
+    const washer = model.floorplanRooms.bathroom.devices.find((device) => device.id === 'washer_01');
+
+    expect(packageSensor?.label).toBe('Package');
+    expect(packageSensor?.active).toBe(true);
+    expect(robotVacuum?.label).toBe('Vacuum');
+    expect(robotVacuum?.active).toBe(true);
+    expect(washer?.label).toBe('Washer');
+    expect(washer?.active).toBe(true);
+  });
 });
