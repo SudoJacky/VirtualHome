@@ -269,6 +269,14 @@ function formatEvent(event: TwinEvent): DashboardEvent {
   if (event.type === 'AlertCreated') {
     return { id: event.id, time: event.simTime, type: event.type, label: `${event.message} (${event.severity})` };
   }
+  if (event.type === 'AlertStatusChanged') {
+    return {
+      id: event.id,
+      time: event.simTime,
+      type: event.type,
+      label: `${formatAlertTitle(event.alertId)} status changed from ${event.previousStatus} to ${event.status}`
+    };
+  }
   if (event.type === 'AutomationTriggered') {
     return { id: event.id, time: event.simTime, type: event.type, label: `${formatRuleName(event.ruleId)}: ${event.explanation}` };
   }
@@ -647,6 +655,17 @@ function formatAbnormalityKind(kind: string): string {
     senior_no_activity: 'Senior no activity'
   };
   return labels[kind] ?? formatReason(kind);
+}
+
+function formatAlertTitle(alertId: string): string {
+  const labels: Record<string, string> = {
+    door_left_open_001: 'Door left open while security is armed',
+    fridge_left_open_001: 'Fridge door has remained open',
+    network_offline_001: 'Home network is offline',
+    senior_inactive_001: 'Senior family member has no activity',
+    water_leak_001: 'Bathroom leak detected while home is sleeping'
+  };
+  return labels[alertId] ?? formatReason(alertId);
 }
 
 function formatRoomName(roomId: RoomId | 'away'): string {

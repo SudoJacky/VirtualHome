@@ -166,6 +166,20 @@ describe('dashboard view model', () => {
     });
   });
 
+  it('labels alert status changes as readable audit timeline events', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('fridge_left_open');
+    simulator.setAlertStatus('fridge_left_open_001', 'acknowledged');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const statusEvent = model.recentEvents.find((event) => event.type === 'AlertStatusChanged');
+
+    expect(statusEvent).toMatchObject({
+      label: 'Fridge door has remained open status changed from active to acknowledged'
+    });
+  });
+
   it('explains pet-driven garden safety automation with readable facts', () => {
     const simulator = createSimulator({ seed: 1 });
     simulator.startScenario('weekday_normal');
