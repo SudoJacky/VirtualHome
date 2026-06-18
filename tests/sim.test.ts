@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createSimulator } from '../src/sim/engine';
 import { getCatalog, getHomeDefinition } from '../src/sim/catalog';
 import { getScenarioIds } from '../src/sim/scenarios';
+import { getDeviceCapability } from '../src/shared/deviceRegistry';
 import type { AlertCreatedEvent, AutomationTriggeredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent, RoomId, RuleRecoveredEvent, TwinSnapshot } from '../src/shared/types';
 
 describe('virtual home simulator MVP', () => {
@@ -25,6 +26,15 @@ describe('virtual home simulator MVP', () => {
       'washer_01'
     ]));
     expect(getScenarioIds()).toEqual(['weekday_normal', 'away_day', 'night_water_leak']);
+  });
+
+  it('initializes device state from the device capability registry', () => {
+    const simulator = createSimulator({ seed: 42 });
+    const snapshot = simulator.getSnapshot();
+
+    for (const device of Object.values(snapshot.devices)) {
+      expect(device.state).toEqual(getDeviceCapability(device.type).defaultState);
+    }
   });
 
   it('runs a weekday scenario where people activity drives device and telemetry events', () => {

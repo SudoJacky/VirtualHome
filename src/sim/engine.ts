@@ -3,7 +3,7 @@ import { generateDailyScenario, type DailyScenarioOptions } from './dailyPlan';
 import { randomUUID } from 'node:crypto';
 import { SeededRandom } from './random';
 import { getScenario, type ScenarioAction, type ScenarioDefinition } from './scenarios';
-import { validateDeviceStatePatch } from '../shared/deviceRegistry';
+import { getDeviceCapability, validateDeviceStatePatch } from '../shared/deviceRegistry';
 import type {
   AlertCreatedEvent,
   Catalog,
@@ -67,34 +67,6 @@ interface BehaviorProfile {
   preferredRooms: RoomId[];
   activeLightLevel: number;
 }
-
-const defaultDeviceState: Record<string, Record<string, string | number | boolean | null>> = {
-  door_lock: { locked: true },
-  motion_sensor: { motion: false, confidence: 0 },
-  doorbell_camera: { motion: false, ringing: false, batteryPercent: 96 },
-  package_sensor: { packagePresent: false, weightKg: 0 },
-  light: { power: 'off', brightness: 0 },
-  tv: { power: 'off', app: null, volume: 0 },
-  robot_vacuum: { status: 'docked', batteryPercent: 100, binFull: false },
-  curtain: { positionPercent: 35 },
-  temperature_humidity_sensor: { temperatureC: 25, humidityPercent: 55 },
-  fridge: { doorOpen: false, compressorOn: true, powerW: 90 },
-  stove: { powerW: 0, level: 0 },
-  range_hood: { power: 'off', speed: 0 },
-  air_quality_sensor: { pm25: 8, co2: 520 },
-  smoke_sensor: { smokeDetected: false, density: 0 },
-  dishwasher: { status: 'idle', remainingMin: 0, powerW: 0 },
-  sleep_sensor: { inBed: true, heartRateSimulated: 62 },
-  air_conditioner: { power: 'off', targetC: 26, mode: 'auto' },
-  router: { online: true, latencyMs: 18 },
-  water_flow_sensor: { flowLMin: 0, totalL: 0 },
-  water_leak_sensor: { leakDetected: false },
-  water_valve: { valveOpen: true },
-  washer: { status: 'idle', remainingMin: 0, powerW: 0 },
-  soil_moisture_sensor: { moisturePercent: 38 },
-  security_camera: { motion: false, recording: false },
-  sprinkler: { valveOpen: false }
-};
 
 const behaviorProfiles: Record<string, BehaviorProfile> = {
   adult_1: { role: 'commuter', preferredRooms: ['bathroom', 'kitchen', 'entrance', 'living_room'], activeLightLevel: 68 },
@@ -351,7 +323,7 @@ class Simulator implements VirtualHomeSimulator {
       id: device.id,
       roomId: device.roomId,
       type: device.type,
-      state: { ...(defaultDeviceState[device.type] ?? {}) },
+      state: getDeviceCapability(device.type).defaultState,
       lastReason: 'initial'
     };
   }

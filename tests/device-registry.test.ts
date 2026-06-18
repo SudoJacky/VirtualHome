@@ -15,6 +15,8 @@ describe('device capability registry', () => {
       expect(capability.markerKind).toMatch(/^(sensor|actuator|appliance|security|mobile)$/);
       expect(capability.animationHint).toMatch(/^(none|pulse|glow|rotate|vibrate|scan|airflow|curtain)$/);
       expect(capability.stateSchema.safeParse({}).success).toBe(true);
+      expect(capability.defaultState).toBeDefined();
+      expect(capability.stateSchema.safeParse(capability.defaultState).success).toBe(true);
       expect(capability.supportedCommands).toBeDefined();
       expect(capability.telemetry).toBeDefined();
       expect(typeof capability.isActive).toBe('function');

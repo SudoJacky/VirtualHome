@@ -77,6 +77,7 @@ describe('server API', () => {
     expect(document.components.schemas).toHaveProperty('DeviceCapability');
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('markerKind');
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('animationHint');
+    expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('defaultState');
 
     await server.close();
   });
@@ -145,6 +146,7 @@ describe('server API', () => {
       icon: 'router',
       markerKind: 'appliance',
       animationHint: 'pulse',
+      defaultState: { online: true, latencyMs: 18 },
       supportedCommands: ['restart'],
       telemetry: {
         online: { unit: 'bool' },

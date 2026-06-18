@@ -17,6 +17,7 @@ export interface DeviceCapability {
   icon: string;
   markerKind: DeviceMarkerKind;
   animationHint: DeviceAnimationHint;
+  defaultState: DeviceStatePatch;
   stateSchema: DeviceStateSchema;
   telemetry: Record<string, DeviceMetricCapability>;
   supportedCommands: string[];
@@ -31,11 +32,12 @@ export interface DeviceCapabilityMetadata {
   icon: string;
   markerKind: DeviceMarkerKind;
   animationHint: DeviceAnimationHint;
+  defaultState: DeviceStatePatch;
   telemetry: Record<string, DeviceMetricCapability>;
   supportedCommands: string[];
 }
 
-type DeviceCapabilityBase = Omit<DeviceCapability, 'markerKind' | 'animationHint'>;
+type DeviceCapabilityBase = Omit<DeviceCapability, 'markerKind' | 'animationHint' | 'defaultState'>;
 
 export const deviceCapabilities: Record<string, DeviceCapabilityBase> = {
   door_lock: capability('Door Lock', 'Lock', 'lock', schema({ locked: z.boolean() }), { locked: { unit: 'bool' } }, ['lock', 'unlock'], {
@@ -179,10 +181,39 @@ const deviceVisuals: Record<string, { markerKind: DeviceMarkerKind; animationHin
   sprinkler: { markerKind: 'actuator', animationHint: 'airflow' }
 };
 
+const defaultDeviceStates: Record<string, DeviceStatePatch> = {
+  door_lock: { locked: true },
+  motion_sensor: { motion: false, confidence: 0 },
+  doorbell_camera: { motion: false, ringing: false, batteryPercent: 96 },
+  package_sensor: { packagePresent: false, weightKg: 0 },
+  light: { power: 'off', brightness: 0 },
+  tv: { power: 'off', app: null, volume: 0 },
+  robot_vacuum: { status: 'docked', batteryPercent: 100, binFull: false },
+  curtain: { positionPercent: 35 },
+  temperature_humidity_sensor: { temperatureC: 25, humidityPercent: 55 },
+  fridge: { doorOpen: false, compressorOn: true, powerW: 90 },
+  stove: { powerW: 0, level: 0 },
+  range_hood: { power: 'off', speed: 0 },
+  air_quality_sensor: { pm25: 8, co2: 520 },
+  smoke_sensor: { smokeDetected: false, density: 0 },
+  dishwasher: { status: 'idle', remainingMin: 0, powerW: 0 },
+  sleep_sensor: { inBed: true, heartRateSimulated: 62 },
+  air_conditioner: { power: 'off', targetC: 26, mode: 'auto' },
+  router: { online: true, latencyMs: 18 },
+  water_flow_sensor: { flowLMin: 0, totalL: 0 },
+  water_leak_sensor: { leakDetected: false },
+  water_valve: { valveOpen: true },
+  washer: { status: 'idle', remainingMin: 0, powerW: 0 },
+  soil_moisture_sensor: { moisturePercent: 38 },
+  security_camera: { motion: false, recording: false },
+  sprinkler: { valveOpen: false }
+};
+
 export function getDeviceCapability(type: string): DeviceCapability {
   const base = deviceCapabilities[type] ?? capability(type, type, 'circle-help', schema({}), {}, [], {});
   const visual = deviceVisuals[type] ?? { markerKind: 'appliance' as const, animationHint: 'none' as const };
-  return { ...base, ...visual };
+  const defaultState = structuredClone(defaultDeviceStates[type] ?? {});
+  return { ...base, ...visual, defaultState };
 }
 
 export function getDeviceShortLabel(type: string): string {
@@ -212,6 +243,7 @@ export function getDeviceCapabilityMetadata(): Record<string, DeviceCapabilityMe
         icon: capability.icon,
         markerKind: capability.markerKind,
         animationHint: capability.animationHint,
+        defaultState: structuredClone(capability.defaultState),
         telemetry: structuredClone(capability.telemetry),
         supportedCommands: [...capability.supportedCommands]
       }
