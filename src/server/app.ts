@@ -300,7 +300,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
       return sendValidationError(reply, result.error);
     }
     if (!simulator.getSnapshot().alerts[params.alertId]) {
-      return reply.status(404).send({ error: 'Unknown alert' });
+      return sendNotFound(reply, 'Unknown alert');
     }
     return runIdempotentCommand(reply, result.data.idempotencyKey, `POST /api/alerts/${params.alertId}/status`, stripIdempotencyKey(result.data), () => {
       const events = simulator.setAlertStatus(params.alertId, result.data.status);
@@ -414,6 +414,15 @@ function sendIdempotencyConflict(reply: FastifyReply): FastifyReply {
     error: {
       code: 'IDEMPOTENCY_CONFLICT',
       message: 'Idempotency key was already used with a different request'
+    }
+  });
+}
+
+function sendNotFound(reply: FastifyReply, message: string): FastifyReply {
+  return reply.status(404).send({
+    error: {
+      code: 'NOT_FOUND',
+      message
     }
   });
 }

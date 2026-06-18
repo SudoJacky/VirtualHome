@@ -659,6 +659,26 @@ describe('server API', () => {
     await restartedServer.close();
   });
 
+  it('returns a structured not found error for unknown alert status changes', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-alert-status-not-found-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/alerts/missing_alert/status',
+      payload: { status: 'acknowledged' }
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error).toMatchObject({
+      code: 'NOT_FOUND',
+      message: 'Unknown alert'
+    });
+
+    await server.close();
+  });
+
   it('restores the latest persisted run after a server restart', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-recovery-'));
     dirs.push(dir);
