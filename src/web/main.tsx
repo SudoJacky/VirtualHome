@@ -1,7 +1,9 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { AlertTriangle, Bell, Clock, Home, Pause, Play, Radar, StepForward, Zap } from 'lucide-react';
-import type { RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
+import type { DeviceState, TwinEvent, TwinSnapshot } from '../shared/types';
+import { Floorplan3D, type FloorplanLayers, type FloorplanSelection } from './Floorplan3D';
+import { createFloorplan3DModel, type Floorplan3DDevice, type Floorplan3DRoom } from './floorplan3dModel';
 import { createDashboardModel, mergeTwinEvents } from './viewModel';
 import './styles.css';
 
@@ -13,6 +15,13 @@ interface ApiUpdate {
 function App(): React.ReactElement {
   const [snapshot, setSnapshot] = React.useState<TwinSnapshot | null>(null);
   const [events, setEvents] = React.useState<TwinEvent[]>([]);
+  const [floorplanLayers, setFloorplanLayers] = React.useState<FloorplanLayers>({
+    people: true,
+    devices: true,
+    environment: false,
+    alerts: true
+  });
+  const [floorplanSelection, setFloorplanSelection] = React.useState<FloorplanSelection>(null);
 
   React.useEffect(() => {
     void fetch('/api/state').then((response) => response.json()).then(setSnapshot);
@@ -57,8 +66,17 @@ function App(): React.ReactElement {
   }
 
   const model = createDashboardModel(snapshot, events);
-  const rooms = Object.values(snapshot.rooms);
-  const devices = Object.values(snapshot.devices);
+  const floorplanModel = createFloorplan3DModel(snapshot, events);
+  const selectedRoom = floorplanSelection?.type === 'room'
+    ? floorplanModel.rooms.find((room) => room.id === floorplanSelection.id) ?? null
+    : null;
+  const selectedDevice = floorplanSelection?.type === 'device'
+    ? floorplanModel.devices.find((device) => device.id === floorplanSelection.id) ?? null
+    : null;
+
+  function toggleFloorplanLayer(layer: keyof FloorplanLayers): void {
+    setFloorplanLayers((current) => ({ ...current, [layer]: !current[layer] }));
+  }
 
   return (
     <main className="app-shell">
@@ -119,72 +137,30 @@ function App(): React.ReactElement {
         </section>
 
         <section className="main-grid">
-          <div className="floorplan-shell">
-            <div className="roof-line" aria-hidden="true" />
-            <div className="floorplan" aria-label="Virtual home floorplan">
-              {rooms.map((room) => (
-                <article key={room.id} className={`room room-${room.id} ${room.occupancy ? 'occupied' : ''} ${room.lightsOn ? 'lit' : ''}`}>
-                  <div className="presence-layer" aria-label={`${room.name} people and devices`}>
-                    {model.floorplanRooms[room.id].people.map((person) => (
-                      <span
-                        key={person.id}
-                        className={`person-marker person-slot-${person.slot} ${person.recent ? 'recent' : ''}`}
-                        title={`${person.label}: ${person.activity}`}
-                      >
-                        {getPersonInitials(person.id)}
-                      </span>
-                    ))}
-                    {model.floorplanRooms[room.id].devices.filter((device) => device.active).slice(0, getDeviceMarkerLimit(room.id)).map((device) => (
-                      <span
-                        key={device.id}
-                        className={`device-marker device-slot-${device.slot} ${device.active ? 'active' : 'idle'}`}
-                        title={`${device.id}: ${device.active ? 'active' : 'idle'}`}
-                      >
-                        {device.label}
-                      </span>
-                    ))}
-                    {getDeviceMarkerLimit(room.id) > 0 && model.floorplanRooms[room.id].activeDeviceCount > getDeviceMarkerLimit(room.id) ? (
-                      <span className="device-more">+{model.floorplanRooms[room.id].activeDeviceCount - getDeviceMarkerLimit(room.id)}</span>
-                    ) : null}
-                  </div>
-                  <div className="room-header">
-                    <strong>{getRoomLabel(room.id)}</strong>
-                    <span>{room.temperatureC.toFixed(1)}C / {room.humidityPercent.toFixed(0)}%</span>
-                  </div>
-                  <div className="room-fixtures" aria-hidden="true">
-                    {getRoomDecor(room.id).map((item) => (
-                      <span key={item} className={`fixture ${item}`} />
-                    ))}
-                  </div>
-                  {model.floorplanRooms[room.id].people.length || model.floorplanRooms[room.id].activeDeviceCount ? (
-                    <em className="room-active-count">
-                      {model.floorplanRooms[room.id].people.length}p / {model.floorplanRooms[room.id].activeDeviceCount}d
-                    </em>
-                  ) : null}
-                </article>
-              ))}
-            </div>
-          </div>
+          <Floorplan3D
+            model={floorplanModel}
+            layers={floorplanLayers}
+            selected={floorplanSelection}
+            onToggleLayer={toggleFloorplanLayer}
+            onSelect={setFloorplanSelection}
+          />
 
-          <div className="panel">
-            <h2>Device State</h2>
-            <div className="device-list">
-              {devices.slice(0, 12).map((device) => (
-                <div key={device.id} className="device-row">
-                  <span>{device.id}</span>
-                  <code>{summarizeState(device.state)}</code>
-                </div>
-              ))}
-            </div>
-          </div>
+          <SelectionPanel
+            room={selectedRoom}
+            device={selectedDevice}
+            snapshotDevice={selectedDevice ? snapshot.devices[selectedDevice.id] : null}
+            activeDeviceCount={model.activeDeviceCount}
+            occupiedRoomCount={model.occupiedRooms.length}
+            onSelectDevice={(deviceId) => setFloorplanSelection({ type: 'device', id: deviceId })}
+          />
 
           <div className="panel">
             <h2>Alerts</h2>
             {model.alerts.length === 0 ? <p className="muted">No active alerts.</p> : model.alerts.map((alert) => (
-              <div key={alert.id} className="alert-row">
+              <button key={alert.id} className="alert-row alert-action" onClick={() => setFloorplanSelection({ type: 'room', id: alert.roomId })}>
                 <strong>{alert.message}</strong>
                 <span>{alert.severity} / {alert.recommendedAction}</span>
-              </div>
+              </button>
             ))}
           </div>
 
@@ -228,52 +204,72 @@ function Metric({ label, value, intent = 'normal' }: { label: string; value: num
   );
 }
 
-function getRoomDecor(roomId: RoomId): string[] {
-  const decor: Record<RoomId, string[]> = {
-    entrance: ['door', 'shoe-bench'],
-    living_room: ['sofa', 'coffee-table', 'tv-wall'],
-    kitchen: ['counter', 'stove', 'fridge'],
-    dining_room: ['dining-table', 'chair-a', 'chair-b'],
-    master_bedroom: ['bed-large', 'wardrobe'],
-    child_bedroom: ['bed-small', 'desk-small'],
-    study: ['desk', 'bookcase'],
-    bathroom: ['tub', 'sink'],
-    garden: ['patio', 'plant-a', 'plant-b', 'sprinkler']
-  };
-  return decor[roomId];
-}
-
-function getRoomLabel(roomId: RoomId): string {
-  const labels: Record<RoomId, string> = {
-    entrance: 'Entry',
-    living_room: 'Living Room',
-    kitchen: 'Kitchen',
-    dining_room: 'Dining',
-    master_bedroom: 'Master',
-    child_bedroom: 'Child Room',
-    study: 'Study',
-    bathroom: 'Bath',
-    garden: 'Garden'
-  };
-  return labels[roomId];
-}
-
-function getDeviceMarkerLimit(roomId: RoomId): number {
-  if (['entrance', 'child_bedroom', 'study', 'bathroom'].includes(roomId)) {
-    return 0;
+function SelectionPanel({
+  room,
+  device,
+  snapshotDevice,
+  activeDeviceCount,
+  occupiedRoomCount,
+  onSelectDevice
+}: {
+  room: Floorplan3DRoom | null;
+  device: Floorplan3DDevice | null;
+  snapshotDevice: DeviceState | null;
+  activeDeviceCount: number;
+  occupiedRoomCount: number;
+  onSelectDevice: (deviceId: string) => void;
+}): React.ReactElement {
+  if (device && snapshotDevice) {
+    return (
+      <div className="panel selection-panel">
+        <span className="eyebrow">Selected device</span>
+        <h2>{device.label}</h2>
+        <div className="detail-list">
+          <Detail label="Device ID" value={device.id} />
+          <Detail label="Room" value={device.roomId.replace('_', ' ')} />
+          <Detail label="Status" value={device.abnormal ? 'Attention needed' : device.active ? 'Active' : 'Idle'} intent={device.abnormal ? 'alert' : 'normal'} />
+          <Detail label="State" value={summarizeState(snapshotDevice.state)} />
+        </div>
+      </div>
+    );
   }
-  return roomId === 'garden' ? 1 : 2;
+
+  if (room) {
+    return (
+      <div className="panel selection-panel">
+        <span className="eyebrow">Selected room</span>
+        <h2>{room.label}</h2>
+        <div className="detail-list">
+          <Detail label="Occupancy" value={room.occupied ? 'Occupied' : 'Empty'} />
+          <Detail label="Lighting" value={room.lit ? 'On' : 'Off'} />
+          <Detail label="Climate" value={`${room.temperatureC.toFixed(1)}C / ${room.humidityPercent.toFixed(0)}%`} />
+          {room.alertSeverity ? <Detail label="Alert" value={room.alertSeverity} intent="alert" /> : null}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="panel selection-panel">
+      <span className="eyebrow">Home overview</span>
+      <h2>Interactive twin view</h2>
+      <div className="detail-list">
+        <Detail label="Occupied rooms" value={String(occupiedRoomCount)} />
+        <Detail label="Active devices" value={String(activeDeviceCount)} />
+        <Detail label="Selection" value="Click a room or device" />
+      </div>
+      <button className="secondary-action" onClick={() => onSelectDevice('tv_01')}>Focus TV</button>
+    </div>
+  );
 }
 
-function getPersonInitials(personId: string): string {
-  const initials: Record<string, string> = {
-    adult_1: 'A1',
-    adult_2: 'A2',
-    child_1: 'C',
-    senior_1: 'S',
-    pet_1: 'P'
-  };
-  return initials[personId] ?? personId.slice(0, 2).toUpperCase();
+function Detail({ label, value, intent = 'normal' }: { label: string; value: string; intent?: 'normal' | 'alert' }): React.ReactElement {
+  return (
+    <div className={`detail-row ${intent}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
 }
 
 async function postUpdate(url: string, payload: unknown): Promise<ApiUpdate> {

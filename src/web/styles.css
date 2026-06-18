@@ -189,6 +189,213 @@ button:hover {
   grid-template-columns: minmax(560px, 1.6fr) minmax(320px, 0.9fr);
 }
 
+.floorplan3d-shell {
+  background: #f6f8f7;
+  border: 1px solid #d3dee0;
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(30, 49, 55, 0.08);
+  grid-row: span 4;
+  min-height: 650px;
+  overflow: hidden;
+  position: relative;
+}
+
+.floorplan3d-canvas {
+  height: 650px !important;
+  width: 100% !important;
+}
+
+.floorplan3d-toolbar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  left: 14px;
+  position: absolute;
+  right: 14px;
+  top: 14px;
+  z-index: 5;
+}
+
+.layer-button,
+.icon-button,
+.room-chip,
+.device-label,
+.secondary-action {
+  box-shadow: 0 5px 16px rgba(25, 48, 54, 0.08);
+}
+
+.layer-button {
+  background: rgba(255, 255, 255, 0.86);
+  border-color: rgba(74, 93, 98, 0.16);
+  color: #43575d;
+  font-size: 12px;
+  min-height: 32px;
+  padding: 6px 9px;
+}
+
+.layer-button.active {
+  background: #1f6e63;
+  border-color: #1b5f56;
+  color: #ffffff;
+}
+
+.icon-button {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(74, 93, 98, 0.16);
+  justify-content: center;
+  min-height: 32px;
+  padding: 6px;
+  width: 34px;
+}
+
+.floorplan3d-legend {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.84);
+  border: 1px solid rgba(74, 93, 98, 0.14);
+  border-radius: 8px;
+  bottom: 14px;
+  color: #40555b;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 12px;
+  left: 14px;
+  padding: 8px 10px;
+  position: absolute;
+  z-index: 5;
+}
+
+.floorplan3d-legend span {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.legend-dot {
+  border-radius: 999px;
+  display: inline-block;
+  height: 9px;
+  width: 9px;
+}
+
+.legend-dot.person {
+  background: #185a89;
+}
+
+.legend-dot.device {
+  background: #1f8a64;
+}
+
+.legend-dot.alert {
+  background: #bc2f2f;
+}
+
+.room-chip,
+.device-label {
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  min-height: 0;
+  padding: 4px 7px;
+  white-space: nowrap;
+}
+
+.room-chip {
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(54, 74, 78, 0.18);
+  color: #40555b;
+}
+
+.room-chip.alert,
+.device-label.alert {
+  background: #bc2f2f;
+  border-color: #9f2424;
+  color: #ffffff;
+}
+
+.device-label {
+  background: #1f8a64;
+  border-color: #17684b;
+  color: #ffffff;
+}
+
+.person-label {
+  background: #185a89;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  box-shadow: 0 3px 10px rgba(18, 42, 52, 0.22);
+  color: #ffffff;
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 800;
+  justify-content: center;
+  line-height: 1;
+  min-width: 24px;
+  padding: 5px 6px;
+}
+
+.person-label.recent {
+  animation: personPulse 1.4s ease-out infinite;
+}
+
+.selection-panel h2 {
+  font-size: 20px;
+  margin: 4px 0 0;
+  text-transform: capitalize;
+}
+
+.detail-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.detail-row {
+  border-top: 1px solid #edf1f2;
+  display: grid;
+  gap: 4px;
+  padding-top: 9px;
+}
+
+.detail-row span {
+  color: #6b7d84;
+  font-size: 12px;
+}
+
+.detail-row strong {
+  color: #25373c;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.detail-row.alert strong {
+  color: #bc2f2f;
+}
+
+.secondary-action {
+  margin-top: 14px;
+}
+
+.alert-action {
+  align-items: stretch;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  justify-content: stretch;
+  min-height: 0;
+  padding-left: 0;
+  padding-right: 0;
+  text-align: left;
+  width: 100%;
+}
+
+.alert-action:hover {
+  background: transparent;
+  border-color: transparent;
+}
+
 .floorplan-shell {
   background: #b7d1d1;
   border: 1px solid #a8bec0;
@@ -780,8 +987,13 @@ button:hover {
     grid-template-columns: 1fr;
   }
 
-  .floorplan {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .floorplan3d-shell {
+    grid-row: auto;
+    min-height: 540px;
+  }
+
+  .floorplan3d-canvas {
+    height: 540px !important;
   }
 }
 
@@ -792,9 +1004,34 @@ button:hover {
   }
 
   .sidebar,
-  .metric-row,
-  .floorplan {
+  .metric-row {
     grid-template-columns: 1fr;
+  }
+
+  .floorplan3d-toolbar {
+    left: 10px;
+    right: 10px;
+    top: 10px;
+  }
+
+  .floorplan3d-legend {
+    bottom: 10px;
+    left: 10px;
+    right: 10px;
+  }
+
+  .layer-button {
+    font-size: 11px;
+    gap: 5px;
+    padding: 5px 7px;
+  }
+
+  .floorplan3d-shell {
+    min-height: 470px;
+  }
+
+  .floorplan3d-canvas {
+    height: 470px !important;
   }
 
   .topbar {
