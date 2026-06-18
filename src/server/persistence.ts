@@ -12,6 +12,7 @@ export class TwinDatabase {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         home_id TEXT NOT NULL DEFAULT 'home_001',
         run_id TEXT,
+        covered_sequence INTEGER NOT NULL DEFAULT 0,
         ts TEXT NOT NULL,
         scenario_id TEXT NOT NULL,
         payload_json TEXT NOT NULL
@@ -42,6 +43,7 @@ export class TwinDatabase {
     `);
     this.ensureColumn('snapshots', 'home_id', "TEXT NOT NULL DEFAULT 'home_001'");
     this.ensureColumn('snapshots', 'run_id', 'TEXT');
+    this.ensureColumn('snapshots', 'covered_sequence', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn('events', 'home_id', "TEXT NOT NULL DEFAULT 'home_001'");
     this.ensureColumn('events', 'run_id', 'TEXT');
     this.ensureColumn('events', 'sequence', 'INTEGER NOT NULL DEFAULT 0');
@@ -61,28 +63,32 @@ export class TwinDatabase {
   }
 
   recordSnapshot(snapshot: TwinSnapshot): void {
-    this.db.prepare('INSERT INTO snapshots (home_id, run_id, ts, scenario_id, payload_json) VALUES (?, ?, ?, ?, ?)')
-      .run(snapshot.homeId, snapshot.runId, snapshot.simClock.currentTime, snapshot.scenarioId, JSON.stringify(snapshot));
+    this.insertSnapshot(snapshot);
   }
 
   recordEvents(events: TwinEvent[]): void {
-    const insertEvent = this.db.prepare('INSERT INTO events (id, home_id, run_id, sequence, ts, type, scenario_id, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
-    const insertTelemetry = this.db.prepare('INSERT INTO telemetry (id, home_id, run_id, sequence, ts, scenario_id, room_id, device_id, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
     const transaction = this.db.transaction((items: TwinEvent[]) => {
-      for (const event of items) {
-        insertEvent.run(event.id, event.homeId, event.runId, event.sequence, event.simTime, event.type, event.scenarioId, JSON.stringify(event));
-        if (event.type === 'DeviceTelemetry') {
-          const telemetry = event as DeviceTelemetryEvent;
-          insertTelemetry.run(telemetry.id, telemetry.homeId, telemetry.runId, telemetry.sequence, telemetry.simTime, telemetry.scenarioId, telemetry.roomId, telemetry.deviceId, JSON.stringify(telemetry));
-        }
-      }
+      this.insertEvents(items);
     });
     transaction(events);
+  }
+
+  recordUpdate(snapshot: TwinSnapshot, events: TwinEvent[]): void {
+    const transaction = this.db.transaction((nextSnapshot: TwinSnapshot, nextEvents: TwinEvent[]) => {
+      this.insertSnapshot(nextSnapshot);
+      this.insertEvents(nextEvents);
+    });
+    transaction(snapshot, events);
   }
 
   getLatestSnapshot(): TwinSnapshot | null {
     const row = this.db.prepare('SELECT payload_json FROM snapshots ORDER BY id DESC LIMIT 1').get() as { payload_json: string } | undefined;
     return row ? JSON.parse(row.payload_json) as TwinSnapshot : null;
+  }
+
+  getLatestSnapshotCheckpoint(): { snapshot: TwinSnapshot; coveredSequence: number } | null {
+    const row = this.db.prepare('SELECT covered_sequence, payload_json FROM snapshots ORDER BY id DESC LIMIT 1').get() as { covered_sequence: number; payload_json: string } | undefined;
+    return row ? { snapshot: JSON.parse(row.payload_json) as TwinSnapshot, coveredSequence: row.covered_sequence } : null;
   }
 
   getRecentEvents(limit: number, runId?: string): TwinEvent[] {
@@ -120,5 +126,22 @@ export class TwinDatabase {
       return;
     }
     this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+
+  private insertSnapshot(snapshot: TwinSnapshot): void {
+    this.db.prepare('INSERT INTO snapshots (home_id, run_id, covered_sequence, ts, scenario_id, payload_json) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(snapshot.homeId, snapshot.runId, snapshot.simClock.sequence, snapshot.simClock.currentTime, snapshot.scenarioId, JSON.stringify(snapshot));
+  }
+
+  private insertEvents(events: TwinEvent[]): void {
+    const insertEvent = this.db.prepare('INSERT INTO events (id, home_id, run_id, sequence, ts, type, scenario_id, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+    const insertTelemetry = this.db.prepare('INSERT INTO telemetry (id, home_id, run_id, sequence, ts, scenario_id, room_id, device_id, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    for (const event of events) {
+      insertEvent.run(event.id, event.homeId, event.runId, event.sequence, event.simTime, event.type, event.scenarioId, JSON.stringify(event));
+      if (event.type === 'DeviceTelemetry') {
+        const telemetry = event as DeviceTelemetryEvent;
+        insertTelemetry.run(telemetry.id, telemetry.homeId, telemetry.runId, telemetry.sequence, telemetry.simTime, telemetry.scenarioId, telemetry.roomId, telemetry.deviceId, JSON.stringify(telemetry));
+      }
+    }
   }
 }

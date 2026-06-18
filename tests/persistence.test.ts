@@ -58,4 +58,30 @@ describe('twin persistence', () => {
 
     db.close();
   });
+
+  it('records snapshots and events atomically with a covered sequence checkpoint', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-'));
+    dirs.push(dir);
+    const db = new TwinDatabase(path.join(dir, 'twin.db'));
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const firstEvents = simulator.advanceMinutes(12);
+    const firstSnapshot = simulator.getSnapshot();
+    db.recordUpdate(firstSnapshot, firstEvents);
+    const firstCheckpoint = db.getLatestSnapshotCheckpoint();
+
+    expect(firstCheckpoint?.coveredSequence).toBe(firstSnapshot.simClock.sequence);
+    expect(db.getRecentEvents(100, firstSnapshot.runId).length).toBe(firstEvents.length);
+
+    simulator.advanceMinutes(1);
+    const laterSnapshot = simulator.getSnapshot();
+    expect(() => db.recordUpdate(laterSnapshot, firstEvents)).toThrow();
+
+    const checkpointAfterFailure = db.getLatestSnapshotCheckpoint();
+    expect(checkpointAfterFailure?.snapshot.simClock.sequence).toBe(firstSnapshot.simClock.sequence);
+    expect(checkpointAfterFailure?.coveredSequence).toBe(firstSnapshot.simClock.sequence);
+
+    db.close();
+  });
 });

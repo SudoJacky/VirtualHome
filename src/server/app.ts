@@ -57,8 +57,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
 
   function recordAndBroadcast(events: TwinEvent[]): TwinSnapshot {
     const snapshot = simulator.getSnapshot();
-    db.recordSnapshot(snapshot);
-    db.recordEvents(events);
+    db.recordUpdate(snapshot, events);
     for (const socket of sockets) {
       const payload = JSON.stringify({
         type: 'twin.update',
