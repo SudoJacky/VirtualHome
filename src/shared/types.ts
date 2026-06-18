@@ -208,6 +208,12 @@ export interface RuleRecoveredEvent extends BaseTwinEvent {
   cooldownUntil: string;
 }
 
+export interface AbnormalityInjectedEvent extends BaseTwinEvent {
+  type: 'AbnormalityInjected';
+  kind: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity';
+  affectedEntities: string[];
+}
+
 export interface AlertCreatedEvent extends BaseTwinEvent {
   type: 'AlertCreated';
   alertId: string;
@@ -231,6 +237,7 @@ export type TwinEvent =
   | ActivityEndedEvent
   | AutomationTriggeredEvent
   | RuleRecoveredEvent
+  | AbnormalityInjectedEvent
   | AlertCreatedEvent
   | ScenarioControlEvent;
 

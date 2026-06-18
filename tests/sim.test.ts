@@ -3,7 +3,7 @@ import { createSimulator } from '../src/sim/engine';
 import { getCatalog, getHomeDefinition } from '../src/sim/catalog';
 import { getScenarioIds } from '../src/sim/scenarios';
 import { getDeviceCapability } from '../src/shared/deviceRegistry';
-import type { AlertCreatedEvent, AutomationTriggeredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent, RoomId, RuleRecoveredEvent, TwinSnapshot } from '../src/shared/types';
+import type { AbnormalityInjectedEvent, AlertCreatedEvent, AutomationTriggeredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent, RoomId, RuleRecoveredEvent, TwinSnapshot } from '../src/shared/types';
 
 describe('virtual home simulator MVP', () => {
   it('defines the MVP home shape from MVP.md', () => {
@@ -294,11 +294,19 @@ describe('virtual home simulator MVP', () => {
       event.alertId === 'network_offline_001' &&
       event.reason === 'rule:network_offline'
     ));
+    const networkSourceIndex = networkEvents.findIndex((event): event is AbnormalityInjectedEvent => (
+      event.type === 'AbnormalityInjected' &&
+      event.kind === 'network_offline' &&
+      event.affectedEntities.includes('router_01') &&
+      event.reason === 'abnormality:network_offline'
+    ));
 
     expect(fridgeFactIndex).toBeGreaterThanOrEqual(0);
     expect(fridgeAlertIndex).toBeGreaterThan(fridgeFactIndex);
     expect(fridgeEvents.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'fridge_left_open')).toBe(true);
+    expect(networkSourceIndex).toBe(0);
     expect(networkFactIndex).toBeGreaterThanOrEqual(0);
+    expect(networkFactIndex).toBeGreaterThan(networkSourceIndex);
     expect(networkAlertIndex).toBeGreaterThan(networkFactIndex);
     expect(networkEvents.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'network_offline')).toBe(true);
     expect(snapshot.devices.fridge_01.state.doorOpen).toBe(true);

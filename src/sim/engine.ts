@@ -5,6 +5,7 @@ import { SeededRandom } from './random';
 import { getScenario, type ScenarioAction, type ScenarioDefinition } from './scenarios';
 import { getDeviceCapability, validateDeviceStatePatch } from '../shared/deviceRegistry';
 import type {
+  AbnormalityInjectedEvent,
   AlertCreatedEvent,
   Catalog,
   DeviceDefinition,
@@ -215,7 +216,7 @@ class Simulator implements VirtualHomeSimulator {
   }
 
   injectAbnormality(kind: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity'): TwinEvent[] {
-    const events: TwinEvent[] = [];
+    const events: TwinEvent[] = [this.createAbnormalityInjectedEvent(kind)];
     if (kind === 'door_left_open') {
       events.push(this.setDeviceState('door_lock_01', { locked: false }, 'abnormality:door_left_open'));
       events.push(this.setDeviceState('doorbell_camera_01', { motion: true, ringing: false }, 'abnormality:door_left_open'));
@@ -236,6 +237,15 @@ class Simulator implements VirtualHomeSimulator {
     events.push(...this.applyRules());
     this.state.emittedEvents.push(...events);
     return events;
+  }
+
+  private createAbnormalityInjectedEvent(kind: AbnormalityInjectedEvent['kind']): AbnormalityInjectedEvent {
+    return this.createEvent({
+      type: 'AbnormalityInjected',
+      kind,
+      affectedEntities: affectedEntitiesForAbnormality(kind),
+      reason: `abnormality:${kind}`
+    });
   }
 
   resolveAbnormality(kind: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity'): TwinEvent[] {
@@ -1225,6 +1235,7 @@ function replayEventsOntoSnapshot(snapshot: TwinSnapshot, events: TwinEvent[]): 
         break;
       case 'AutomationTriggered':
       case 'RuleRecovered':
+      case 'AbnormalityInjected':
         break;
     }
 
@@ -1285,6 +1296,19 @@ function restoreRuleStates(events: TwinEvent[], elapsedMinutes: number, currentT
     }
   }
   return states;
+}
+
+function affectedEntitiesForAbnormality(kind: AbnormalityInjectedEvent['kind']): string[] {
+  if (kind === 'door_left_open') {
+    return ['door_lock_01', 'doorbell_camera_01'];
+  }
+  if (kind === 'fridge_left_open') {
+    return ['fridge_01'];
+  }
+  if (kind === 'network_offline') {
+    return ['router_01'];
+  }
+  return ['senior_1', 'master_sleep_01'];
 }
 
 function minutesBetween(startTime: string, endTime: string): number {
