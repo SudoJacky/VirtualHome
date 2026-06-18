@@ -1,5 +1,6 @@
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
+import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -30,17 +31,25 @@ const websocketQuerySchema = z.object({
   runId: z.string().min(1).optional(),
   afterSequence: z.coerce.number().int().min(0).optional()
 });
-const advancePayloadSchema = z.object({
+const idempotencyPayloadSchema = z.object({
+  idempotencyKey: z.string().trim().min(1).max(128).optional()
+});
+const advancePayloadSchema = idempotencyPayloadSchema.extend({
   minutes: z.coerce.number().int().min(1).max(1440).default(1)
 });
-const dailyStartPayloadSchema = z.object({
+const dailyStartPayloadSchema = idempotencyPayloadSchema.extend({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   seed: z.coerce.number().int().min(0).max(0xffffffff).optional()
 });
-const injectPayloadSchema = z.object({
+const injectPayloadSchema = idempotencyPayloadSchema.extend({
   kind: z.enum(['door_left_open', 'fridge_left_open', 'network_offline', 'senior_no_activity'])
 });
 const resolvePayloadSchema = injectPayloadSchema;
+
+type UpdateResponse = {
+  snapshot: TwinSnapshot;
+  events: TwinEvent[];
+};
 
 export function createServer(options: ServerOptions): FastifyInstance {
   mkdirSync(path.dirname(options.databasePath), { recursive: true });
@@ -118,12 +127,18 @@ export function createServer(options: ServerOptions): FastifyInstance {
 
   app.post('/api/scenarios/:id/start', async (request, reply) => {
     const params = request.params as { id: StaticScenarioId };
+    const result = idempotencyPayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
     if (!scenarioIds.includes(params.id)) {
       return reply.status(404).send({ error: 'Unknown scenario' });
     }
-    const events = simulator.startScenario(params.id);
-    const snapshot = recordAndBroadcast(events);
-    return { snapshot, events };
+    return runIdempotentCommand(reply, result.data.idempotencyKey, `POST /api/scenarios/${params.id}/start`, stripIdempotencyKey(result.data), () => {
+      const events = simulator.startScenario(params.id);
+      const snapshot = recordAndBroadcast(events);
+      return { snapshot, events };
+    });
   });
 
   app.post('/api/daily/start', async (request, reply) => {
@@ -131,10 +146,12 @@ export function createServer(options: ServerOptions): FastifyInstance {
     if (!result.success) {
       return sendValidationError(reply, result.error);
     }
-    const date = result.data.date ?? todayInShanghai();
-    const events = simulator.startDailyScenario({ date, seed: result.data.seed });
-    const snapshot = recordAndBroadcast(events);
-    return { snapshot, events };
+    return runIdempotentCommand(reply, result.data.idempotencyKey, 'POST /api/daily/start', stripIdempotencyKey(result.data), () => {
+      const date = result.data.date ?? todayInShanghai();
+      const events = simulator.startDailyScenario({ date, seed: result.data.seed });
+      const snapshot = recordAndBroadcast(events);
+      return { snapshot, events };
+    });
   });
 
   app.post('/api/control/advance', async (request, reply) => {
@@ -142,21 +159,35 @@ export function createServer(options: ServerOptions): FastifyInstance {
     if (!result.success) {
       return sendValidationError(reply, result.error);
     }
-    const events = simulator.advanceMinutes(result.data.minutes);
-    const snapshot = recordAndBroadcast(events);
-    return { snapshot, events };
+    return runIdempotentCommand(reply, result.data.idempotencyKey, 'POST /api/control/advance', stripIdempotencyKey(result.data), () => {
+      const events = simulator.advanceMinutes(result.data.minutes);
+      const snapshot = recordAndBroadcast(events);
+      return { snapshot, events };
+    });
   });
 
-  app.post('/api/control/pause', async () => {
-    const events = simulator.setPaused(true);
-    const snapshot = recordAndBroadcast(events);
-    return { snapshot, events };
+  app.post('/api/control/pause', async (request, reply) => {
+    const result = idempotencyPayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return runIdempotentCommand(reply, result.data.idempotencyKey, 'POST /api/control/pause', stripIdempotencyKey(result.data), () => {
+      const events = simulator.setPaused(true);
+      const snapshot = recordAndBroadcast(events);
+      return { snapshot, events };
+    });
   });
 
-  app.post('/api/control/resume', async () => {
-    const events = simulator.setPaused(false);
-    const snapshot = recordAndBroadcast(events);
-    return { snapshot, events };
+  app.post('/api/control/resume', async (request, reply) => {
+    const result = idempotencyPayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return runIdempotentCommand(reply, result.data.idempotencyKey, 'POST /api/control/resume', stripIdempotencyKey(result.data), () => {
+      const events = simulator.setPaused(false);
+      const snapshot = recordAndBroadcast(events);
+      return { snapshot, events };
+    });
   });
 
   app.post('/api/control/inject', async (request, reply) => {
@@ -164,9 +195,11 @@ export function createServer(options: ServerOptions): FastifyInstance {
     if (!result.success) {
       return sendValidationError(reply, result.error);
     }
-    const events = simulator.injectAbnormality(result.data.kind);
-    const snapshot = recordAndBroadcast(events);
-    return { snapshot, events };
+    return runIdempotentCommand(reply, result.data.idempotencyKey, 'POST /api/control/inject', stripIdempotencyKey(result.data), () => {
+      const events = simulator.injectAbnormality(result.data.kind);
+      const snapshot = recordAndBroadcast(events);
+      return { snapshot, events };
+    });
   });
 
   app.post('/api/control/resolve', async (request, reply) => {
@@ -174,9 +207,11 @@ export function createServer(options: ServerOptions): FastifyInstance {
     if (!result.success) {
       return sendValidationError(reply, result.error);
     }
-    const events = simulator.resolveAbnormality(result.data.kind);
-    const snapshot = recordAndBroadcast(events);
-    return { snapshot, events };
+    return runIdempotentCommand(reply, result.data.idempotencyKey, 'POST /api/control/resolve', stripIdempotencyKey(result.data), () => {
+      const events = simulator.resolveAbnormality(result.data.kind);
+      const snapshot = recordAndBroadcast(events);
+      return { snapshot, events };
+    });
   });
 
   app.register(async (fastify) => {
@@ -229,6 +264,29 @@ export function createServer(options: ServerOptions): FastifyInstance {
   });
 
   return app;
+
+  function runIdempotentCommand(
+    reply: FastifyReply,
+    idempotencyKey: string | undefined,
+    scope: string,
+    payload: unknown,
+    action: () => UpdateResponse
+  ): UpdateResponse | FastifyReply {
+    if (!idempotencyKey) {
+      return action();
+    }
+    const requestHash = hashRequest(scope, payload);
+    const cached = db.getIdempotencyRecord<UpdateResponse>(idempotencyKey);
+    if (cached) {
+      if (cached.requestHash !== requestHash) {
+        return sendIdempotencyConflict(reply);
+      }
+      return cached.response;
+    }
+    const response = action();
+    db.recordIdempotencyResponse(idempotencyKey, requestHash, response);
+    return response;
+  }
 }
 
 function todayInShanghai(): string {
@@ -251,4 +309,37 @@ function sendValidationError(reply: FastifyReply, error: z.ZodError): FastifyRep
       }))
     }
   });
+}
+
+function sendIdempotencyConflict(reply: FastifyReply): FastifyReply {
+  return reply.status(409).send({
+    error: {
+      code: 'IDEMPOTENCY_CONFLICT',
+      message: 'Idempotency key was already used with a different request'
+    }
+  });
+}
+
+function stripIdempotencyKey<T extends { idempotencyKey?: string }>(payload: T): Omit<T, 'idempotencyKey'> {
+  const { idempotencyKey: _idempotencyKey, ...rest } = payload;
+  return rest;
+}
+
+function hashRequest(scope: string, payload: unknown): string {
+  return createHash('sha256')
+    .update(stableJson({ scope, payload }))
+    .digest('hex');
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
 }

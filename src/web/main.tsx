@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import type { DeviceState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { Floorplan3D, type FloorplanLayers, type FloorplanSelection } from './Floorplan3D';
-import { ApiClientError, postUpdate, type ApiUpdate } from './apiClient';
+import { ApiClientError, createIdempotencyKey, postUpdate, type ApiUpdate } from './apiClient';
 import { createFloorplan3DModel, type Floorplan3DDevice, type Floorplan3DRoom } from './floorplan3dModel';
 import { buildTwinSocketUrl, cursorFromSnapshot, cursorFromUpdate, nextReconnectDelayMs, parseTwinSocketMessage, type TwinSocketCursor } from './twinSocket';
 import { createDashboardModel, mergeTwinEvents } from './viewModel';
@@ -120,21 +120,21 @@ function App(): React.ReactElement {
     };
   }, []);
 
-  async function startDailySimulation(): Promise<void> {
-    const update = await postUpdate('/api/daily/start', { date: dailyDate, seed: dailySeed });
+  async function startDailySimulation(idempotencyKey: string): Promise<void> {
+    const update = await postUpdate('/api/daily/start', { date: dailyDate, seed: dailySeed }, { idempotencyKey });
     applyUpdate(update);
   }
 
-  async function startScenarioCard(cardId: string): Promise<void> {
+  async function startScenarioCard(cardId: string, idempotencyKey: string): Promise<void> {
     if (cardId === 'weekday_normal' || cardId === 'away_day' || cardId === 'night_water_leak') {
-      const update = await postUpdate(`/api/scenarios/${cardId}/start`, {});
+      const update = await postUpdate(`/api/scenarios/${cardId}/start`, {}, { idempotencyKey });
       applyUpdate(update);
       return;
     }
     if (cardId === 'kitchen_air_quality') {
-      const update = await postUpdate('/api/scenarios/weekday_normal/start', {});
+      const update = await postUpdate('/api/scenarios/weekday_normal/start', {}, { idempotencyKey: `${idempotencyKey}:start` });
       applyUpdate(update);
-      const advanced = await postUpdate('/api/control/advance', { minutes: 750 });
+      const advanced = await postUpdate('/api/control/advance', { minutes: 750 }, { idempotencyKey: `${idempotencyKey}:advance` });
       applyUpdate(advanced);
       return;
     }
@@ -145,40 +145,40 @@ function App(): React.ReactElement {
       network_offline: 'network_offline'
     };
     if (injectionMap[cardId]) {
-      const update = await postUpdate('/api/control/inject', { kind: injectionMap[cardId] });
+      const update = await postUpdate('/api/control/inject', { kind: injectionMap[cardId] }, { idempotencyKey });
       applyUpdate(update);
     }
   }
 
-  async function advance(minutes: number): Promise<void> {
-    const update = await postUpdate('/api/control/advance', { minutes });
+  async function advance(minutes: number, idempotencyKey: string): Promise<void> {
+    const update = await postUpdate('/api/control/advance', { minutes }, { idempotencyKey });
     applyUpdate(update);
   }
 
-  async function inject(kind: string): Promise<void> {
-    const update = await postUpdate('/api/control/inject', { kind });
+  async function inject(kind: string, idempotencyKey: string): Promise<void> {
+    const update = await postUpdate('/api/control/inject', { kind }, { idempotencyKey });
     applyUpdate(update);
   }
 
-  async function resolve(kind: string): Promise<void> {
-    const update = await postUpdate('/api/control/resolve', { kind });
+  async function resolve(kind: string, idempotencyKey: string): Promise<void> {
+    const update = await postUpdate('/api/control/resolve', { kind }, { idempotencyKey });
     applyUpdate(update);
   }
 
-  async function setPaused(paused: boolean): Promise<void> {
-    const update = await postUpdate(paused ? '/api/control/pause' : '/api/control/resume', {});
+  async function setPaused(paused: boolean, idempotencyKey: string): Promise<void> {
+    const update = await postUpdate(paused ? '/api/control/pause' : '/api/control/resume', {}, { idempotencyKey });
     applyUpdate(update);
   }
 
-  async function runApiAction(label: string, action: () => Promise<void>): Promise<void> {
+  async function runApiAction(label: string, action: (idempotencyKey: string) => Promise<void>, idempotencyKey = createIdempotencyKey()): Promise<void> {
     setPendingAction(label);
     setApiError(null);
     try {
-      await action();
+      await action(idempotencyKey);
       setFailedAction(null);
     } catch (error) {
       setApiError(formatApiActionError(error));
-      setFailedAction({ label, run: () => runApiAction(label, action) });
+      setFailedAction({ label, run: () => runApiAction(label, action, idempotencyKey) });
     } finally {
       setPendingAction(null);
     }
@@ -231,16 +231,16 @@ function App(): React.ReactElement {
           <>
             <section className="control-group">
               <h2>Playback</h2>
-              <button onClick={() => void runApiAction(snapshot.simClock.paused ? 'Resume simulation' : 'Pause simulation', () => setPaused(!snapshot.simClock.paused))}>
+              <button onClick={() => void runApiAction(snapshot.simClock.paused ? 'Resume simulation' : 'Pause simulation', (key) => setPaused(!snapshot.simClock.paused, key))}>
                 {snapshot.simClock.paused ? <Play size={16} /> : <Pause size={16} />}
                 {snapshot.simClock.paused ? 'Resume simulation' : 'Pause simulation'}
               </button>
-              <button onClick={() => void runApiAction('Jump 15 min', () => advance(15))}><Zap size={16} /> Jump 15 min</button>
+              <button onClick={() => void runApiAction('Jump 15 min', (key) => advance(15, key))}><Zap size={16} /> Jump 15 min</button>
             </section>
             <section className="control-group scenario-script">
               <h2>Scenario Scripts</h2>
               {model.scenarioCards.map((scenario) => (
-                <button key={scenario.id} className="scenario-card" onClick={() => void runApiAction(scenario.title, () => startScenarioCard(scenario.id))}>
+                <button key={scenario.id} className="scenario-card" onClick={() => void runApiAction(scenario.title, (key) => startScenarioCard(scenario.id, key))}>
                   <strong>{scenario.title}</strong>
                   <span>{scenario.businessValue}</span>
                   <small>{scenario.expectedTimeline}</small>
@@ -284,27 +284,27 @@ function App(): React.ReactElement {
 
             <section className="control-group">
               <h2>Control</h2>
-              <button onClick={() => void runApiAction('+1 min', () => advance(1))}><StepForward size={16} /> +1 min</button>
-              <button onClick={() => void runApiAction('+15 min', () => advance(15))}><Zap size={16} /> +15 min</button>
-              <button onClick={() => void runApiAction(snapshot.simClock.paused ? 'Resume' : 'Pause', () => setPaused(!snapshot.simClock.paused))}>
+              <button onClick={() => void runApiAction('+1 min', (key) => advance(1, key))}><StepForward size={16} /> +1 min</button>
+              <button onClick={() => void runApiAction('+15 min', (key) => advance(15, key))}><Zap size={16} /> +15 min</button>
+              <button onClick={() => void runApiAction(snapshot.simClock.paused ? 'Resume' : 'Pause', (key) => setPaused(!snapshot.simClock.paused, key))}>
                 <Pause size={16} /> {snapshot.simClock.paused ? 'Resume' : 'Pause'}
               </button>
             </section>
 
             <section className="control-group">
               <h2>Inject</h2>
-              <button onClick={() => void runApiAction('Fridge open', () => inject('fridge_left_open'))}><Bell size={16} /> Fridge open</button>
-              <button onClick={() => void runApiAction('Door open', () => inject('door_left_open'))}><Bell size={16} /> Door open</button>
-              <button onClick={() => void runApiAction('Network off', () => inject('network_offline'))}><Bell size={16} /> Network off</button>
-              <button onClick={() => void runApiAction('No activity', () => inject('senior_no_activity'))}><Radar size={16} /> No activity</button>
+              <button onClick={() => void runApiAction('Fridge open', (key) => inject('fridge_left_open', key))}><Bell size={16} /> Fridge open</button>
+              <button onClick={() => void runApiAction('Door open', (key) => inject('door_left_open', key))}><Bell size={16} /> Door open</button>
+              <button onClick={() => void runApiAction('Network off', (key) => inject('network_offline', key))}><Bell size={16} /> Network off</button>
+              <button onClick={() => void runApiAction('No activity', (key) => inject('senior_no_activity', key))}><Radar size={16} /> No activity</button>
             </section>
 
             <section className="control-group">
               <h2>Resolve</h2>
-              <button onClick={() => void runApiAction('Resolve fridge', () => resolve('fridge_left_open'))}><Bell size={16} /> Fridge closed</button>
-              <button onClick={() => void runApiAction('Resolve door', () => resolve('door_left_open'))}><Bell size={16} /> Door secured</button>
-              <button onClick={() => void runApiAction('Resolve network', () => resolve('network_offline'))}><Bell size={16} /> Network online</button>
-              <button onClick={() => void runApiAction('Resolve activity', () => resolve('senior_no_activity'))}><Radar size={16} /> Check-in done</button>
+              <button onClick={() => void runApiAction('Resolve fridge', (key) => resolve('fridge_left_open', key))}><Bell size={16} /> Fridge closed</button>
+              <button onClick={() => void runApiAction('Resolve door', (key) => resolve('door_left_open', key))}><Bell size={16} /> Door secured</button>
+              <button onClick={() => void runApiAction('Resolve network', (key) => resolve('network_offline', key))}><Bell size={16} /> Network online</button>
+              <button onClick={() => void runApiAction('Resolve activity', (key) => resolve('senior_no_activity', key))}><Radar size={16} /> Check-in done</button>
             </section>
           </>
         )}

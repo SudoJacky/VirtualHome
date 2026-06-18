@@ -17,14 +17,35 @@ export class ApiClientError extends Error {
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-export async function postUpdate(url: string, payload: unknown, fetcher: FetchLike = fetch, timeoutMs = 10000): Promise<ApiUpdate> {
+export interface PostUpdateOptions {
+  fetcher?: FetchLike;
+  timeoutMs?: number;
+  idempotencyKey?: string;
+}
+
+export function createIdempotencyKey(): string {
+  return `cmd_${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
+}
+
+export async function postUpdate(
+  url: string,
+  payload: unknown,
+  fetcherOrOptions: FetchLike | PostUpdateOptions = fetch,
+  timeoutMs = 10000,
+  idempotencyKey?: string
+): Promise<ApiUpdate> {
+  const options = typeof fetcherOrOptions === 'function'
+    ? { fetcher: fetcherOrOptions, timeoutMs, idempotencyKey }
+    : fetcherOrOptions;
+  const fetcher = options.fetcher ?? fetch;
+  const requestTimeoutMs = options.timeoutMs ?? 10000;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
   try {
     const response = await fetcher(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(withIdempotencyKey(payload, options.idempotencyKey)),
       signal: controller.signal
     });
     const body = await readJson(response);
@@ -35,6 +56,16 @@ export async function postUpdate(url: string, payload: unknown, fetcher: FetchLi
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function withIdempotencyKey(payload: unknown, idempotencyKey: string | undefined): unknown {
+  if (!idempotencyKey) {
+    return payload;
+  }
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    return { ...payload, idempotencyKey };
+  }
+  return { value: payload, idempotencyKey };
 }
 
 async function readJson(response: Response): Promise<unknown> {

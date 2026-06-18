@@ -199,6 +199,56 @@ describe('server API', () => {
     await server.close();
   });
 
+  it('returns the first control result when an idempotency key is retried', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-idempotency-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    const first = await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 1, idempotencyKey: 'advance-once' }
+    });
+    const second = await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 1, idempotencyKey: 'advance-once' }
+    });
+    const current = (await server.inject({ method: 'GET', url: '/api/state' })).json();
+
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual(first.json());
+    expect(current.simClock.sequence).toBe(first.json().snapshot.simClock.sequence);
+
+    await server.close();
+  });
+
+  it('rejects idempotency key reuse with a different control payload', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-idempotency-conflict-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 1, idempotencyKey: 'advance-conflict' }
+    });
+    const conflict = await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 2, idempotencyKey: 'advance-conflict' }
+    });
+
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json().error).toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+
+    await server.close();
+  });
+
   it('starts a generated daily routine through date and seed controls', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-daily-'));
     dirs.push(dir);

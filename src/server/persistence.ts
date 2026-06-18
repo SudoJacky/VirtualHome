@@ -5,6 +5,11 @@ export interface TwinDatabaseOptions {
   snapshotIntervalEvents?: number;
 }
 
+export interface IdempotencyRecord<T = unknown> {
+  requestHash: string;
+  response: T;
+}
+
 export class TwinDatabase {
   private readonly db: Database.Database;
   private readonly snapshotIntervalEvents: number;
@@ -45,6 +50,13 @@ export class TwinDatabase {
         room_id TEXT NOT NULL,
         device_id TEXT NOT NULL,
         payload_json TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS idempotency_records (
+        idempotency_key TEXT PRIMARY KEY,
+        request_hash TEXT NOT NULL,
+        ts TEXT NOT NULL,
+        response_json TEXT NOT NULL
       );
     `);
     this.ensureColumn('snapshots', 'home_id', "TEXT NOT NULL DEFAULT 'home_001'");
@@ -131,6 +143,20 @@ export class TwinDatabase {
       ? this.db.prepare('SELECT payload_json FROM telemetry WHERE run_id = ? ORDER BY ts DESC, sequence DESC LIMIT ?').all(runId, limit) as Array<{ payload_json: string }>
       : this.db.prepare('SELECT payload_json FROM telemetry ORDER BY ts DESC, run_id DESC, sequence DESC LIMIT ?').all(limit) as Array<{ payload_json: string }>;
     return rows.map((row) => JSON.parse(row.payload_json) as DeviceTelemetryEvent);
+  }
+
+  getIdempotencyRecord<T = unknown>(key: string): IdempotencyRecord<T> | null {
+    const row = this.db.prepare('SELECT request_hash, response_json FROM idempotency_records WHERE idempotency_key = ?')
+      .get(key) as { request_hash: string; response_json: string } | undefined;
+    return row ? {
+      requestHash: row.request_hash,
+      response: JSON.parse(row.response_json) as T
+    } : null;
+  }
+
+  recordIdempotencyResponse(key: string, requestHash: string, response: unknown): void {
+    this.db.prepare('INSERT INTO idempotency_records (idempotency_key, request_hash, ts, response_json) VALUES (?, ?, ?, ?)')
+      .run(key, requestHash, new Date().toISOString(), JSON.stringify(response));
   }
 
   close(): void {

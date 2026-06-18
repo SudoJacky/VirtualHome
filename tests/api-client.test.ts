@@ -18,6 +18,20 @@ describe('web API client', () => {
     });
   });
 
+  it('attaches an idempotency key to mutating update requests', async () => {
+    const update = { snapshot: { runId: 'run_1' }, events: [] };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(update), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }));
+
+    await postUpdate('/api/control/advance', { minutes: 15 }, fetchMock, 10000, 'advance-key');
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/control/advance', expect.objectContaining({
+      body: JSON.stringify({ minutes: 15, idempotencyKey: 'advance-key' })
+    }));
+  });
+
   it('rejects non-2xx responses with a displayable API error', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       error: {
