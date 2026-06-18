@@ -122,6 +122,37 @@ describe('server API', () => {
     await server.close();
   });
 
+  it('broadcasts event-only WebSocket updates between snapshot checkpoints', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-ws-incremental-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false, snapshotIntervalEvents: 1000 });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    const beforeAdvance = (await server.inject({ method: 'GET', url: '/api/state' })).json() as { runId: string; simClock: { sequence: number } };
+    const nextUpdate = createNthTypedMessagePromise('twin.update', 2);
+    const ws = await server.injectWS(`/ws?runId=${beforeAdvance.runId}&afterSequence=${beforeAdvance.simClock.sequence}`, {}, {
+      onInit: nextUpdate.attach
+    });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 1 }
+    });
+    const update = await nextUpdate.value;
+
+    expect(update.snapshot).toBeUndefined();
+    expect(update.runId).toBe(beforeAdvance.runId);
+    expect(Number(update.sequence)).toBeGreaterThan(beforeAdvance.simClock.sequence);
+    expect((update.events as Array<{ sequence: number }>).length).toBeGreaterThan(0);
+
+    ws.close();
+    await server.close();
+  });
+
   it('projects public state without exposing private household member details', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-privacy-'));
     dirs.push(dir);
@@ -380,6 +411,43 @@ function createTypedMessagePromise(type: string): {
       ws.on('message', (data: { toString(): string }) => {
         const message = JSON.parse(data.toString()) as Record<string, unknown>;
         if (message.type === type) {
+          cleanup();
+          resolveMessage(message);
+        }
+      });
+      ws.once('error', (error: Error) => {
+        cleanup();
+        rejectMessage(error);
+      });
+    }
+  };
+}
+
+function createNthTypedMessagePromise(type: string, count: number): {
+  value: Promise<Record<string, unknown>>;
+  attach: (ws: WebSocket) => void;
+} {
+  let resolveMessage: (message: Record<string, unknown>) => void = () => {};
+  let rejectMessage: (error: Error) => void = () => {};
+  let cleanup = (): void => {};
+  const value = new Promise<Record<string, unknown>>((resolve, reject) => {
+    resolveMessage = resolve;
+    rejectMessage = reject;
+    const timer = setTimeout(() => reject(new Error(`Timed out waiting for WebSocket ${type}`)), 2000);
+    cleanup = () => clearTimeout(timer);
+  });
+
+  return {
+    value,
+    attach: (ws) => {
+      let seen = 0;
+      ws.on('message', (data: { toString(): string }) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (message.type !== type) {
+          return;
+        }
+        seen += 1;
+        if (seen === count) {
           cleanup();
           resolveMessage(message);
         }

@@ -61,11 +61,13 @@ export function createServer(options: ServerOptions): FastifyInstance {
 
   function recordAndBroadcast(events: TwinEvent[]): TwinSnapshot {
     const snapshot = simulator.getSnapshot();
-    db.recordUpdate(snapshot, events);
+    const snapshotRecorded = db.recordUpdate(snapshot, events);
     for (const socket of sockets) {
       const payload = JSON.stringify({
         type: 'twin.update',
-        snapshot: projectSnapshotForPrivacy(snapshot, socket.privacy),
+        runId: snapshot.runId,
+        sequence: snapshot.simClock.sequence,
+        ...(snapshotRecorded ? { snapshot: projectSnapshotForPrivacy(snapshot, socket.privacy) } : {}),
         events: projectEventsForPrivacy(events, socket.privacy)
       });
       socket.send(payload);
@@ -186,9 +188,12 @@ export function createServer(options: ServerOptions): FastifyInstance {
         : [];
       const client = { privacy, send: (payload: string) => socket.send(payload) };
       sockets.add(client);
+      const snapshot = simulator.getSnapshot();
       socket.send(JSON.stringify({
         type: 'twin.update',
-        snapshot: projectSnapshotForPrivacy(simulator.getSnapshot(), privacy),
+        runId: snapshot.runId,
+        sequence: snapshot.simClock.sequence,
+        snapshot: projectSnapshotForPrivacy(snapshot, privacy),
         events: projectEventsForPrivacy(replayEvents, privacy)
       }));
       socket.on('close', () => sockets.delete(client));

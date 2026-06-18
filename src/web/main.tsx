@@ -19,7 +19,7 @@ import type { DeviceState, RoomId, TwinEvent, TwinSnapshot } from '../shared/typ
 import { Floorplan3D, type FloorplanLayers, type FloorplanSelection } from './Floorplan3D';
 import { ApiClientError, postUpdate, type ApiUpdate } from './apiClient';
 import { createFloorplan3DModel, type Floorplan3DDevice, type Floorplan3DRoom } from './floorplan3dModel';
-import { buildTwinSocketUrl, cursorFromSnapshot, nextReconnectDelayMs, parseTwinSocketMessage, type TwinSocketCursor } from './twinSocket';
+import { buildTwinSocketUrl, cursorFromSnapshot, cursorFromUpdate, nextReconnectDelayMs, parseTwinSocketMessage, type TwinSocketCursor } from './twinSocket';
 import { createDashboardModel, mergeTwinEvents } from './viewModel';
 import './styles.css';
 
@@ -50,9 +50,21 @@ function App(): React.ReactElement {
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let socket: WebSocket | undefined;
 
-    void fetch('/api/state').then((response) => response.json()).then((state: TwinSnapshot) => {
+    async function refreshSnapshotFromApi(): Promise<void> {
+      const response = await fetch('/api/state');
+      if (!response.ok) {
+        throw new Error(`State refresh failed with ${response.status}`);
+      }
+      const state = await response.json() as TwinSnapshot;
+      if (disposed) return;
       socketCursorRef.current = cursorFromSnapshot(state);
       setSnapshot(state);
+    }
+
+    void refreshSnapshotFromApi().catch(() => {
+      if (!disposed) {
+        setSocketStatus('offline');
+      }
     });
     void fetch('/api/events?limit=80').then((response) => response.json()).then(setEvents);
 
@@ -72,8 +84,16 @@ function App(): React.ReactElement {
           setSocketStatus('live');
           return;
         }
-        socketCursorRef.current = cursorFromSnapshot(update.snapshot);
-        setSnapshot(update.snapshot);
+        socketCursorRef.current = cursorFromUpdate(update);
+        if (update.snapshot) {
+          setSnapshot(update.snapshot);
+        } else {
+          void refreshSnapshotFromApi().catch(() => {
+            if (!disposed) {
+              setSocketStatus('offline');
+            }
+          });
+        }
         setEvents((current) => mergeTwinEvents(current, update.events));
         setSocketStatus('live');
       });

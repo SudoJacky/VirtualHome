@@ -7,7 +7,9 @@ export interface TwinSocketCursor {
 
 export interface TwinSocketUpdateMessage {
   type: 'twin.update';
-  snapshot: TwinSnapshot;
+  runId: string;
+  sequence: number;
+  snapshot?: TwinSnapshot;
   events: TwinEvent[];
 }
 
@@ -38,6 +40,13 @@ export function cursorFromSnapshot(snapshot: TwinSnapshot): TwinSocketCursor {
   return {
     runId: snapshot.runId,
     sequence: snapshot.simClock.sequence
+  };
+}
+
+export function cursorFromUpdate(update: TwinSocketUpdateMessage): TwinSocketCursor {
+  return update.snapshot ? cursorFromSnapshot(update.snapshot) : {
+    runId: update.runId,
+    sequence: update.sequence
   };
 }
 

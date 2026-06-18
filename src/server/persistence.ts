@@ -79,14 +79,16 @@ export class TwinDatabase {
     transaction(events);
   }
 
-  recordUpdate(snapshot: TwinSnapshot, events: TwinEvent[]): void {
+  recordUpdate(snapshot: TwinSnapshot, events: TwinEvent[]): boolean {
     const transaction = this.db.transaction((nextSnapshot: TwinSnapshot, nextEvents: TwinEvent[]) => {
-      if (this.shouldRecordSnapshot(nextSnapshot)) {
+      const shouldRecordSnapshot = this.shouldRecordSnapshot(nextSnapshot);
+      if (shouldRecordSnapshot) {
         this.insertSnapshot(nextSnapshot);
       }
       this.insertEvents(nextEvents);
+      return shouldRecordSnapshot;
     });
-    transaction(snapshot, events);
+    return transaction(snapshot, events) as boolean;
   }
 
   getLatestSnapshot(): TwinSnapshot | null {

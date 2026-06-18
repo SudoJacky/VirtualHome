@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTwinSocketUrl, nextReconnectDelayMs, parseTwinSocketMessage } from '../src/web/twinSocket';
+import { buildTwinSocketUrl, cursorFromUpdate, nextReconnectDelayMs, parseTwinSocketMessage } from '../src/web/twinSocket';
 
 describe('twin WebSocket client helpers', () => {
   it('builds reconnect URLs with the last run cursor', () => {
@@ -27,6 +27,20 @@ describe('twin WebSocket client helpers', () => {
       runId: 'run_1',
       sequence: 12
     });
+  });
+
+  it('derives cursors from event-only update messages', () => {
+    const update = parseTwinSocketMessage(JSON.stringify({
+      type: 'twin.update',
+      runId: 'run_1',
+      sequence: 24,
+      events: []
+    }));
+
+    expect(update.type).toBe('twin.update');
+    if (update.type === 'twin.update') {
+      expect(cursorFromUpdate(update)).toEqual({ runId: 'run_1', sequence: 24 });
+    }
   });
 
   it('backs off reconnect attempts with a cap', () => {
