@@ -29,6 +29,7 @@ export interface SimulatorOptions {
 export interface VirtualHomeSimulator {
   startScenario(id: StaticScenarioId): TwinEvent[];
   startDailyScenario(options: DailyScenarioOptions): TwinEvent[];
+  restore(snapshot: TwinSnapshot, events: TwinEvent[]): void;
   advanceMinutes(minutes: number): TwinEvent[];
   setPaused(paused: boolean): TwinEvent[];
   getSnapshot(): TwinSnapshot;
@@ -127,6 +128,29 @@ class Simulator implements VirtualHomeSimulator {
   startDailyScenario(options: DailyScenarioOptions): TwinEvent[] {
     const scenario = generateDailyScenario(options);
     return this.startScenarioDefinition(scenario, options.date, options.seed ?? seedFromDate(options.date));
+  }
+
+  restore(snapshot: TwinSnapshot, events: TwinEvent[]): void {
+    const catalog = getCatalog();
+    const activeScenario = getScenarioForSnapshot(snapshot);
+    const elapsedMinutes = minutesBetween(snapshot.runContext.startedAt, snapshot.simClock.currentTime);
+    this.state = {
+      catalog,
+      activeScenario,
+      snapshot: structuredClone(snapshot),
+      elapsedMinutes,
+      emittedEvents: structuredClone(events),
+      executedStepKeys: new Set(activeScenario.steps
+        .filter((step) => step.minute <= elapsedMinutes)
+        .map((step) => `${activeScenario.id}:${step.minute}`)),
+      profileLitRooms: new Set(Object.values(snapshot.rooms)
+        .filter((room) => room.lightsOn)
+        .map((room) => room.id)),
+      triggeredRules: new Set(events
+        .filter((event) => event.type === 'AutomationTriggered')
+        .map((event) => event.ruleId)),
+      random: new SeededRandom(snapshot.runContext.seed, snapshot.runContext.rngState)
+    };
   }
 
   private startScenarioDefinition(scenario: ScenarioDefinition, eventValue: string, runSeed: number): TwinEvent[] {
@@ -994,6 +1018,18 @@ export function createSimulator(options?: SimulatorOptions): VirtualHomeSimulato
 
 function seedFromDate(date: string): number {
   return [...date].reduce((hash, char) => ((hash * 31) + char.charCodeAt(0)) >>> 0, 2166136261);
+}
+
+function getScenarioForSnapshot(snapshot: TwinSnapshot): ScenarioDefinition {
+  if (snapshot.scenarioId.startsWith('daily_')) {
+    const date = snapshot.scenarioId.slice('daily_'.length).replaceAll('_', '-');
+    return generateDailyScenario({ date, seed: snapshot.runContext.seed });
+  }
+  return getScenario(snapshot.scenarioId as StaticScenarioId);
+}
+
+function minutesBetween(startTime: string, endTime: string): number {
+  return Math.max(0, Math.round((new Date(endTime).getTime() - new Date(startTime).getTime()) / 60000));
 }
 
 function formatShanghaiTime(value: Date): string {

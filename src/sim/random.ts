@@ -1,8 +1,8 @@
 export class SeededRandom {
   private state: number;
 
-  constructor(seed: number) {
-    this.state = seed >>> 0;
+  constructor(seed: number, state = seed) {
+    this.state = state >>> 0;
   }
 
   next(): number {

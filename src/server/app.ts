@@ -34,6 +34,11 @@ export function createServer(options: ServerOptions): FastifyInstance {
   const app = Fastify({ logger: false });
   const simulator = createSimulator({ seed: 20260617 });
   const db = new TwinDatabase(options.databasePath);
+  const latestSnapshot = db.getLatestSnapshot();
+  const restoredFromDatabase = Boolean(latestSnapshot?.runId);
+  if (latestSnapshot?.runId) {
+    simulator.restore(latestSnapshot, db.getEventsForRun(latestSnapshot.runId));
+  }
   const sockets = new Set<{ send: (payload: string) => void }>();
   const scenarioIds = getScenarioIds();
   let tickHandle: NodeJS.Timeout | undefined;
@@ -135,7 +140,9 @@ export function createServer(options: ServerOptions): FastifyInstance {
   });
 
   app.addHook('onReady', async () => {
-    recordAndBroadcast(simulator.startDailyScenario({ date: todayInShanghai(), seed: 20260617 }));
+    if (!restoredFromDatabase) {
+      recordAndBroadcast(simulator.startDailyScenario({ date: todayInShanghai(), seed: 20260617 }));
+    }
     if (options.autoTick !== false) {
       tickHandle = setInterval(() => {
         const events = simulator.advanceMinutes(1);

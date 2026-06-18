@@ -92,6 +92,11 @@ export class TwinDatabase {
     return rows.map((row) => JSON.parse(row.payload_json) as TwinEvent);
   }
 
+  getEventsForRun(runId: string): TwinEvent[] {
+    const rows = this.db.prepare('SELECT payload_json FROM events WHERE run_id = ? ORDER BY sequence ASC').all(runId) as Array<{ payload_json: string }>;
+    return rows.map((row) => JSON.parse(row.payload_json) as TwinEvent);
+  }
+
   getRecentTelemetry(limit: number, runId?: string): DeviceTelemetryEvent[] {
     const rows = runId
       ? this.db.prepare('SELECT payload_json FROM telemetry WHERE run_id = ? ORDER BY ts DESC, sequence DESC LIMIT ?').all(runId, limit) as Array<{ payload_json: string }>

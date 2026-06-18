@@ -136,4 +136,42 @@ describe('server API', () => {
 
     await server.close();
   });
+
+  it('restores the latest persisted run after a server restart', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-recovery-'));
+    dirs.push(dir);
+    const databasePath = path.join(dir, 'twin.db');
+    const firstServer = createServer({ databasePath, autoTick: false });
+
+    await firstServer.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    await firstServer.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 12 }
+    });
+    const beforeRestart = (await firstServer.inject({ method: 'GET', url: '/api/state' })).json();
+    await firstServer.close();
+
+    const secondServer = createServer({ databasePath, autoTick: false });
+    await secondServer.ready();
+    const restored = (await secondServer.inject({ method: 'GET', url: '/api/state' })).json();
+    const advance = await secondServer.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 1 }
+    });
+    const resumedEvents = advance.json().events as Array<{ runId: string; sequence: number }>;
+
+    expect(restored.runId).toBe(beforeRestart.runId);
+    expect(restored.simClock.currentTime).toBe(beforeRestart.simClock.currentTime);
+    expect(restored.simClock.sequence).toBe(beforeRestart.simClock.sequence);
+    expect(resumedEvents.length).toBeGreaterThan(0);
+    expect(resumedEvents.every((event) => event.runId === beforeRestart.runId)).toBe(true);
+    expect(resumedEvents[0].sequence).toBeGreaterThan(beforeRestart.simClock.sequence);
+
+    await secondServer.close();
+  });
 });
