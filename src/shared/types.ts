@@ -189,4 +189,5 @@ export type TwinEvent =
   | AlertCreatedEvent
   | ScenarioControlEvent;
 
-export type ScenarioId = 'weekday_normal' | 'away_day' | 'night_water_leak';
+export type StaticScenarioId = 'weekday_normal' | 'away_day' | 'night_water_leak';
+export type ScenarioId = StaticScenarioId | `daily_${string}`;

@@ -145,4 +145,18 @@ describe('virtual home simulator MVP', () => {
     expect(first.advanceMinutes(30)).toEqual(second.advanceMinutes(30));
     expect(first.getSnapshot()).toEqual(second.getSnapshot());
   });
+
+  it('starts a calendar-generated daily scenario from date and seed', () => {
+    const simulator = createSimulator({ seed: 777 });
+
+    simulator.startDailyScenario({ date: '2026-07-14', seed: 42 });
+    simulator.advanceMinutes(180);
+    const snapshot = simulator.getSnapshot();
+    const events = simulator.getEvents();
+
+    expect(snapshot.scenarioId).toBe('daily_2026_07_14');
+    expect(snapshot.simClock.currentTime.startsWith('2026-07-14')).toBe(true);
+    expect(events.some((event) => event.type === 'PersonMoved' && event.personId === 'child_1' && event.to === 'away' && event.activity === 'school')).toBe(true);
+    expect(events.some((event) => event.type === 'DeviceStateChanged' && event.deviceId === 'sprinkler_01' && event.state.valveOpen === true)).toBe(true);
+  });
 });
