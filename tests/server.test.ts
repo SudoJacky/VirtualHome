@@ -302,6 +302,36 @@ describe('server API', () => {
     await server.close();
   });
 
+  it('fails closed to public WebSocket projection when privacy query is invalid', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-ws-privacy-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 12 }
+    });
+
+    const firstMessage = createMessagePromise();
+    const ws = await server.injectWS('/ws?privacy=owner', {}, {
+      onInit: firstMessage.attach
+    });
+    const update = await firstMessage.value as unknown as { snapshot: { people: Record<string, unknown>; activities: Record<string, unknown>; rooms: Record<string, { people: string[] }> } };
+
+    expect(update.snapshot.people).toEqual({});
+    expect(update.snapshot.activities).toEqual({});
+    expect(JSON.stringify(update.snapshot)).not.toContain('adult_1');
+    expect(Object.values(update.snapshot.rooms).every((room) => room.people.length === 0)).toBe(true);
+
+    ws.close();
+    await server.close();
+  });
+
   it('broadcasts event-only WebSocket updates between snapshot checkpoints', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-ws-incremental-'));
     dirs.push(dir);

@@ -289,13 +289,16 @@ export function createServer(options: ServerOptions): FastifyInstance {
   app.register(async (fastify) => {
     fastify.get('/ws', { websocket: true }, (socket, request) => {
       const result = websocketQuerySchema.safeParse(request.query);
-      const privacy = result.success ? result.data.privacy : 'admin';
+      const privacy = result.success ? result.data.privacy : 'public';
       const replayEvents = result.success && result.data.runId && result.data.afterSequence !== undefined
         ? db.getEventsAfter(result.data.runId, result.data.afterSequence)
         : [];
       const client = { privacy, send: (payload: string) => socket.send(payload) };
       sockets.add(client);
       const snapshot = simulator.getSnapshot();
+      recordAccess('/ws', privacy, snapshot.runId, snapshot.simClock.sequence, result.success
+        ? { afterSequence: result.data.afterSequence ?? null }
+        : { validation: 'failed' });
       socket.send(JSON.stringify({
         type: 'twin.update',
         runId: snapshot.runId,
