@@ -253,7 +253,7 @@ const deviceAccessRecordSchema: JsonSchema = {
           required: ['commandId', 'status', 'requestedAt', 'acknowledgedAt', 'reason'],
           properties: {
             commandId: stringSchema,
-            status: { type: 'string', enum: ['acknowledged', 'none'] },
+            status: { type: 'string', enum: ['requested', 'sent', 'acknowledged', 'failed', 'timed-out', 'none'] },
             requestedAt: isoDateTimeSchema,
             acknowledgedAt: {
               anyOf: [isoDateTimeSchema, { type: 'null' }]

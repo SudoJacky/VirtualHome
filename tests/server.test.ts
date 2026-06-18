@@ -84,6 +84,14 @@ describe('server API', () => {
     expect(document.components.schemas.DeviceCapability.properties.stateFields.additionalProperties.properties).toHaveProperty('unit');
     expect(document.components.schemas.DeviceCapability.properties.stateFields.additionalProperties.properties).toHaveProperty('normalRange');
     expect(document.components.schemas).toHaveProperty('AccessAuditRecord');
+    expect(document.components.schemas.DeviceAccessRecord.properties.lastCommand.anyOf[0].properties.status.enum).toEqual([
+      'requested',
+      'sent',
+      'acknowledged',
+      'failed',
+      'timed-out',
+      'none'
+    ]);
     expect(document.components.schemas).toHaveProperty('AbnormalityInjectedEvent');
     expect(document.components.schemas.AbnormalityInjectedEvent.required).toEqual(expect.arrayContaining(['type', 'kind', 'affectedEntities']));
     expect(document.components.schemas.AbnormalityInjectedEvent.properties.kind.enum).toEqual([
@@ -203,10 +211,10 @@ describe('server API', () => {
       protocol: 'simulated',
       connectivity: 'offline',
       reportedState: { online: false, latencyMs: 0 },
-      desiredState: { online: false, latencyMs: 0 },
+      desiredState: { online: true, latencyMs: 18 },
       dataQuality: { source: 'simulator', confidence: 1 },
       lastCommand: {
-        status: 'acknowledged',
+        status: 'failed',
         reason: 'abnormality:network_offline'
       }
     });

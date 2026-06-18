@@ -2,7 +2,7 @@ import { getDeviceCapability } from '../shared/deviceRegistry';
 import type { DeviceState, DeviceStateChangedEvent, DeviceTelemetryEvent, TwinEvent, TwinSnapshot } from '../shared/types';
 
 type DeviceAccessConnectivity = 'online' | 'offline' | 'unknown';
-type CommandStatus = 'acknowledged' | 'none';
+type CommandStatus = 'requested' | 'sent' | 'acknowledged' | 'failed' | 'timed-out' | 'none';
 
 export interface DeviceAccessRecord {
   deviceId: string;
@@ -47,13 +47,16 @@ export function createDeviceAccessRecords(snapshot: TwinSnapshot, events: TwinEv
       const stateChange = latestStateChange.get(device.id);
       const lastSeenAt = latestSeenAt.get(device.id) ?? snapshot.simClock.currentTime;
       const supportedCommands = capability.supportedCommands;
+      const commandStatus = stateChange ? commandStatusForStateChange(stateChange) : 'none';
       return {
         deviceId: device.id,
         roomId: device.roomId,
         deviceType: device.type,
         displayName: capability.displayName,
         protocol: 'simulated' as const,
-        desiredState: stateChange ? stateChange.state : supportedCommands.length > 0 ? { ...device.state } : null,
+        desiredState: stateChange?.reason?.startsWith('abnormality:')
+          ? { ...capability.defaultState }
+          : stateChange ? stateChange.state : supportedCommands.length > 0 ? { ...device.state } : null,
         reportedState: { ...device.state },
         connectivity: connectivityForDevice(device),
         lastSeenAt,
@@ -64,9 +67,9 @@ export function createDeviceAccessRecords(snapshot: TwinSnapshot, events: TwinEv
         },
         lastCommand: stateChange ? {
           commandId: stateChange.id,
-          status: 'acknowledged' as const,
+          status: commandStatus,
           requestedAt: stateChange.simTime,
-          acknowledgedAt: stateChange.simTime,
+          acknowledgedAt: commandStatus === 'acknowledged' ? stateChange.simTime : null,
           reason: stateChange.reason ?? null
         } : null
       };
@@ -79,6 +82,13 @@ function connectivityForDevice(device: DeviceState): DeviceAccessConnectivity {
     return device.state.online ? 'online' : 'offline';
   }
   return 'online';
+}
+
+function commandStatusForStateChange(event: DeviceStateChangedEvent): CommandStatus {
+  if (event.reason?.startsWith('abnormality:')) {
+    return 'failed';
+  }
+  return 'acknowledged';
 }
 
 function freshnessFor(lastSeenAt: string, currentTime: string): 'live' | 'stale' {
