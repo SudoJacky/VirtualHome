@@ -13,4 +13,8 @@ export class SeededRandom {
   range(min: number, max: number): number {
     return min + (max - min) * this.next();
   }
+
+  getState(): number {
+    return this.state;
+  }
 }

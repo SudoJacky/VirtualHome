@@ -1,5 +1,6 @@
 import { getCatalog } from './catalog';
 import { generateDailyScenario, type DailyScenarioOptions } from './dailyPlan';
+import { randomUUID } from 'node:crypto';
 import { SeededRandom } from './random';
 import { getScenario, type ScenarioAction, type ScenarioDefinition } from './scenarios';
 import type {
@@ -15,6 +16,7 @@ import type {
   ScenarioControlEvent,
   ScenarioId,
   StaticScenarioId,
+  RunContext,
   TwinEvent,
   TwinSnapshot
 } from '../shared/types';
@@ -96,16 +98,19 @@ const roomLightDevices: Partial<Record<RoomId, string>> = {
 
 class Simulator implements VirtualHomeSimulator {
   private readonly homeId: string;
+  private readonly baseSeed: number;
   private state: RuntimeState;
 
   constructor(options: SimulatorOptions = {}) {
     const catalog = getCatalog();
-    const random = new SeededRandom(options.seed ?? 1);
+    this.baseSeed = options.seed ?? 1;
+    const random = new SeededRandom(this.baseSeed);
     this.homeId = options.homeId ?? 'home_001';
+    const runContext = this.createRunContext(this.baseSeed, '2026-06-17T00:00:00+08:00', random);
     this.state = {
       catalog,
       activeScenario: getScenario('weekday_normal'),
-      snapshot: this.createInitialSnapshot(catalog, 'weekday_normal', '2026-06-17T00:00:00+08:00', 'morning', 60),
+      snapshot: this.createInitialSnapshot(catalog, 'weekday_normal', '2026-06-17T00:00:00+08:00', 'morning', 60, runContext),
       elapsedMinutes: 0,
       emittedEvents: [],
       executedStepKeys: new Set(),
@@ -116,25 +121,28 @@ class Simulator implements VirtualHomeSimulator {
   }
 
   startScenario(id: StaticScenarioId): TwinEvent[] {
-    return this.startScenarioDefinition(getScenario(id), id);
+    return this.startScenarioDefinition(getScenario(id), id, this.baseSeed);
   }
 
   startDailyScenario(options: DailyScenarioOptions): TwinEvent[] {
     const scenario = generateDailyScenario(options);
-    return this.startScenarioDefinition(scenario, options.date);
+    return this.startScenarioDefinition(scenario, options.date, options.seed ?? seedFromDate(options.date));
   }
 
-  private startScenarioDefinition(scenario: ScenarioDefinition, eventValue: string): TwinEvent[] {
+  private startScenarioDefinition(scenario: ScenarioDefinition, eventValue: string, runSeed: number): TwinEvent[] {
+    const catalog = getCatalog();
+    const random = new SeededRandom(runSeed);
+    const runContext = this.createRunContext(runSeed, scenario.startTime, random);
     this.state = {
-      catalog: getCatalog(),
+      catalog,
       activeScenario: scenario,
-      snapshot: this.createInitialSnapshot(getCatalog(), scenario.id, scenario.startTime, scenario.initialMode, scenario.speed),
+      snapshot: this.createInitialSnapshot(catalog, scenario.id, scenario.startTime, scenario.initialMode, scenario.speed, runContext),
       elapsedMinutes: 0,
       emittedEvents: [],
       executedStepKeys: new Set(),
       profileLitRooms: new Set(),
       triggeredRules: new Set(),
-      random: this.state.random
+      random
     };
 
     for (const [personId, person] of Object.entries(scenario.initialPeople)) {
@@ -177,6 +185,7 @@ class Simulator implements VirtualHomeSimulator {
   }
 
   getSnapshot(): TwinSnapshot {
+    this.syncRunContext();
     return structuredClone(this.state.snapshot);
   }
 
@@ -197,7 +206,7 @@ class Simulator implements VirtualHomeSimulator {
     return [event];
   }
 
-  private createInitialSnapshot(catalog: Catalog, scenarioId: ScenarioId, startTime: string, mode: HomeMode, speed: number): TwinSnapshot {
+  private createInitialSnapshot(catalog: Catalog, scenarioId: ScenarioId, startTime: string, mode: HomeMode, speed: number, runContext: RunContext): TwinSnapshot {
     const devices = Object.fromEntries(catalog.devices.map((device) => [device.id, this.createDeviceState(device)]));
     const rooms = catalog.rooms.reduce<TwinSnapshot['rooms']>((roomMap, room) => {
       roomMap[room.id] = {
@@ -228,6 +237,8 @@ class Simulator implements VirtualHomeSimulator {
 
     return {
       homeId: this.homeId,
+      runId: runContext.runId,
+      runContext,
       scenarioId,
       simClock: {
         currentTime: startTime,
@@ -886,8 +897,9 @@ class Simulator implements VirtualHomeSimulator {
     });
   }
 
-  private createEvent<T extends Omit<TwinEvent, 'id' | 'ts' | 'simTime' | 'homeId' | 'scenarioId' | 'sequence'>>(event: T): T & {
+  private createEvent<T extends Omit<TwinEvent, 'id' | 'runId' | 'ts' | 'simTime' | 'homeId' | 'scenarioId' | 'sequence'>>(event: T): T & {
     id: string;
+    runId: string;
     ts: string;
     simTime: string;
     homeId: string;
@@ -896,9 +908,11 @@ class Simulator implements VirtualHomeSimulator {
   } {
     this.state.snapshot.simClock.sequence += 1;
     const sequence = this.state.snapshot.simClock.sequence;
+    this.syncRunContext();
     return {
       ...event,
-      id: `evt_${String(sequence).padStart(6, '0')}`,
+      id: `${this.state.snapshot.runId}_evt_${String(sequence).padStart(6, '0')}`,
+      runId: this.state.snapshot.runId,
       ts: this.state.snapshot.simClock.currentTime,
       simTime: this.state.snapshot.simClock.currentTime,
       homeId: this.homeId,
@@ -950,6 +964,21 @@ class Simulator implements VirtualHomeSimulator {
     this.state.snapshot.simClock.currentTime = formatShanghaiTime(current);
   }
 
+  private createRunContext(seed: number, startedAt: string, random: SeededRandom): RunContext {
+    return {
+      runId: `run_${randomUUID()}`,
+      seed,
+      rngState: random.getState(),
+      scenarioVersion: 'scenario-v1',
+      engineVersion: 'engine-v1',
+      startedAt
+    };
+  }
+
+  private syncRunContext(): void {
+    this.state.snapshot.runContext.rngState = this.state.random.getState();
+  }
+
   private round(value: number): number {
     return Math.round(value * 10) / 10;
   }
@@ -961,6 +990,10 @@ class Simulator implements VirtualHomeSimulator {
 
 export function createSimulator(options?: SimulatorOptions): VirtualHomeSimulator {
   return new Simulator(options);
+}
+
+function seedFromDate(date: string): number {
+  return [...date].reduce((hash, char) => ((hash * 31) + char.charCodeAt(0)) >>> 0, 2166136261);
 }
 
 function formatShanghaiTime(value: Date): string {

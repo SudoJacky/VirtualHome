@@ -50,6 +50,15 @@ export interface SimClock {
   sequence: number;
 }
 
+export interface RunContext {
+  runId: string;
+  seed: number;
+  rngState: number;
+  scenarioVersion: string;
+  engineVersion: string;
+  startedAt: string;
+}
+
 export interface PersonState {
   id: string;
   kind: PersonKind;
@@ -91,6 +100,8 @@ export interface AlertState {
 
 export interface TwinSnapshot {
   homeId: string;
+  runId: string;
+  runContext: RunContext;
   scenarioId: string;
   simClock: SimClock;
   homeState: {
@@ -112,6 +123,7 @@ export interface TwinSnapshot {
 
 export interface BaseTwinEvent {
   id: string;
+  runId: string;
   type: string;
   ts: string;
   simTime: string;

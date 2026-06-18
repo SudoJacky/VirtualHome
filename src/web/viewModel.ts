@@ -243,13 +243,20 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
 }
 
 export function mergeTwinEvents(current: TwinEvent[], incoming: TwinEvent[], limit = 100): TwinEvent[] {
+  const activeRunId = latestRunId(incoming) ?? latestRunId(current);
+  const currentForRun = activeRunId ? current.filter((event) => event.runId === activeRunId) : current;
+  const incomingForRun = activeRunId ? incoming.filter((event) => event.runId === activeRunId) : incoming;
   const byId = new Map<string, TwinEvent>();
-  for (const event of [...current, ...incoming]) {
+  for (const event of [...currentForRun, ...incomingForRun]) {
     byId.set(event.id, event);
   }
   return [...byId.values()]
     .sort((left, right) => left.sequence - right.sequence)
     .slice(-limit);
+}
+
+function latestRunId(events: TwinEvent[]): string | undefined {
+  return events.at(-1)?.runId ?? events[0]?.runId;
 }
 
 function formatEvent(event: TwinEvent): DashboardEvent {

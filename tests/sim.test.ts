@@ -238,8 +238,44 @@ describe('virtual home simulator MVP', () => {
     first.startScenario('weekday_normal');
     second.startScenario('weekday_normal');
 
-    expect(first.advanceMinutes(30)).toEqual(second.advanceMinutes(30));
-    expect(first.getSnapshot()).toEqual(second.getSnapshot());
+    expect(stripRunFields(first.advanceMinutes(30))).toEqual(stripRunFields(second.advanceMinutes(30)));
+    expect(stripRunFields(first.getSnapshot())).toEqual(stripRunFields(second.getSnapshot()));
+  });
+
+  it('creates a unique run id and globally unique event ids for each scenario run', () => {
+    const simulator = createSimulator({ seed: 1234 });
+
+    const firstStart = simulator.startScenario('weekday_normal');
+    const firstSnapshot = simulator.getSnapshot();
+    const secondStart = simulator.startScenario('weekday_normal');
+    const secondSnapshot = simulator.getSnapshot();
+
+    expect(firstSnapshot.runId).toMatch(/^run_/);
+    expect(secondSnapshot.runId).toMatch(/^run_/);
+    expect(firstSnapshot.runId).not.toBe(secondSnapshot.runId);
+    expect(firstStart[0].sequence).toBe(1);
+    expect(secondStart[0].sequence).toBe(1);
+    expect(firstStart[0].runId).toBe(firstSnapshot.runId);
+    expect(secondStart[0].runId).toBe(secondSnapshot.runId);
+    expect(firstStart[0].id).not.toBe(secondStart[0].id);
+  });
+
+  it('reinitializes runtime randomness for a daily run seed even after other scenarios execute', () => {
+    const simulator = createSimulator({ seed: 777 });
+
+    simulator.startDailyScenario({ date: '2026-07-14', seed: 42 });
+    const firstEvents = stripRunFields(simulator.advanceMinutes(360));
+    const firstSnapshot = stripRunFields(simulator.getSnapshot());
+
+    simulator.startScenario('away_day');
+    simulator.advanceMinutes(40);
+
+    simulator.startDailyScenario({ date: '2026-07-14', seed: 42 });
+    const secondEvents = stripRunFields(simulator.advanceMinutes(360));
+    const secondSnapshot = stripRunFields(simulator.getSnapshot());
+
+    expect(secondEvents).toEqual(firstEvents);
+    expect(secondSnapshot).toEqual(firstSnapshot);
   });
 
   it('starts a calendar-generated daily scenario from date and seed', () => {
@@ -256,3 +292,11 @@ describe('virtual home simulator MVP', () => {
     expect(events.some((event) => event.type === 'DeviceStateChanged' && event.deviceId === 'sprinkler_01' && event.state.valveOpen === true)).toBe(true);
   });
 });
+
+function stripRunFields<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value, (key, fieldValue) => (
+    key === 'id' || key === 'runId' || key === 'startedAt' || key === 'rngState'
+      ? undefined
+      : fieldValue
+  ))) as T;
+}

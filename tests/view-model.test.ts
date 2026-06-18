@@ -32,6 +32,21 @@ describe('dashboard view model', () => {
     expect(merged).toHaveLength(events.length);
   });
 
+  it('keeps the frontend event stream isolated to the active run', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    const firstRunEvents = simulator.advanceMinutes(12);
+    const firstRunId = simulator.getSnapshot().runId;
+
+    const secondStart = simulator.startScenario('away_day');
+    const secondRunId = simulator.getSnapshot().runId;
+    const merged = mergeTwinEvents(firstRunEvents, secondStart);
+
+    expect(firstRunId).not.toBe(secondRunId);
+    expect(merged).toEqual(secondStart);
+    expect(merged.every((event) => event.runId === secondRunId)).toBe(true);
+  });
+
   it('marks recently moved people for restrained floorplan animation', () => {
     const simulator = createSimulator({ seed: 314 });
     simulator.startScenario('weekday_normal');

@@ -53,13 +53,15 @@ export function createServer(options: ServerOptions): FastifyInstance {
   app.get('/api/state', async () => simulator.getSnapshot());
 
   app.get('/api/events', async (request) => {
-    const query = request.query as { limit?: string };
-    return db.getRecentEvents(Number(query.limit ?? 100));
+    const query = request.query as { limit?: string; runId?: string };
+    const runId = query.runId ?? simulator.getSnapshot().runId;
+    return db.getRecentEvents(Number(query.limit ?? 100), runId);
   });
 
   app.get('/api/telemetry', async (request) => {
-    const query = request.query as { limit?: string };
-    return db.getRecentTelemetry(Number(query.limit ?? 100));
+    const query = request.query as { limit?: string; runId?: string };
+    const runId = query.runId ?? simulator.getSnapshot().runId;
+    return db.getRecentTelemetry(Number(query.limit ?? 100), runId);
   });
 
   app.post('/api/scenarios/:id/start', async (request, reply) => {

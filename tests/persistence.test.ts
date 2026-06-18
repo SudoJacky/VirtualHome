@@ -31,4 +31,31 @@ describe('twin persistence', () => {
 
     db.close();
   });
+
+  it('appends events from separate runs without replacing same-sequence history', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-'));
+    dirs.push(dir);
+    const db = new TwinDatabase(path.join(dir, 'twin.db'));
+    const simulator = createSimulator({ seed: 42 });
+
+    const firstStart = simulator.startScenario('weekday_normal');
+    db.recordSnapshot(simulator.getSnapshot());
+    db.recordEvents(firstStart);
+    const firstRunId = simulator.getSnapshot().runId;
+
+    const secondStart = simulator.startScenario('away_day');
+    db.recordSnapshot(simulator.getSnapshot());
+    db.recordEvents(secondStart);
+    const secondRunId = simulator.getSnapshot().runId;
+
+    const recent = db.getRecentEvents(10)
+      .filter((event) => event.type === 'ScenarioControl');
+
+    expect(firstRunId).not.toBe(secondRunId);
+    expect(recent.map((event) => event.runId).sort()).toEqual([firstRunId, secondRunId].sort());
+    expect(new Set(recent.map((event) => event.id)).size).toBe(2);
+    expect(recent.every((event) => event.sequence === 1)).toBe(true);
+
+    db.close();
+  });
 });
