@@ -7,6 +7,7 @@ import { createSimulator } from '../sim/engine';
 import { getScenarioIds } from '../sim/scenarios';
 import type { StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { TwinDatabase } from './persistence';
+import { projectEventsForPrivacy, projectSnapshotForPrivacy, type PrivacyMode } from './privacy';
 
 export interface ServerOptions {
   databasePath: string;
@@ -16,7 +17,11 @@ export interface ServerOptions {
 
 const limitQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(100),
-  runId: z.string().min(1).optional()
+  runId: z.string().min(1).optional(),
+  privacy: z.enum(['admin', 'public']).default('admin')
+});
+const privacyQuerySchema = z.object({
+  privacy: z.enum(['admin', 'public']).default('admin')
 });
 const advancePayloadSchema = z.object({
   minutes: z.coerce.number().int().min(1).max(1440).default(1)
@@ -39,7 +44,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
   if (latestSnapshot?.runId) {
     simulator.restore(latestSnapshot, db.getEventsForRun(latestSnapshot.runId));
   }
-  const sockets = new Set<{ send: (payload: string) => void }>();
+  const sockets = new Set<{ privacy: PrivacyMode; send: (payload: string) => void }>();
   const scenarioIds = getScenarioIds();
   let tickHandle: NodeJS.Timeout | undefined;
 
@@ -49,8 +54,12 @@ export function createServer(options: ServerOptions): FastifyInstance {
     const snapshot = simulator.getSnapshot();
     db.recordSnapshot(snapshot);
     db.recordEvents(events);
-    const payload = JSON.stringify({ type: 'twin.update', snapshot, events });
     for (const socket of sockets) {
+      const payload = JSON.stringify({
+        type: 'twin.update',
+        snapshot: projectSnapshotForPrivacy(snapshot, socket.privacy),
+        events: projectEventsForPrivacy(events, socket.privacy)
+      });
       socket.send(payload);
     }
     return snapshot;
@@ -58,7 +67,13 @@ export function createServer(options: ServerOptions): FastifyInstance {
 
   app.get('/api/scenarios', async () => scenarioIds.map((id) => ({ id })));
 
-  app.get('/api/state', async () => simulator.getSnapshot());
+  app.get('/api/state', async (request, reply) => {
+    const result = privacyQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return projectSnapshotForPrivacy(simulator.getSnapshot(), result.data.privacy);
+  });
 
   app.get('/api/events', async (request, reply) => {
     const result = limitQuerySchema.safeParse(request.query);
@@ -66,7 +81,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
       return sendValidationError(reply, result.error);
     }
     const runId = result.data.runId ?? simulator.getSnapshot().runId;
-    return db.getRecentEvents(result.data.limit, runId);
+    return projectEventsForPrivacy(db.getRecentEvents(result.data.limit, runId), result.data.privacy);
   });
 
   app.get('/api/telemetry', async (request, reply) => {
@@ -132,10 +147,17 @@ export function createServer(options: ServerOptions): FastifyInstance {
   });
 
   app.register(async (fastify) => {
-    fastify.get('/ws', { websocket: true }, (socket) => {
-      sockets.add(socket);
-      socket.send(JSON.stringify({ type: 'twin.update', snapshot: simulator.getSnapshot(), events: [] }));
-      socket.on('close', () => sockets.delete(socket));
+    fastify.get('/ws', { websocket: true }, (socket, request) => {
+      const result = privacyQuerySchema.safeParse(request.query);
+      const privacy = result.success ? result.data.privacy : 'admin';
+      const client = { privacy, send: (payload: string) => socket.send(payload) };
+      sockets.add(client);
+      socket.send(JSON.stringify({
+        type: 'twin.update',
+        snapshot: projectSnapshotForPrivacy(simulator.getSnapshot(), privacy),
+        events: []
+      }));
+      socket.on('close', () => sockets.delete(client));
     });
   });
 

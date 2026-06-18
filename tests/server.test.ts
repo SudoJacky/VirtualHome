@@ -58,6 +58,36 @@ describe('server API', () => {
     await server.close();
   });
 
+  it('projects public state without exposing private household member details', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-privacy-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 12 }
+    });
+
+    const adminState = (await server.inject({ method: 'GET', url: '/api/state' })).json();
+    const publicState = (await server.inject({ method: 'GET', url: '/api/state?privacy=public' })).json();
+
+    expect(adminState.people.adult_1.activity).toBe('breakfast');
+    expect(adminState.rooms.kitchen.people).toContain('adult_1');
+    expect(publicState.homeState.occupancyCount).toBe(1);
+    expect(publicState.people).toEqual({});
+    expect(publicState.rooms.kitchen.people).toEqual([]);
+    expect(publicState.activities).toEqual({});
+    expect(JSON.stringify(publicState)).not.toContain('adult_1');
+    expect(JSON.stringify(publicState)).not.toContain('breakfast');
+
+    await server.close();
+  });
+
   it('pauses and resumes the simulation clock through control endpoints', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-control-'));
     dirs.push(dir);
