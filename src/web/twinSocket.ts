@@ -51,6 +51,10 @@ export function cursorFromUpdate(update: TwinSocketUpdateMessage): TwinSocketCur
   };
 }
 
+export function needsFullTwinRefresh(update: TwinSocketUpdateMessage): boolean {
+  return !update.replayComplete;
+}
+
 export function nextReconnectDelayMs(attempt: number): number {
   return Math.min(30000, 1000 * (2 ** Math.max(0, attempt)));
 }

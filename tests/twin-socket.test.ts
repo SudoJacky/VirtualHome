@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTwinSocketUrl, cursorFromUpdate, nextReconnectDelayMs, parseTwinSocketMessage } from '../src/web/twinSocket';
+import { buildTwinSocketUrl, cursorFromUpdate, needsFullTwinRefresh, nextReconnectDelayMs, parseTwinSocketMessage } from '../src/web/twinSocket';
 
 describe('twin WebSocket client helpers', () => {
   it('builds reconnect URLs with the last run cursor', () => {
@@ -34,6 +34,7 @@ describe('twin WebSocket client helpers', () => {
       type: 'twin.update',
       runId: 'run_1',
       sequence: 24,
+      replayComplete: true,
       events: []
     }));
 
@@ -47,5 +48,20 @@ describe('twin WebSocket client helpers', () => {
     expect(nextReconnectDelayMs(0)).toBe(1000);
     expect(nextReconnectDelayMs(3)).toBe(8000);
     expect(nextReconnectDelayMs(10)).toBe(30000);
+  });
+
+  it('requires a full refresh when reconnect replay is truncated', () => {
+    const update = parseTwinSocketMessage(JSON.stringify({
+      type: 'twin.update',
+      runId: 'run_1',
+      sequence: 524,
+      replayComplete: false,
+      events: []
+    }));
+
+    expect(update.type).toBe('twin.update');
+    if (update.type === 'twin.update') {
+      expect(needsFullTwinRefresh(update)).toBe(true);
+    }
   });
 });

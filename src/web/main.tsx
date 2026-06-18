@@ -22,7 +22,7 @@ import type { DeviceState, RoomId, TwinEvent, TwinSnapshot } from '../shared/typ
 import { Floorplan3D, type FloorplanLayers, type FloorplanSelection } from './Floorplan3D';
 import { ApiClientError, createIdempotencyKey, getJson, postAlertStatus, postUpdate, type AlertStatusCommand, type ApiUpdate } from './apiClient';
 import { createFloorplan3DModel, type Floorplan3DDevice, type Floorplan3DRoom } from './floorplan3dModel';
-import { buildTwinSocketUrl, cursorFromSnapshot, cursorFromUpdate, nextReconnectDelayMs, parseTwinSocketMessage, type TwinSocketCursor } from './twinSocket';
+import { buildTwinSocketUrl, cursorFromSnapshot, cursorFromUpdate, needsFullTwinRefresh, nextReconnectDelayMs, parseTwinSocketMessage, type TwinSocketCursor } from './twinSocket';
 import { createDashboardModel, mergeTwinEvents } from './viewModel';
 import './styles.css';
 
@@ -60,6 +60,17 @@ function App(): React.ReactElement {
       setSnapshot(state);
     }
 
+    async function refreshTwinStateFromApi(): Promise<void> {
+      const [state, recentEvents] = await Promise.all([
+        getJson<TwinSnapshot>('/api/state'),
+        getJson<TwinEvent[]>('/api/events?limit=80')
+      ]);
+      if (disposed) return;
+      socketCursorRef.current = cursorFromSnapshot(state);
+      setSnapshot(state);
+      setEvents(recentEvents);
+    }
+
     void refreshSnapshotFromApi().catch(() => {
       if (!disposed) {
         setSocketStatus('offline');
@@ -88,6 +99,19 @@ function App(): React.ReactElement {
           return;
         }
         socketCursorRef.current = cursorFromUpdate(update);
+        if (needsFullTwinRefresh(update)) {
+          if (update.snapshot) {
+            setSnapshot(update.snapshot);
+          }
+          setEvents([]);
+          void refreshTwinStateFromApi().catch(() => {
+            if (!disposed) {
+              setSocketStatus('offline');
+            }
+          });
+          setSocketStatus('live');
+          return;
+        }
         if (update.snapshot) {
           setSnapshot(update.snapshot);
         } else {
