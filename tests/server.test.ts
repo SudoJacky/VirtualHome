@@ -46,6 +46,33 @@ describe('server API', () => {
     await server.close();
   });
 
+  it('serves an OpenAPI document for REST and WebSocket clients', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-openapi-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    const response = await server.inject({ method: 'GET', url: '/api/openapi.json' });
+    const document = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(document.openapi).toBe('3.1.0');
+    expect(document.info.title).toBe('VirtualHome Twin API');
+    expect(Object.keys(document.paths)).toEqual(expect.arrayContaining([
+      '/api/state',
+      '/api/events',
+      '/api/telemetry',
+      '/api/daily/start',
+      '/api/control/advance',
+      '/api/control/inject',
+      '/api/control/resolve',
+      '/ws'
+    ]));
+    expect(document.paths['/api/control/advance'].post.requestBody.content['application/json'].schema.properties).toHaveProperty('idempotencyKey');
+    expect(document.components.schemas).toHaveProperty('ValidationError');
+
+    await server.close();
+  });
+
   it('accepts WebSocket clients and sends the current twin snapshot', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-ws-'));
     dirs.push(dir);

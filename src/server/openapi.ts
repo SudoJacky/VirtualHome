@@ -1,0 +1,371 @@
+type JsonSchema = Record<string, unknown>;
+
+const stringSchema = { type: 'string' };
+const isoDateTimeSchema = { type: 'string', format: 'date-time' };
+const idempotencyKeySchema = {
+  type: 'string',
+  minLength: 1,
+  maxLength: 128,
+  description: 'Client-generated key used to make retryable control commands safe.'
+};
+
+const twinSnapshotSchema: JsonSchema = {
+  type: 'object',
+  required: ['homeId', 'runId', 'scenarioId', 'simClock', 'homeState', 'rooms', 'people', 'devices', 'activities', 'alerts'],
+  properties: {
+    homeId: stringSchema,
+    runId: stringSchema,
+    scenarioId: stringSchema,
+    simClock: {
+      type: 'object',
+      required: ['currentTime', 'speed', 'paused', 'sequence'],
+      properties: {
+        currentTime: isoDateTimeSchema,
+        speed: { type: 'number' },
+        paused: { type: 'boolean' },
+        sequence: { type: 'integer', minimum: 0 }
+      }
+    },
+    homeState: {
+      type: 'object',
+      properties: {
+        occupancyCount: { type: 'integer', minimum: 0 },
+        mode: { type: 'string' },
+        securityMode: { type: 'string', enum: ['armed', 'disarmed'] }
+      }
+    },
+    rooms: { type: 'object', additionalProperties: true },
+    people: { type: 'object', additionalProperties: true },
+    devices: { type: 'object', additionalProperties: true },
+    activities: { type: 'object', additionalProperties: true },
+    alerts: { type: 'object', additionalProperties: true }
+  }
+};
+
+const twinEventSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence'],
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    type: stringSchema,
+    ts: isoDateTimeSchema,
+    simTime: isoDateTimeSchema,
+    homeId: stringSchema,
+    scenarioId: stringSchema,
+    sequence: { type: 'integer', minimum: 1 },
+    reason: stringSchema
+  },
+  additionalProperties: true
+};
+
+const updateResponseSchema: JsonSchema = {
+  type: 'object',
+  required: ['snapshot', 'events'],
+  properties: {
+    snapshot: { $ref: '#/components/schemas/TwinSnapshot' },
+    events: {
+      type: 'array',
+      items: { $ref: '#/components/schemas/TwinEvent' }
+    }
+  }
+};
+
+const validationErrorSchema: JsonSchema = {
+  type: 'object',
+  required: ['error'],
+  properties: {
+    error: {
+      type: 'object',
+      required: ['code', 'message'],
+      properties: {
+        code: { type: 'string', example: 'VALIDATION_FAILED' },
+        message: stringSchema,
+        issues: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              path: stringSchema,
+              message: stringSchema
+            }
+          }
+        }
+      }
+    }
+  }
+};
+
+const idempotencyConflictSchema: JsonSchema = {
+  type: 'object',
+  required: ['error'],
+  properties: {
+    error: {
+      type: 'object',
+      required: ['code', 'message'],
+      properties: {
+        code: { type: 'string', example: 'IDEMPOTENCY_CONFLICT' },
+        message: stringSchema
+      }
+    }
+  }
+};
+
+export function buildOpenApiDocument(): Record<string, unknown> {
+  return {
+    openapi: '3.1.0',
+    info: {
+      title: 'VirtualHome Twin API',
+      version: '0.1.0',
+      description: 'REST and WebSocket protocol for the VirtualHome smart-home digital twin demo.'
+    },
+    servers: [{ url: '/' }],
+    paths: {
+      '/api/openapi.json': {
+        get: {
+          summary: 'Get the OpenAPI document',
+          responses: okResponse({ type: 'object', additionalProperties: true })
+        }
+      },
+      '/api/scenarios': {
+        get: {
+          summary: 'List built-in scenario ids',
+          responses: okResponse({
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['id'],
+              properties: { id: stringSchema }
+            }
+          })
+        }
+      },
+      '/api/state': {
+        get: {
+          summary: 'Get the current twin state',
+          parameters: [privacyParameter()],
+          responses: okResponse({ $ref: '#/components/schemas/TwinSnapshot' }, true)
+        }
+      },
+      '/api/events': {
+        get: {
+          summary: 'Get recent twin events',
+          parameters: [limitParameter(), runIdParameter(), privacyParameter()],
+          responses: okResponse({
+            type: 'array',
+            items: { $ref: '#/components/schemas/TwinEvent' }
+          }, true)
+        }
+      },
+      '/api/telemetry': {
+        get: {
+          summary: 'Get recent device telemetry events',
+          parameters: [limitParameter(), runIdParameter()],
+          responses: okResponse({
+            type: 'array',
+            items: { $ref: '#/components/schemas/TwinEvent' }
+          }, true)
+        }
+      },
+      '/api/scenarios/{id}/start': {
+        post: {
+          summary: 'Start a built-in scenario run',
+          parameters: [{
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', enum: ['weekday_normal', 'away_day', 'night_water_leak'] }
+          }],
+          requestBody: jsonBody(idempotencyRequestSchema()),
+          responses: updateResponses(true)
+        }
+      },
+      '/api/daily/start': {
+        post: {
+          summary: 'Start a generated daily routine',
+          requestBody: jsonBody({
+            type: 'object',
+            properties: {
+              date: { type: 'string', format: 'date' },
+              seed: { type: 'integer', minimum: 0, maximum: 0xffffffff },
+              idempotencyKey: idempotencyKeySchema
+            }
+          }),
+          responses: updateResponses()
+        }
+      },
+      '/api/control/advance': {
+        post: {
+          summary: 'Advance the simulation clock',
+          requestBody: jsonBody({
+            type: 'object',
+            properties: {
+              minutes: { type: 'integer', minimum: 1, maximum: 1440, default: 1 },
+              idempotencyKey: idempotencyKeySchema
+            }
+          }),
+          responses: updateResponses()
+        }
+      },
+      '/api/control/pause': {
+        post: {
+          summary: 'Pause the simulation clock',
+          requestBody: jsonBody(idempotencyRequestSchema()),
+          responses: updateResponses()
+        }
+      },
+      '/api/control/resume': {
+        post: {
+          summary: 'Resume the simulation clock',
+          requestBody: jsonBody(idempotencyRequestSchema()),
+          responses: updateResponses()
+        }
+      },
+      '/api/control/inject': {
+        post: {
+          summary: 'Inject an abnormality source fact',
+          requestBody: jsonBody(abnormalityRequestSchema()),
+          responses: updateResponses()
+        }
+      },
+      '/api/control/resolve': {
+        post: {
+          summary: 'Resolve an injected abnormality fact',
+          requestBody: jsonBody(abnormalityRequestSchema()),
+          responses: updateResponses()
+        }
+      },
+      '/ws': {
+        get: {
+          summary: 'Open the twin update WebSocket stream',
+          description: 'Clients receive twin.update and twin.heartbeat messages. Reconnect with runId and afterSequence to replay missed events.',
+          parameters: [privacyParameter(), runIdParameter(), {
+            name: 'afterSequence',
+            in: 'query',
+            required: false,
+            schema: { type: 'integer', minimum: 0 }
+          }],
+          responses: {
+            '101': { description: 'WebSocket protocol upgrade' }
+          }
+        }
+      }
+    },
+    components: {
+      schemas: {
+        TwinSnapshot: twinSnapshotSchema,
+        TwinEvent: twinEventSchema,
+        UpdateResponse: updateResponseSchema,
+        ValidationError: validationErrorSchema,
+        IdempotencyConflict: idempotencyConflictSchema
+      }
+    }
+  };
+}
+
+function okResponse(schema: JsonSchema, includeValidationError = false): Record<string, unknown> {
+  return {
+    '200': {
+      description: 'OK',
+      content: {
+        'application/json': { schema }
+      }
+    },
+    ...(includeValidationError ? validationErrorResponse() : {})
+  };
+}
+
+function updateResponses(includeNotFound = false): Record<string, unknown> {
+  return {
+    ...okResponse({ $ref: '#/components/schemas/UpdateResponse' }, true),
+    '409': {
+      description: 'Idempotency key conflict',
+      content: {
+        'application/json': { schema: { $ref: '#/components/schemas/IdempotencyConflict' } }
+      }
+    },
+    ...(includeNotFound ? {
+      '404': {
+        description: 'Unknown scenario',
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: { error: stringSchema }
+            }
+          }
+        }
+      }
+    } : {})
+  };
+}
+
+function validationErrorResponse(): Record<string, unknown> {
+  return {
+    '400': {
+      description: 'Validation failed',
+      content: {
+        'application/json': { schema: { $ref: '#/components/schemas/ValidationError' } }
+      }
+    }
+  };
+}
+
+function jsonBody(schema: JsonSchema): Record<string, unknown> {
+  return {
+    required: false,
+    content: {
+      'application/json': { schema }
+    }
+  };
+}
+
+function idempotencyRequestSchema(): JsonSchema {
+  return {
+    type: 'object',
+    properties: {
+      idempotencyKey: idempotencyKeySchema
+    }
+  };
+}
+
+function abnormalityRequestSchema(): JsonSchema {
+  return {
+    type: 'object',
+    required: ['kind'],
+    properties: {
+      kind: {
+        type: 'string',
+        enum: ['door_left_open', 'fridge_left_open', 'network_offline', 'senior_no_activity']
+      },
+      idempotencyKey: idempotencyKeySchema
+    }
+  };
+}
+
+function limitParameter(): Record<string, unknown> {
+  return {
+    name: 'limit',
+    in: 'query',
+    required: false,
+    schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 }
+  };
+}
+
+function privacyParameter(): Record<string, unknown> {
+  return {
+    name: 'privacy',
+    in: 'query',
+    required: false,
+    schema: { type: 'string', enum: ['admin', 'public'], default: 'admin' }
+  };
+}
+
+function runIdParameter(): Record<string, unknown> {
+  return {
+    name: 'runId',
+    in: 'query',
+    required: false,
+    schema: stringSchema
+  };
+}

@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { createSimulator } from '../sim/engine';
 import { getScenarioIds } from '../sim/scenarios';
 import type { StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
+import { buildOpenApiDocument } from './openapi';
 import { TwinDatabase } from './persistence';
 import { projectEventsForPrivacy, projectSnapshotForPrivacy, type PrivacyMode } from './privacy';
 
@@ -67,6 +68,8 @@ export function createServer(options: ServerOptions): FastifyInstance {
   let heartbeatHandle: NodeJS.Timeout | undefined;
 
   app.register(websocket);
+
+  app.get('/api/openapi.json', async () => buildOpenApiDocument());
 
   function recordAndBroadcast(events: TwinEvent[]): TwinSnapshot {
     const snapshot = simulator.getSnapshot();
