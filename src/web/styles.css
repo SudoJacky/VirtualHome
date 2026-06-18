@@ -284,6 +284,49 @@ button:hover {
   color: #bc2f2f;
 }
 
+.api-status {
+  align-items: center;
+  border-radius: 8px;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  padding: 12px 14px;
+  width: min(1420px, 100%);
+}
+
+.api-status div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.api-status strong {
+  font-size: 13px;
+}
+
+.api-status span {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.api-status.pending {
+  background: #e8f4f1;
+  border: 1px solid #bad7cf;
+  color: #25554c;
+}
+
+.api-status.error {
+  background: #fff1f1;
+  border: 1px solid #e4b9b9;
+  color: #7e2424;
+}
+
+.api-status button {
+  border-color: #d39a9a;
+  color: #7e2424;
+  flex: 0 0 auto;
+}
+
 .story-row {
   display: grid;
   gap: 12px;

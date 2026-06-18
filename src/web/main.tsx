@@ -17,14 +17,10 @@ import {
 } from 'lucide-react';
 import type { DeviceState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { Floorplan3D, type FloorplanLayers, type FloorplanSelection } from './Floorplan3D';
+import { ApiClientError, postUpdate, type ApiUpdate } from './apiClient';
 import { createFloorplan3DModel, type Floorplan3DDevice, type Floorplan3DRoom } from './floorplan3dModel';
 import { createDashboardModel, mergeTwinEvents } from './viewModel';
 import './styles.css';
-
-interface ApiUpdate {
-  snapshot: TwinSnapshot;
-  events: TwinEvent[];
-}
 
 function App(): React.ReactElement {
   const [snapshot, setSnapshot] = React.useState<TwinSnapshot | null>(null);
@@ -40,6 +36,9 @@ function App(): React.ReactElement {
     alerts: true
   });
   const [floorplanSelection, setFloorplanSelection] = React.useState<FloorplanSelection>(null);
+  const [pendingAction, setPendingAction] = React.useState<string | null>(null);
+  const [apiError, setApiError] = React.useState<string | null>(null);
+  const [failedAction, setFailedAction] = React.useState<{ label: string; run: () => Promise<void> } | null>(null);
 
   React.useEffect(() => {
     void fetch('/api/state').then((response) => response.json()).then(setSnapshot);
@@ -99,6 +98,20 @@ function App(): React.ReactElement {
     applyUpdate(update);
   }
 
+  async function runApiAction(label: string, action: () => Promise<void>): Promise<void> {
+    setPendingAction(label);
+    setApiError(null);
+    try {
+      await action();
+      setFailedAction(null);
+    } catch (error) {
+      setApiError(formatApiActionError(error));
+      setFailedAction({ label, run: () => runApiAction(label, action) });
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
   function applyUpdate(update: ApiUpdate): void {
     setSnapshot(update.snapshot);
     setEvents((current) => mergeTwinEvents(current, update.events));
@@ -145,16 +158,16 @@ function App(): React.ReactElement {
           <>
             <section className="control-group">
               <h2>Playback</h2>
-              <button onClick={() => setPaused(!snapshot.simClock.paused)}>
+              <button onClick={() => void runApiAction(snapshot.simClock.paused ? 'Resume simulation' : 'Pause simulation', () => setPaused(!snapshot.simClock.paused))}>
                 {snapshot.simClock.paused ? <Play size={16} /> : <Pause size={16} />}
                 {snapshot.simClock.paused ? 'Resume simulation' : 'Pause simulation'}
               </button>
-              <button onClick={() => advance(15)}><Zap size={16} /> Jump 15 min</button>
+              <button onClick={() => void runApiAction('Jump 15 min', () => advance(15))}><Zap size={16} /> Jump 15 min</button>
             </section>
             <section className="control-group scenario-script">
               <h2>Scenario Scripts</h2>
               {model.scenarioCards.map((scenario) => (
-                <button key={scenario.id} className="scenario-card" onClick={() => startScenarioCard(scenario.id)}>
+                <button key={scenario.id} className="scenario-card" onClick={() => void runApiAction(scenario.title, () => startScenarioCard(scenario.id))}>
                   <strong>{scenario.title}</strong>
                   <span>{scenario.businessValue}</span>
                   <small>{scenario.expectedTimeline}</small>
@@ -193,24 +206,24 @@ function App(): React.ReactElement {
                   <Shuffle size={16} />
                 </button>
               </div>
-              <button onClick={() => startDailySimulation()}><CalendarDays size={16} /> Generate day</button>
+              <button onClick={() => void runApiAction('Generate day', startDailySimulation)}><CalendarDays size={16} /> Generate day</button>
             </section>
 
             <section className="control-group">
               <h2>Control</h2>
-              <button onClick={() => advance(1)}><StepForward size={16} /> +1 min</button>
-              <button onClick={() => advance(15)}><Zap size={16} /> +15 min</button>
-              <button onClick={() => setPaused(!snapshot.simClock.paused)}>
+              <button onClick={() => void runApiAction('+1 min', () => advance(1))}><StepForward size={16} /> +1 min</button>
+              <button onClick={() => void runApiAction('+15 min', () => advance(15))}><Zap size={16} /> +15 min</button>
+              <button onClick={() => void runApiAction(snapshot.simClock.paused ? 'Resume' : 'Pause', () => setPaused(!snapshot.simClock.paused))}>
                 <Pause size={16} /> {snapshot.simClock.paused ? 'Resume' : 'Pause'}
               </button>
             </section>
 
             <section className="control-group">
               <h2>Inject</h2>
-              <button onClick={() => inject('fridge_left_open')}><Bell size={16} /> Fridge open</button>
-              <button onClick={() => inject('door_left_open')}><Bell size={16} /> Door open</button>
-              <button onClick={() => inject('network_offline')}><Bell size={16} /> Network off</button>
-              <button onClick={() => inject('senior_no_activity')}><Radar size={16} /> No activity</button>
+              <button onClick={() => void runApiAction('Fridge open', () => inject('fridge_left_open'))}><Bell size={16} /> Fridge open</button>
+              <button onClick={() => void runApiAction('Door open', () => inject('door_left_open'))}><Bell size={16} /> Door open</button>
+              <button onClick={() => void runApiAction('Network off', () => inject('network_offline'))}><Bell size={16} /> Network off</button>
+              <button onClick={() => void runApiAction('No activity', () => inject('senior_no_activity'))}><Radar size={16} /> No activity</button>
             </section>
           </>
         )}
@@ -237,6 +250,18 @@ function App(): React.ReactElement {
           <Metric label="Active devices" value={model.activeDeviceCount} />
           <Metric label="Alerts" value={model.alerts.length} intent={model.alerts.length > 0 ? 'alert' : 'normal'} />
         </section>
+
+        {pendingAction || apiError ? (
+          <section className={`api-status ${apiError ? 'error' : 'pending'}`} role={apiError ? 'alert' : 'status'}>
+            <div>
+              <strong>{apiError ? 'Request failed' : 'Request in progress'}</strong>
+              <span>{apiError ?? pendingAction}</span>
+            </div>
+            {apiError && failedAction ? (
+              <button onClick={() => void failedAction.run()}>Retry {failedAction.label}</button>
+            ) : null}
+          </section>
+        ) : null}
 
         <section className="story-row">
           <div className="story-card primary-story">
@@ -735,15 +760,6 @@ function RawEventStream({ events }: { events: TwinEvent[] }): React.ReactElement
   );
 }
 
-async function postUpdate(url: string, payload: unknown): Promise<ApiUpdate> {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  return response.json() as Promise<ApiUpdate>;
-}
-
 function todayInShanghai(): string {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',
@@ -751,6 +767,16 @@ function todayInShanghai(): string {
     month: '2-digit',
     day: '2-digit'
   }).format(new Date());
+}
+
+function formatApiActionError(error: unknown): string {
+  if (error instanceof ApiClientError) {
+    return `${error.message} (${error.status})`;
+  }
+  if (error instanceof Error) {
+    return error.name === 'AbortError' ? 'Request timed out. Please retry.' : error.message;
+  }
+  return 'Request failed. Please retry.';
 }
 
 function summarizeState(state: Record<string, string | number | boolean | null>): string {
