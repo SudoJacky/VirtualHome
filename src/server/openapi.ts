@@ -256,6 +256,21 @@ const deviceCapabilitySchema: JsonSchema = {
         properties: {
           type: { type: 'string', enum: ['boolean', 'number', 'string', 'unknown'] },
           required: { type: 'boolean' },
+          defaultValue: {
+            anyOf: [
+              stringSchema,
+              { type: 'number' },
+              { type: 'boolean' },
+              { type: 'null' }
+            ]
+          },
+          unit: stringSchema,
+          normalRange: {
+            type: 'array',
+            items: { type: 'number' },
+            minItems: 2,
+            maxItems: 2
+          },
           nullable: { type: 'boolean' },
           enum: {
             type: 'array',

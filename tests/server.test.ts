@@ -80,6 +80,9 @@ describe('server API', () => {
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('animationHint');
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('defaultState');
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('stateFields');
+    expect(document.components.schemas.DeviceCapability.properties.stateFields.additionalProperties.properties).toHaveProperty('defaultValue');
+    expect(document.components.schemas.DeviceCapability.properties.stateFields.additionalProperties.properties).toHaveProperty('unit');
+    expect(document.components.schemas.DeviceCapability.properties.stateFields.additionalProperties.properties).toHaveProperty('normalRange');
     expect(document.components.schemas).toHaveProperty('AccessAuditRecord');
 
     await server.close();
@@ -156,8 +159,8 @@ describe('server API', () => {
         latencyMs: { unit: 'ms' }
       },
       stateFields: {
-        online: { type: 'boolean', required: false },
-        latencyMs: { type: 'number', required: false }
+        online: { type: 'boolean', required: false, defaultValue: true, unit: 'bool' },
+        latencyMs: { type: 'number', required: false, defaultValue: 18, unit: 'ms' }
       }
     });
     expect(capabilities.router).not.toHaveProperty('isActive');

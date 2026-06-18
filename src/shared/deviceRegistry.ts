@@ -16,6 +16,9 @@ export type DeviceStateFieldType = 'boolean' | 'number' | 'string' | 'unknown';
 export interface DeviceStateFieldMetadata {
   type: DeviceStateFieldType;
   required: boolean;
+  defaultValue?: string | number | boolean | null;
+  unit?: string;
+  normalRange?: [number, number];
   nullable?: boolean;
   enum?: string[];
 }
@@ -254,7 +257,7 @@ export function getDeviceCapabilityMetadata(): Record<string, DeviceCapabilityMe
         markerKind: capability.markerKind,
         animationHint: capability.animationHint,
         defaultState: structuredClone(capability.defaultState),
-        stateFields: serializeStateFields(capability.stateSchema),
+        stateFields: serializeStateFields(capability.stateSchema, capability.defaultState, capability.telemetry),
         telemetry: structuredClone(capability.telemetry),
         supportedCommands: [...capability.supportedCommands]
       }
@@ -292,14 +295,22 @@ function schema(shape: z.ZodRawShape): DeviceStateSchema {
   return z.object(shape).partial().strict();
 }
 
-function serializeStateFields(stateSchema: DeviceStateSchema): Record<string, DeviceStateFieldMetadata> {
+function serializeStateFields(
+  stateSchema: DeviceStateSchema,
+  defaultState: DeviceStatePatch,
+  telemetry: Record<string, DeviceMetricCapability>
+): Record<string, DeviceStateFieldMetadata> {
   return Object.fromEntries(Object.entries(stateSchema.shape).map(([name, fieldSchema]) => [
     name,
-    describeStateField(fieldSchema)
+    describeStateField(fieldSchema, defaultState[name], telemetry[name])
   ]));
 }
 
-function describeStateField(fieldSchema: unknown): DeviceStateFieldMetadata {
+function describeStateField(
+  fieldSchema: unknown,
+  defaultValue: DeviceStatePatch[string] | undefined,
+  metric: DeviceMetricCapability | undefined
+): DeviceStateFieldMetadata {
   let current = fieldSchema;
   let required = true;
   let nullable = false;
@@ -318,6 +329,15 @@ function describeStateField(fieldSchema: unknown): DeviceStateFieldMetadata {
     type: stateFieldType(current),
     required
   };
+  if (defaultValue !== undefined) {
+    metadata.defaultValue = defaultValue;
+  }
+  if (metric) {
+    metadata.unit = metric.unit;
+    if (metric.normalRange) {
+      metadata.normalRange = [...metric.normalRange];
+    }
+  }
   if (nullable) {
     metadata.nullable = true;
   }

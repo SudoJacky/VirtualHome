@@ -44,18 +44,28 @@ describe('device capability registry', () => {
     const metadata = getDeviceCapabilityMetadata();
 
     expect(metadata.router.stateFields).toEqual({
-      online: { type: 'boolean', required: false },
-      latencyMs: { type: 'number', required: false }
+      online: { type: 'boolean', required: false, defaultValue: true, unit: 'bool' },
+      latencyMs: { type: 'number', required: false, defaultValue: 18, unit: 'ms' }
     });
     expect(metadata.light.stateFields.power).toEqual({
       type: 'string',
       required: false,
+      defaultValue: 'off',
+      unit: 'state',
       enum: ['on', 'off']
     });
     expect(metadata.tv.stateFields.app).toEqual({
       type: 'string',
       required: false,
+      defaultValue: null,
       nullable: true
+    });
+    expect(metadata.temperature_humidity_sensor.stateFields.temperatureC).toEqual({
+      type: 'number',
+      required: false,
+      defaultValue: 25,
+      unit: 'C',
+      normalRange: [18, 28]
     });
   });
 });
