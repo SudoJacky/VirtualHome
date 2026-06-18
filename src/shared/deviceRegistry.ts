@@ -1,0 +1,179 @@
+type DeviceStatePayload = Record<string, string | number | boolean | null | undefined>;
+
+export interface DeviceMetricCapability {
+  unit: string;
+  normalRange?: [number, number];
+}
+
+export interface DeviceCapability {
+  displayName: string;
+  shortLabel: string;
+  icon: string;
+  telemetry: Record<string, DeviceMetricCapability>;
+  supportedCommands: string[];
+  isActive: (state: DeviceStatePayload) => boolean;
+  isAbnormal: (state: DeviceStatePayload) => boolean;
+  summarizeState: (state: DeviceStatePayload) => string;
+}
+
+export const deviceCapabilities: Record<string, DeviceCapability> = {
+  door_lock: capability('Door Lock', 'Lock', 'lock', { locked: { unit: 'bool' } }, ['lock', 'unlock'], {
+    isActive: (state) => state.locked === false,
+    isAbnormal: (state) => state.locked === false,
+    summarizeState: (state) => state.locked === false ? 'unlocked' : 'locked'
+  }),
+  motion_sensor: capability('Motion Sensor', 'Motion', 'activity', { motion: { unit: 'bool' }, confidence: { unit: '%' } }, [], {
+    isActive: (state) => state.motion === true,
+    summarizeState: (state) => state.motion === true ? 'triggered' : 'idle'
+  }),
+  doorbell_camera: capability('Doorbell Camera', 'Doorbell', 'camera', { motion: { unit: 'bool' }, ringing: { unit: 'bool' }, batteryPercent: { unit: '%' } }, ['ring', 'record'], {
+    isActive: (state) => state.motion === true || state.ringing === true,
+    summarizeState: (state) => state.ringing === true ? 'ringing' : state.motion === true ? 'motion' : 'idle'
+  }),
+  package_sensor: capability('Package Sensor', 'Package', 'package', { packagePresent: { unit: 'bool' }, weightKg: { unit: 'kg' } }, [], {
+    isActive: (state) => state.packagePresent === true,
+    summarizeState: (state) => state.packagePresent === true ? `${numberValue(state.weightKg, 0)} kg` : 'empty'
+  }),
+  light: capability('Light', 'Light', 'lightbulb', { power: { unit: 'state' }, brightness: { unit: '%' } }, ['turn_on', 'turn_off', 'set_brightness'], {
+    isActive: (state) => state.power === 'on',
+    summarizeState: (state) => state.power === 'on' ? `on ${numberValue(state.brightness, 0)}%` : 'off'
+  }),
+  tv: capability('Television', 'TV', 'tv', { power: { unit: 'state' }, volume: { unit: '%' } }, ['turn_on', 'turn_off'], {
+    isActive: (state) => state.power === 'on',
+    summarizeState: (state) => state.power === 'on' ? `on ${state.app ?? 'input'}` : 'off'
+  }),
+  robot_vacuum: capability('Robot Vacuum', 'Vacuum', 'bot', { status: { unit: 'state' }, batteryPercent: { unit: '%' }, binFull: { unit: 'bool' } }, ['start', 'dock', 'pause'], {
+    isActive: (state) => state.status === 'cleaning' || state.status === 'stuck',
+    isAbnormal: (state) => state.status === 'stuck',
+    summarizeState: (state) => String(state.status ?? 'idle')
+  }),
+  curtain: capability('Curtain', 'Curtain', 'panel-top-open', { positionPercent: { unit: '%' } }, ['open', 'close', 'set_position'], {
+    isActive: (state) => numberValue(state.positionPercent, 0) > 0,
+    summarizeState: (state) => `${numberValue(state.positionPercent, 0)}% open`
+  }),
+  temperature_humidity_sensor: capability('Climate Sensor', 'Temp', 'thermometer', {
+    temperatureC: { unit: 'C', normalRange: [18, 28] },
+    humidityPercent: { unit: '%', normalRange: [35, 65] }
+  }, [], {
+    summarizeState: (state) => `${numberValue(state.temperatureC, 0)} C`
+  }),
+  fridge: capability('Fridge', 'Fridge', 'refrigerator', { doorOpen: { unit: 'bool' }, powerW: { unit: 'W' } }, [], {
+    isActive: (state) => state.doorOpen === true || numberValue(state.powerW, 0) > 100,
+    isAbnormal: (state) => state.doorOpen === true,
+    summarizeState: (state) => state.doorOpen === true ? 'door open' : 'closed'
+  }),
+  stove: capability('Stove', 'Stove', 'flame', { powerW: { unit: 'W' }, level: { unit: 'level' } }, ['turn_off', 'set_level'], {
+    isActive: (state) => numberValue(state.powerW, 0) > 0,
+    isAbnormal: (state) => numberValue(state.powerW, 0) > 700,
+    summarizeState: (state) => numberValue(state.powerW, 0) > 0 ? `${numberValue(state.powerW, 0)} W` : 'off'
+  }),
+  range_hood: capability('Range Hood', 'Hood', 'fan', { power: { unit: 'state' }, speed: { unit: 'level' } }, ['turn_on', 'turn_off', 'set_speed'], {
+    isActive: (state) => state.power === 'on' || numberValue(state.speed, 0) > 0,
+    summarizeState: (state) => state.power === 'on' ? `speed ${numberValue(state.speed, 0)}` : 'off'
+  }),
+  air_quality_sensor: capability('Air Quality Sensor', 'Air', 'wind', {
+    pm25: { unit: 'ug/m3', normalRange: [0, 35] },
+    co2: { unit: 'ppm', normalRange: [400, 900] }
+  }, [], {
+    summarizeState: (state) => state.co2 !== undefined ? `${numberValue(state.co2, 0)} ppm` : `${numberValue(state.pm25, 0)} ug/m3`
+  }),
+  smoke_sensor: capability('Smoke Sensor', 'Smoke', 'siren', { smokeDetected: { unit: 'bool' }, density: { unit: 'ppm' } }, [], {
+    isActive: (state) => state.smokeDetected === true || numberValue(state.density, 0) > 0,
+    isAbnormal: (state) => state.smokeDetected === true,
+    summarizeState: (state) => state.smokeDetected === true ? 'smoke' : 'idle'
+  }),
+  dishwasher: capability('Dishwasher', 'Dish', 'square-stack', { status: { unit: 'state' }, remainingMin: { unit: 'min' }, powerW: { unit: 'W' } }, ['start', 'stop'], {
+    isActive: (state) => state.status === 'running' || state.status === 'done' || numberValue(state.powerW, 0) > 0,
+    summarizeState: (state) => String(state.status ?? 'idle')
+  }),
+  sleep_sensor: capability('Sleep Sensor', 'Sleep', 'moon', { inBed: { unit: 'bool' }, heartRateSimulated: { unit: 'bpm' } }, [], {
+    isActive: (state) => state.inBed === true,
+    summarizeState: (state) => state.inBed === true ? 'in bed' : 'clear'
+  }),
+  air_conditioner: capability('Air Conditioner', 'AC', 'snowflake', { power: { unit: 'state' }, targetC: { unit: 'C' }, mode: { unit: 'state' } }, ['turn_on', 'turn_off', 'set_target'], {
+    isActive: (state) => state.power === 'on',
+    summarizeState: (state) => state.power === 'on' ? `${numberValue(state.targetC, 0)} C` : 'off'
+  }),
+  router: capability('Router', 'Router', 'router', { online: { unit: 'bool' }, latencyMs: { unit: 'ms' } }, ['restart'], {
+    isActive: (state) => state.online !== true || numberValue(state.latencyMs, 0) > 100,
+    isAbnormal: (state) => state.online !== true,
+    summarizeState: (state) => state.online === true ? 'online' : 'offline'
+  }),
+  water_flow_sensor: capability('Water Flow Sensor', 'Water', 'droplets', { flowLMin: { unit: 'L/min', normalRange: [0, 6] }, totalL: { unit: 'L' } }, [], {
+    isActive: (state) => numberValue(state.flowLMin, 0) > 0,
+    isAbnormal: (state) => numberValue(state.flowLMin, 0) > 6,
+    summarizeState: (state) => `${numberValue(state.flowLMin, 0)} L/min`
+  }),
+  water_leak_sensor: capability('Leak Sensor', 'Leak', 'badge-alert', { leakDetected: { unit: 'bool' } }, [], {
+    isActive: (state) => state.leakDetected === true,
+    isAbnormal: (state) => state.leakDetected === true,
+    summarizeState: (state) => state.leakDetected === true ? 'triggered' : 'idle'
+  }),
+  water_valve: capability('Water Valve', 'Valve', 'gauge', { valveOpen: { unit: 'bool' } }, ['open', 'close'], {
+    isActive: (state) => state.valveOpen === true,
+    summarizeState: (state) => state.valveOpen === true ? 'open' : 'closed'
+  }),
+  washer: capability('Washing Machine', 'Washer', 'washing-machine', { status: { unit: 'state' }, remainingMin: { unit: 'min' }, powerW: { unit: 'W' } }, ['start', 'stop'], {
+    isActive: (state) => state.status === 'running' || state.status === 'done' || numberValue(state.powerW, 0) > 0,
+    summarizeState: (state) => String(state.status ?? 'idle')
+  }),
+  soil_moisture_sensor: capability('Soil Moisture Sensor', 'Soil', 'sprout', { moisturePercent: { unit: '%', normalRange: [30, 65] } }, [], {
+    summarizeState: (state) => `${numberValue(state.moisturePercent, 0)}%`
+  }),
+  security_camera: capability('Security Camera', 'Camera', 'cctv', { motion: { unit: 'bool' }, recording: { unit: 'bool' } }, ['record'], {
+    isActive: (state) => state.motion === true || state.recording === true,
+    summarizeState: (state) => state.recording === true ? 'recording' : state.motion === true ? 'motion' : 'idle'
+  }),
+  sprinkler: capability('Sprinkler', 'Sprinkler', 'waves', { valveOpen: { unit: 'bool' } }, ['open', 'close'], {
+    isActive: (state) => state.valveOpen === true,
+    summarizeState: (state) => state.valveOpen === true ? 'open' : 'closed'
+  })
+};
+
+export function getDeviceCapability(type: string): DeviceCapability {
+  return deviceCapabilities[type] ?? capability(type, type, 'circle-help', {}, [], {});
+}
+
+export function getDeviceShortLabel(type: string): string {
+  return getDeviceCapability(type).shortLabel;
+}
+
+export function isDeviceTypeActive(type: string, state: DeviceStatePayload): boolean {
+  return getDeviceCapability(type).isActive(state);
+}
+
+export function isDeviceTypeAbnormal(type: string, state: DeviceStatePayload): boolean {
+  return getDeviceCapability(type).isAbnormal(state);
+}
+
+export function summarizeDeviceState(type: string, state: DeviceStatePayload): string {
+  return getDeviceCapability(type).summarizeState(state);
+}
+
+function capability(
+  displayName: string,
+  shortLabel: string,
+  icon: string,
+  telemetry: Record<string, DeviceMetricCapability>,
+  supportedCommands: string[],
+  overrides: Partial<Pick<DeviceCapability, 'isActive' | 'isAbnormal' | 'summarizeState'>>
+): DeviceCapability {
+  return {
+    displayName,
+    shortLabel,
+    icon,
+    telemetry,
+    supportedCommands,
+    isActive: overrides.isActive ?? (() => false),
+    isAbnormal: overrides.isAbnormal ?? (() => false),
+    summarizeState: overrides.summarizeState ?? ((state) => defaultSummary(displayName, state))
+  };
+}
+
+function numberValue(value: DeviceStatePayload[string], fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function defaultSummary(displayName: string, state: DeviceStatePayload): string {
+  return Object.keys(state).length > 0 ? 'idle' : displayName;
+}

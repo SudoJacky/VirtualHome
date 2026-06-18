@@ -1,7 +1,8 @@
 import websocket from '@fastify/websocket';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { createSimulator } from '../sim/engine';
 import { getScenarioIds } from '../sim/scenarios';
 import type { StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
@@ -13,18 +14,20 @@ export interface ServerOptions {
   tickMs?: number;
 }
 
-interface AdvancePayload {
-  minutes?: number;
-}
-
-interface InjectPayload {
-  kind?: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity';
-}
-
-interface DailyStartPayload {
-  date?: string;
-  seed?: number;
-}
+const limitQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  runId: z.string().min(1).optional()
+});
+const advancePayloadSchema = z.object({
+  minutes: z.coerce.number().int().min(1).max(1440).default(1)
+});
+const dailyStartPayloadSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  seed: z.coerce.number().int().min(0).max(0xffffffff).optional()
+});
+const injectPayloadSchema = z.object({
+  kind: z.enum(['door_left_open', 'fridge_left_open', 'network_offline', 'senior_no_activity'])
+});
 
 export function createServer(options: ServerOptions): FastifyInstance {
   mkdirSync(path.dirname(options.databasePath), { recursive: true });
@@ -52,16 +55,22 @@ export function createServer(options: ServerOptions): FastifyInstance {
 
   app.get('/api/state', async () => simulator.getSnapshot());
 
-  app.get('/api/events', async (request) => {
-    const query = request.query as { limit?: string; runId?: string };
-    const runId = query.runId ?? simulator.getSnapshot().runId;
-    return db.getRecentEvents(Number(query.limit ?? 100), runId);
+  app.get('/api/events', async (request, reply) => {
+    const result = limitQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const runId = result.data.runId ?? simulator.getSnapshot().runId;
+    return db.getRecentEvents(result.data.limit, runId);
   });
 
-  app.get('/api/telemetry', async (request) => {
-    const query = request.query as { limit?: string; runId?: string };
-    const runId = query.runId ?? simulator.getSnapshot().runId;
-    return db.getRecentTelemetry(Number(query.limit ?? 100), runId);
+  app.get('/api/telemetry', async (request, reply) => {
+    const result = limitQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const runId = result.data.runId ?? simulator.getSnapshot().runId;
+    return db.getRecentTelemetry(result.data.limit, runId);
   });
 
   app.post('/api/scenarios/:id/start', async (request, reply) => {
@@ -75,21 +84,22 @@ export function createServer(options: ServerOptions): FastifyInstance {
   });
 
   app.post('/api/daily/start', async (request, reply) => {
-    const payload = request.body as DailyStartPayload;
-    const date = payload.date ?? todayInShanghai();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return reply.status(400).send({ error: 'Date must use YYYY-MM-DD' });
+    const result = dailyStartPayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
     }
-    const seed = payload.seed === undefined ? undefined : Number(payload.seed);
-    const events = simulator.startDailyScenario({ date, seed: Number.isFinite(seed) ? seed : undefined });
+    const date = result.data.date ?? todayInShanghai();
+    const events = simulator.startDailyScenario({ date, seed: result.data.seed });
     const snapshot = recordAndBroadcast(events);
     return { snapshot, events };
   });
 
-  app.post('/api/control/advance', async (request) => {
-    const payload = request.body as AdvancePayload;
-    const minutes = Math.max(1, Math.min(Number(payload.minutes ?? 1), 1440));
-    const events = simulator.advanceMinutes(minutes);
+  app.post('/api/control/advance', async (request, reply) => {
+    const result = advancePayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const events = simulator.advanceMinutes(result.data.minutes);
     const snapshot = recordAndBroadcast(events);
     return { snapshot, events };
   });
@@ -107,11 +117,11 @@ export function createServer(options: ServerOptions): FastifyInstance {
   });
 
   app.post('/api/control/inject', async (request, reply) => {
-    const payload = request.body as InjectPayload;
-    if (!payload.kind) {
-      return reply.status(400).send({ error: 'Missing abnormality kind' });
+    const result = injectPayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
     }
-    const events = simulator.injectAbnormality(payload.kind);
+    const events = simulator.injectAbnormality(result.data.kind);
     const snapshot = recordAndBroadcast(events);
     return { snapshot, events };
   });
@@ -153,4 +163,17 @@ function todayInShanghai(): string {
     month: '2-digit',
     day: '2-digit'
   }).format(new Date());
+}
+
+function sendValidationError(reply: FastifyReply, error: z.ZodError): FastifyReply {
+  return reply.status(400).send({
+    error: {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request input',
+      issues: error.issues.map((issue) => ({
+        path: issue.path.join('.'),
+        message: issue.message
+      }))
+    }
+  });
 }

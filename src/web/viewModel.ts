@@ -1,4 +1,5 @@
 import { getCatalog } from '../sim/catalog';
+import { getDeviceCapability, getDeviceShortLabel, isDeviceTypeActive } from '../shared/deviceRegistry';
 import type { AlertState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
 
 export interface DashboardEvent {
@@ -216,7 +217,7 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
     .filter((room) => room.occupancy)
     .map((room) => room.name);
   const activeDeviceCount = Object.values(snapshot.devices)
-    .filter((device) => isDeviceActive(device.type, device.state))
+    .filter((device) => isDeviceTypeActive(device.type, device.state))
     .length;
   const controlRecords = createControlRecords(events);
   return {
@@ -348,10 +349,10 @@ function createFloorplanRooms(snapshot: TwinSnapshot, events: TwinEvent[]): Dash
 
   for (const device of Object.values(snapshot.devices)) {
     const room = rooms[device.roomId];
-    const active = isDeviceActive(device.type, device.state);
+    const active = isDeviceTypeActive(device.type, device.state);
     room.devices.push({
       id: device.id,
-      label: getDeviceLabel(device.id),
+      label: getDeviceShortLabel(device.type),
       active,
       slot: room.devices.length
     });
@@ -596,68 +597,6 @@ function enrichTelemetrySeries(
   };
 }
 
-function isDeviceActive(type: string, state: Record<string, string | number | boolean | null>): boolean {
-  if (type === 'door_lock') return state.locked === false;
-  if (type === 'light') return state.power === 'on';
-  if (type === 'tv') return state.power === 'on';
-  if (type === 'fridge') return state.doorOpen === true || Number(state.powerW ?? 0) > 100;
-  if (type === 'stove') return Number(state.powerW ?? 0) > 0;
-  if (type === 'range_hood') return state.power === 'on' || Number(state.speed ?? 0) > 0;
-  if (type === 'doorbell_camera') return state.motion === true || state.ringing === true;
-  if (type === 'package_sensor') return state.packagePresent === true;
-  if (type === 'robot_vacuum') return state.status === 'cleaning' || state.status === 'stuck';
-  if (type === 'curtain') return Number(state.positionPercent ?? 0) > 0;
-  if (type === 'smoke_sensor') return state.smokeDetected === true || Number(state.density ?? 0) > 0;
-  if (type === 'dishwasher') return state.status === 'running' || state.status === 'done' || Number(state.powerW ?? 0) > 0;
-  if (type === 'air_conditioner') return state.power === 'on';
-  if (type === 'router') return state.online !== true || Number(state.latencyMs ?? 0) > 100;
-  if (type === 'washer') return state.status === 'running' || state.status === 'done' || Number(state.powerW ?? 0) > 0;
-  if (type === 'security_camera') return state.motion === true || state.recording === true;
-  if (type === 'water_flow_sensor') return Number(state.flowLMin ?? 0) > 0;
-  if (type === 'water_leak_sensor') return state.leakDetected === true;
-  if (type === 'water_valve') return state.valveOpen === true;
-  if (type === 'sprinkler') return state.valveOpen === true;
-  if (type === 'sleep_sensor') return state.inBed === true;
-  if (type === 'motion_sensor') return state.motion === true;
-  return false;
-}
-
-function getDeviceLabel(deviceId: string): string {
-  const labels: Record<string, string> = {
-    door_lock_01: 'Lock',
-    entrance_motion_01: 'Motion',
-    doorbell_camera_01: 'Doorbell',
-    package_sensor_01: 'Package',
-    living_light_01: 'Light',
-    tv_01: 'TV',
-    living_motion_01: 'Motion',
-    robot_vacuum_01: 'Vacuum',
-    living_curtain_01: 'Curtain',
-    kitchen_light_01: 'Light',
-    kitchen_temp_01: 'Temp',
-    fridge_01: 'Fridge',
-    stove_01: 'Stove',
-    range_hood_01: 'Hood',
-    pm25_01: 'Air',
-    smoke_01: 'Smoke',
-    dishwasher_01: 'Dish',
-    dining_light_01: 'Light',
-    master_sleep_01: 'Sleep',
-    master_ac_01: 'AC',
-    child_sleep_01: 'Sleep',
-    study_co2_01: 'CO2',
-    router_01: 'Router',
-    bathroom_water_01: 'Water',
-    water_leak_01: 'Leak',
-    water_valve_01: 'Valve',
-    washer_01: 'Washer',
-    garden_soil_01: 'Soil',
-    garden_camera_01: 'Camera',
-    sprinkler_01: 'Sprinkler'
-  };
-  return labels[deviceId] ?? deviceId;
-}
-
 function formatPerson(personId: string): string {
   return personLabels[personId] ?? personId.replaceAll('_', ' ');
 }
@@ -668,7 +607,8 @@ function formatRoomName(roomId: RoomId | 'away'): string {
 }
 
 function formatDeviceName(deviceId: string): string {
-  return devicesById.get(deviceId)?.name ?? getDeviceLabel(deviceId);
+  const device = devicesById.get(deviceId);
+  return device?.name ?? getDeviceCapability(device?.type ?? deviceId).displayName;
 }
 
 function formatActivity(value: string): string {

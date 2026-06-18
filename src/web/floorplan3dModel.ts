@@ -1,4 +1,5 @@
 import type { RoomId, Severity, TwinEvent, TwinSnapshot } from '../shared/types';
+import { getDeviceShortLabel, isDeviceTypeAbnormal, isDeviceTypeActive, summarizeDeviceState } from '../shared/deviceRegistry';
 import { devicePoints, getRoomLayout, roomLayouts, type DeviceAnimationHint, type DeviceMarkerKind, type RoomLayout } from './floorplanLayout';
 
 export type FloorplanAlertSeverity = 'info' | 'warning' | 'critical';
@@ -83,13 +84,13 @@ export function createFloorplan3DModel(snapshot: TwinSnapshot, events: TwinEvent
 
   const devices = Object.values(snapshot.devices).map((device) => {
     const point = devicePoints.find((candidate) => candidate.deviceId === device.id);
-    const active = isDeviceActive(device.type, device.state);
+    const active = isDeviceTypeActive(device.type, device.state);
     return {
       id: device.id,
       roomId: device.roomId,
-      label: getDeviceLabel(device.id),
+      label: getDeviceShortLabel(device.type),
       active,
-      abnormal: active && isDeviceAbnormal(device.type, device.state),
+      abnormal: active && isDeviceTypeAbnormal(device.type, device.state),
       markerKind: point?.markerKind ?? inferMarkerKind(device.type),
       orientation: point?.orientation ?? 0,
       animationHint: point?.animationHint ?? inferAnimationHint(device.type),
@@ -137,70 +138,6 @@ function getPersonLabel(personId: string): string {
   return labels[personId] ?? personId.slice(0, 2).toUpperCase();
 }
 
-function getDeviceLabel(deviceId: string): string {
-  const labels: Record<string, string> = {
-    door_lock_01: 'Lock',
-    entrance_motion_01: 'Motion',
-    living_light_01: 'Light',
-    tv_01: 'TV',
-    living_motion_01: 'Motion',
-    kitchen_light_01: 'Light',
-    kitchen_temp_01: 'Temp',
-    fridge_01: 'Fridge',
-    stove_01: 'Stove',
-    range_hood_01: 'Hood',
-    pm25_01: 'Air',
-    dining_light_01: 'Light',
-    master_sleep_01: 'Sleep',
-    child_sleep_01: 'Sleep',
-    study_co2_01: 'CO2',
-    bathroom_water_01: 'Water',
-    water_leak_01: 'Leak',
-    water_valve_01: 'Valve',
-    garden_soil_01: 'Soil',
-    sprinkler_01: 'Sprinkler'
-  };
-  return labels[deviceId] ?? deviceId;
-}
-
-function isDeviceActive(type: string, state: Record<string, string | number | boolean | null>): boolean {
-  if (type === 'door_lock') return state.locked === false;
-  if (type === 'light') return state.power === 'on';
-  if (type === 'tv') return state.power === 'on';
-  if (type === 'fridge') return state.doorOpen === true || Number(state.powerW ?? 0) > 100;
-  if (type === 'stove') return Number(state.powerW ?? 0) > 0;
-  if (type === 'range_hood') return state.power === 'on' || Number(state.speed ?? 0) > 0;
-  if (type === 'doorbell_camera') return state.motion === true || state.ringing === true;
-  if (type === 'package_sensor') return state.packagePresent === true;
-  if (type === 'robot_vacuum') return state.status === 'cleaning' || state.status === 'stuck';
-  if (type === 'curtain') return Number(state.positionPercent ?? 0) > 0;
-  if (type === 'smoke_sensor') return state.smokeDetected === true || Number(state.density ?? 0) > 0;
-  if (type === 'dishwasher') return state.status === 'running' || state.status === 'done' || Number(state.powerW ?? 0) > 0;
-  if (type === 'air_conditioner') return state.power === 'on';
-  if (type === 'router') return state.online !== true || Number(state.latencyMs ?? 0) > 100;
-  if (type === 'washer') return state.status === 'running' || state.status === 'done' || Number(state.powerW ?? 0) > 0;
-  if (type === 'security_camera') return state.motion === true || state.recording === true;
-  if (type === 'water_flow_sensor') return Number(state.flowLMin ?? 0) > 0;
-  if (type === 'water_leak_sensor') return state.leakDetected === true;
-  if (type === 'water_valve') return state.valveOpen === true;
-  if (type === 'sprinkler') return state.valveOpen === true;
-  if (type === 'sleep_sensor') return state.inBed === true;
-  if (type === 'motion_sensor') return state.motion === true;
-  return false;
-}
-
-function isDeviceAbnormal(type: string, state: Record<string, string | number | boolean | null>): boolean {
-  if (type === 'door_lock') return state.locked === false;
-  if (type === 'stove') return Number(state.powerW ?? 0) > 700;
-  if (type === 'fridge') return state.doorOpen === true;
-  if (type === 'water_flow_sensor') return Number(state.flowLMin ?? 0) > 6;
-  if (type === 'water_leak_sensor') return state.leakDetected === true;
-  if (type === 'router') return state.online !== true;
-  if (type === 'robot_vacuum') return state.status === 'stuck';
-  if (type === 'smoke_sensor') return state.smokeDetected === true;
-  return false;
-}
-
 function inferMarkerKind(type: string): DeviceMarkerKind {
   if (type.includes('sensor')) return 'sensor';
   if (type.includes('camera') || type.includes('lock')) return 'security';
@@ -218,17 +155,4 @@ function inferAnimationHint(type: string): DeviceAnimationHint {
   if (type === 'air_conditioner' || type === 'range_hood' || type === 'sprinkler') return 'airflow';
   if (type.includes('sensor')) return 'pulse';
   return 'none';
-}
-
-function summarizeDeviceState(type: string, state: Record<string, string | number | boolean | null>): string {
-  if (type === 'light') return state.power === 'on' ? `on ${Number(state.brightness ?? 0)}%` : 'off';
-  if (type === 'curtain') return `${Number(state.positionPercent ?? 0)}% open`;
-  if (type === 'water_valve' || type === 'sprinkler') return state.valveOpen === true ? 'open' : 'closed';
-  if (type === 'robot_vacuum') return String(state.status ?? 'idle');
-  if (type === 'washer' || type === 'dishwasher') return String(state.status ?? 'idle');
-  if (type === 'router') return state.online === true ? 'online' : 'offline';
-  if (type === 'fridge') return state.doorOpen === true ? 'door open' : 'closed';
-  if (type === 'door_lock') return state.locked === false ? 'unlocked' : 'locked';
-  if (type.includes('sensor')) return isDeviceActive(type, state) ? 'triggered' : 'idle';
-  return isDeviceActive(type, state) ? 'active' : 'idle';
 }

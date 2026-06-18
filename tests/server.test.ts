@@ -100,4 +100,40 @@ describe('server API', () => {
 
     await server.close();
   });
+
+  it('rejects invalid API inputs with structured 400 responses', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-validation-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    const invalidAdvance = await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 'later' }
+    });
+    expect(invalidAdvance.statusCode).toBe(400);
+    expect(invalidAdvance.json().error).toMatchObject({ code: 'VALIDATION_FAILED' });
+
+    const invalidDaily = await server.inject({
+      method: 'POST',
+      url: '/api/daily/start',
+      payload: { date: '18-07-2026', seed: 'not-a-seed' }
+    });
+    expect(invalidDaily.statusCode).toBe(400);
+    expect(invalidDaily.json().error).toMatchObject({ code: 'VALIDATION_FAILED' });
+
+    const invalidEvents = await server.inject({ method: 'GET', url: '/api/events?limit=forever' });
+    expect(invalidEvents.statusCode).toBe(400);
+    expect(invalidEvents.json().error.issues.length).toBeGreaterThan(0);
+
+    const invalidInjection = await server.inject({
+      method: 'POST',
+      url: '/api/control/inject',
+      payload: { kind: 'bad_sensor' }
+    });
+    expect(invalidInjection.statusCode).toBe(400);
+    expect(invalidInjection.json().error).toMatchObject({ code: 'VALIDATION_FAILED' });
+
+    await server.close();
+  });
 });
