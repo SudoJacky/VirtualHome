@@ -261,6 +261,10 @@ function latestRunId(events: TwinEvent[]): string | undefined {
 }
 
 function formatEvent(event: TwinEvent): DashboardEvent {
+  if (event.type === 'AbnormalityInjected') {
+    const affected = event.affectedEntities.map(formatAffectedEntity).join(', ');
+    return { id: event.id, time: event.simTime, type: event.type, label: `${formatAbnormalityKind(event.kind)} injected; affected: ${affected}` };
+  }
   if (event.type === 'AlertCreated') {
     return { id: event.id, time: event.simTime, type: event.type, label: `${event.message} (${event.severity})` };
   }
@@ -602,6 +606,21 @@ function enrichTelemetrySeries(
 
 function formatPerson(personId: string): string {
   return personLabels[personId] ?? personId.replaceAll('_', ' ');
+}
+
+function formatAffectedEntity(entityId: string): string {
+  if (devicesById.has(entityId)) return formatDeviceName(entityId);
+  return formatPerson(entityId);
+}
+
+function formatAbnormalityKind(kind: string): string {
+  const labels: Record<string, string> = {
+    door_left_open: 'Door left open',
+    fridge_left_open: 'Fridge door left open',
+    network_offline: 'Network outage',
+    senior_no_activity: 'Senior no activity'
+  };
+  return labels[kind] ?? formatReason(kind);
 }
 
 function formatRoomName(roomId: RoomId | 'away'): string {

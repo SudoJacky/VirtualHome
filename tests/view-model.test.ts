@@ -118,6 +118,20 @@ describe('dashboard view model', () => {
     ]);
   });
 
+  it('labels injected abnormalities as source events in the frontend timeline', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('network_offline');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const sourceEvent = model.recentEvents.find((event) => event.type === 'AbnormalityInjected');
+
+    expect(sourceEvent).toMatchObject({
+      label: 'Network outage injected; affected: Home Router'
+    });
+    expect(model.recentEvents.some((event) => event.label.includes('Home network is offline'))).toBe(true);
+  });
+
   it('adds scenario cards and telemetry meaning for demo mode', () => {
     const simulator = createSimulator({ seed: 7 });
     simulator.startScenario('weekday_normal');
