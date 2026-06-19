@@ -20,6 +20,36 @@ export type FloorplanSelection =
   | { type: 'device'; id: string }
   | null;
 
+export interface CameraAutoFrameState {
+  focusKey: string;
+  autoFrame: boolean;
+}
+
+type CameraAutoFrameEvent =
+  | { type: 'manual-control-started' }
+  | { type: 'focus-target-changed'; focusKey: string }
+  | { type: 'reset-view' };
+
+export function createCameraAutoFrameState(focusKey: string): CameraAutoFrameState {
+  return { focusKey, autoFrame: true };
+}
+
+export function updateCameraAutoFrameState(
+  state: CameraAutoFrameState,
+  event: CameraAutoFrameEvent
+): CameraAutoFrameState {
+  if (event.type === 'manual-control-started') {
+    return { ...state, autoFrame: false };
+  }
+  if (event.type === 'reset-view') {
+    return { ...state, autoFrame: true };
+  }
+  if (event.focusKey === state.focusKey) {
+    return state;
+  }
+  return { focusKey: event.focusKey, autoFrame: true };
+}
+
 interface Floorplan3DProps {
   model: Floorplan3DModel;
   layers: FloorplanLayers;
@@ -30,6 +60,17 @@ interface Floorplan3DProps {
 
 export function Floorplan3D({ model, layers, selected, onToggleLayer, onSelect }: Floorplan3DProps): React.ReactElement {
   const controlsRef = React.useRef<OrbitControlsImpl | null>(null);
+  const cameraAutoFrameRef = React.useRef(createCameraAutoFrameState('overview'));
+  const handleManualCameraControl = React.useCallback(() => {
+    cameraAutoFrameRef.current = updateCameraAutoFrameState(
+      cameraAutoFrameRef.current,
+      { type: 'manual-control-started' }
+    );
+  }, []);
+  const handleResetView = React.useCallback(() => {
+    cameraAutoFrameRef.current = updateCameraAutoFrameState(cameraAutoFrameRef.current, { type: 'reset-view' });
+    controlsRef.current?.reset();
+  }, []);
 
   return (
     <div className="floorplan3d-shell">
@@ -38,7 +79,7 @@ export function Floorplan3D({ model, layers, selected, onToggleLayer, onSelect }
         <LayerButton active={layers.devices} label="Devices" icon={<CircuitBoard size={14} />} onClick={() => onToggleLayer('devices')} />
         <LayerButton active={layers.environment} label="Environment" icon={<Thermometer size={14} />} onClick={() => onToggleLayer('environment')} />
         <LayerButton active={layers.alerts} label="Alerts" icon={<Bell size={14} />} onClick={() => onToggleLayer('alerts')} />
-        <button className="icon-button" title="Reset view" onClick={() => controlsRef.current?.reset()}>
+        <button className="icon-button" title="Reset view" onClick={handleResetView}>
           <RotateCcw size={15} />
         </button>
       </div>
@@ -53,7 +94,12 @@ export function Floorplan3D({ model, layers, selected, onToggleLayer, onSelect }
         <color attach="background" args={['#edf4f2']} />
         <SceneLighting model={model} />
         <FloorplanScene model={model} layers={layers} selected={selected} onSelect={onSelect} />
-        <CameraController model={model} selected={selected} controlsRef={controlsRef} />
+        <CameraController
+          model={model}
+          selected={selected}
+          controlsRef={controlsRef}
+          cameraAutoFrameRef={cameraAutoFrameRef}
+        />
         <OrbitControls
           ref={controlsRef}
           enableDamping
@@ -62,6 +108,7 @@ export function Floorplan3D({ model, layers, selected, onToggleLayer, onSelect }
           maxPolarAngle={Math.PI / 2.7}
           minDistance={5}
           minPolarAngle={Math.PI / 4.4}
+          onStart={handleManualCameraControl}
           target={[0, 0, -0.3]}
         />
       </Canvas>
@@ -480,29 +527,44 @@ function SceneLighting({ model }: { model: Floorplan3DModel }): React.ReactEleme
 function CameraController({
   model,
   selected,
-  controlsRef
+  controlsRef,
+  cameraAutoFrameRef
 }: {
   model: Floorplan3DModel;
   selected: FloorplanSelection;
   controlsRef: React.MutableRefObject<OrbitControlsImpl | null>;
+  cameraAutoFrameRef: React.MutableRefObject<CameraAutoFrameState>;
 }): null {
   const { camera } = useThree();
   const targetRef = React.useRef(new THREE.Vector3(0, 0, -0.3));
   const positionRef = React.useRef(new THREE.Vector3(0, 7.2, 7.4));
 
   React.useEffect(() => {
+    cameraAutoFrameRef.current = updateCameraAutoFrameState(cameraAutoFrameRef.current, {
+      type: 'focus-target-changed',
+      focusKey: getCameraFocusKey(selected)
+    });
     const focus = getFocusPoint(model, selected);
     targetRef.current.set(focus.x, 0, focus.z);
     positionRef.current.set(focus.x + 2.4, selected ? 4.6 : 7.2, focus.z + (selected ? 3.2 : 7.4));
-  }, [model, selected]);
+  }, [cameraAutoFrameRef, model, selected]);
 
   useFrame(() => {
+    if (!cameraAutoFrameRef.current.autoFrame) {
+      return;
+    }
     camera.position.lerp(positionRef.current, 0.045);
     controlsRef.current?.target.lerp(targetRef.current, 0.06);
     controlsRef.current?.update();
   });
 
   return null;
+}
+
+function getCameraFocusKey(selected: FloorplanSelection): string {
+  if (selected?.type === 'room') return `room:${selected.id}`;
+  if (selected?.type === 'device') return `device:${selected.id}`;
+  return 'overview';
 }
 
 function getFocusPoint(model: Floorplan3DModel, selected: FloorplanSelection): { x: number; z: number } {
