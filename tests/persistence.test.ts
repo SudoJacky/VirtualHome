@@ -108,7 +108,7 @@ describe('twin persistence', () => {
     db.close();
   });
 
-  it('retains only the newest telemetry rows per run when retention is configured', () => {
+  it('retains only the newest telemetry rows and matching telemetry events per run when retention is configured', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-'));
     dirs.push(dir);
     const db = new TwinDatabase(path.join(dir, 'twin.db'), { telemetryRetentionEvents: 3 });
@@ -130,8 +130,15 @@ describe('twin persistence', () => {
       .reverse()
       .map((event) => event.id);
 
+    const retainedEvents = db.getRecentEvents(500, secondSnapshot.runId);
+    const retainedTelemetryEventIds = retainedEvents
+      .filter((event): event is DeviceTelemetryEvent => event.type === 'DeviceTelemetry')
+      .map((event) => event.id);
+    const expectedDomainEventCount = allEvents.filter((event) => event.type !== 'DeviceTelemetry').length;
+
     expect(db.getRecentTelemetry(50, secondSnapshot.runId).map((event) => event.id)).toEqual(expectedTelemetryIds);
-    expect(db.getRecentEvents(500, secondSnapshot.runId).length).toBe(allEvents.length);
+    expect(retainedTelemetryEventIds).toEqual(expectedTelemetryIds);
+    expect(retainedEvents.length).toBe(expectedDomainEventCount + expectedTelemetryIds.length);
 
     db.close();
   });

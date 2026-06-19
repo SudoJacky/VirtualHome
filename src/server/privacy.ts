@@ -1,6 +1,16 @@
-import type { DeviceStateChangedEvent, TwinEvent, TwinSnapshot } from '../shared/types';
+import type { DeviceTelemetryEvent, DeviceStateChangedEvent, TwinEvent, TwinSnapshot } from '../shared/types';
 
 export type PrivacyMode = 'admin' | 'public';
+
+const sensitiveDeviceTypes = new Set([
+  'door_lock',
+  'doorbell_camera',
+  'security_camera',
+  'sleep_sensor',
+  'water_flow_sensor',
+  'water_leak_sensor',
+  'water_valve'
+]);
 
 export function projectSnapshotForPrivacy(snapshot: TwinSnapshot, privacy: PrivacyMode): TwinSnapshot {
   if (privacy === 'admin') {
@@ -21,6 +31,9 @@ export function projectSnapshotForPrivacy(snapshot: TwinSnapshot, privacy: Priva
   }
   for (const device of Object.values(projected.devices)) {
     device.lastReason = 'redacted';
+    if (isSensitiveDevice(device.type)) {
+      device.state = {};
+    }
   }
   return projected;
 }
@@ -32,6 +45,7 @@ export function projectEventsForPrivacy(events: TwinEvent[], privacy: PrivacyMod
 
   return events
     .filter((event) => event.type === 'DeviceTelemetry' || event.type === 'DeviceStateChanged' || event.type === 'ScenarioControl')
+    .filter((event) => !isSensitiveDeviceEvent(event))
     .map((event) => {
       if (event.type !== 'DeviceStateChanged') {
         return structuredClone(event);
@@ -40,4 +54,21 @@ export function projectEventsForPrivacy(events: TwinEvent[], privacy: PrivacyMod
       delete projected.reason;
       return projected;
     });
+}
+
+export function projectTelemetryForPrivacy(events: DeviceTelemetryEvent[], privacy: PrivacyMode): DeviceTelemetryEvent[] {
+  if (privacy === 'admin') {
+    return structuredClone(events);
+  }
+  return events
+    .filter((event) => !isSensitiveDevice(event.deviceType))
+    .map((event) => structuredClone(event));
+}
+
+function isSensitiveDeviceEvent(event: TwinEvent): boolean {
+  return (event.type === 'DeviceTelemetry' || event.type === 'DeviceStateChanged') && isSensitiveDevice(event.deviceType);
+}
+
+function isSensitiveDevice(deviceType: string): boolean {
+  return sensitiveDeviceTypes.has(deviceType);
 }

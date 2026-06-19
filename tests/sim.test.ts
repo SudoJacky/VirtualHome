@@ -214,6 +214,28 @@ describe('virtual home simulator MVP', () => {
     expect(first.getSnapshot().devices).toEqual(second.getSnapshot().devices);
   });
 
+  it('continues deterministically after restoring from a checkpoint with replayed events', () => {
+    const uninterrupted = createSimulator({ seed: 2028 });
+    uninterrupted.startScenario('weekday_normal');
+    const uninterruptedEvents = uninterrupted.advanceMinutes(120);
+    const uninterruptedSnapshot = uninterrupted.getSnapshot();
+
+    const checkpointed = createSimulator({ seed: 2028 });
+    checkpointed.startScenario('weekday_normal');
+    checkpointed.advanceMinutes(60);
+    const checkpointSnapshot = checkpointed.getSnapshot();
+    const checkpointEvents = checkpointed.getEvents();
+
+    const restored = createSimulator({ seed: 2028 });
+    restored.restore(checkpointSnapshot, checkpointEvents);
+    const restoredFutureEvents = restored.advanceMinutes(60);
+    const restoredSnapshot = restored.getSnapshot();
+
+    expect(stripRunIdentity(restoredFutureEvents)).toEqual(stripRunIdentity(uninterruptedEvents.slice(checkpointEvents.length)));
+    expect(stripRunIdentity(restoredSnapshot)).toEqual(stripRunIdentity(uninterruptedSnapshot));
+    expect(restoredSnapshot.runContext.rngState).toBe(uninterruptedSnapshot.runContext.rngState);
+  });
+
   it('continues the weekday scenario into evening routines and sleep', () => {
     const simulator = createSimulator({ seed: 91 });
 
@@ -362,6 +384,35 @@ describe('virtual home simulator MVP', () => {
     expect(simulator.getSnapshot().alerts.fridge_left_open_001.status).toBe('active');
   });
 
+  it('resolves senior no activity alerts by source rule and lets them trigger again after cooldown', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const firstNoActivity = simulator.injectAbnormality('senior_no_activity');
+    expect(simulator.getSnapshot().alerts.senior_no_activity_001).toMatchObject({
+      status: 'active',
+      sourceRuleId: 'senior_no_activity',
+      sourceEntityIds: ['senior_1', 'master_sleep_01']
+    });
+
+    const resolved = simulator.resolveAbnormality('senior_no_activity');
+    expect(simulator.getSnapshot().alerts.senior_no_activity_001).toMatchObject({
+      status: 'resolved',
+      resolvedAt: '2026-06-17T06:20:00+08:00'
+    });
+
+    const secondNoActivityDuringCooldown = simulator.injectAbnormality('senior_no_activity');
+    simulator.resolveAbnormality('senior_no_activity');
+    simulator.advanceMinutes(5);
+    const afterCooldown = simulator.injectAbnormality('senior_no_activity');
+
+    expect(firstNoActivity.filter((event): event is AutomationTriggeredEvent => event.type === 'AutomationTriggered' && event.ruleId === 'senior_no_activity')).toHaveLength(1);
+    expect(resolved.some((event): event is RuleRecoveredEvent => event.type === 'RuleRecovered' && event.ruleId === 'senior_no_activity')).toBe(true);
+    expect(secondNoActivityDuringCooldown.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'senior_no_activity')).toBe(false);
+    expect(afterCooldown.filter((event): event is AutomationTriggeredEvent => event.type === 'AutomationTriggered' && event.ruleId === 'senior_no_activity')).toHaveLength(1);
+    expect(simulator.getSnapshot().alerts.senior_no_activity_001.status).toBe('active');
+  });
+
   it('restores abnormality rule cooldown before allowing the same rule to trigger again', () => {
     const simulator = createSimulator({ seed: 42 });
 
@@ -424,6 +475,22 @@ describe('virtual home simulator MVP', () => {
     expect(stripRunFields(first.getSnapshot())).toEqual(stripRunFields(second.getSnapshot()));
   });
 
+  it('keeps device state change event payloads immutable after later telemetry drift', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const events = simulator.advanceMinutes(90);
+    const studyComfortEvent = events.find((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'study_co2_01' &&
+      event.reason === 'habit:adult_2:remote_work:comfort'
+    ));
+
+    expect(studyComfortEvent).toBeDefined();
+    expect(studyComfortEvent?.state.co2).toBe(680);
+    expect(simulator.getSnapshot().devices.study_co2_01.state.co2).not.toBe(studyComfortEvent?.state.co2);
+  });
+
   it('creates a unique run id and globally unique event ids for each scenario run', () => {
     const simulator = createSimulator({ seed: 1234 });
 
@@ -478,6 +545,14 @@ describe('virtual home simulator MVP', () => {
 function stripRunFields<T>(value: T): T {
   return JSON.parse(JSON.stringify(value, (key, fieldValue) => (
     key === 'id' || key === 'runId' || key === 'startedAt' || key === 'rngState'
+      ? undefined
+      : fieldValue
+  ))) as T;
+}
+
+function stripRunIdentity<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value, (key, fieldValue) => (
+    key === 'id' || key === 'runId' || key === 'startedAt'
       ? undefined
       : fieldValue
   ))) as T;

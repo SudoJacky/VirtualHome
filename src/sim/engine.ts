@@ -128,7 +128,10 @@ class Simulator implements VirtualHomeSimulator {
     const activeScenario = getScenarioForSnapshot(snapshot);
     const restoredSnapshot = structuredClone(snapshot);
     const restoredEvents = structuredClone(events);
-    replayEventsOntoSnapshot(restoredSnapshot, restoredEvents.filter((event) => event.sequence > snapshot.simClock.sequence));
+    const replayedEvents = restoredEvents.filter((event) => event.runId === snapshot.runId && event.sequence > snapshot.simClock.sequence);
+    replayEventsOntoSnapshot(restoredSnapshot, replayedEvents);
+    const restoredRngState = rngStateAfterEvents(replayedEvents) ?? restoredSnapshot.runContext.rngState;
+    restoredSnapshot.runContext.rngState = restoredRngState;
     const elapsedMinutes = minutesBetween(restoredSnapshot.runContext.startedAt, restoredSnapshot.simClock.currentTime);
     this.state = {
       catalog,
@@ -146,7 +149,7 @@ class Simulator implements VirtualHomeSimulator {
         .filter((event) => event.type === 'AutomationTriggered')
         .map((event) => event.ruleId)),
       ruleStates: restoreRuleStates(restoredEvents, elapsedMinutes, restoredSnapshot.simClock.currentTime),
-      random: new SeededRandom(restoredSnapshot.runContext.seed, restoredSnapshot.runContext.rngState)
+      random: new SeededRandom(restoredSnapshot.runContext.seed, restoredRngState)
     };
     this.rebuildRooms();
     this.updateOccupancy();
@@ -1032,7 +1035,7 @@ class Simulator implements VirtualHomeSimulator {
       roomId: device.roomId,
       deviceId,
       deviceType: device.type,
-      state: device.state,
+      state: structuredClone(device.state),
       reason
     });
   }
@@ -1082,6 +1085,8 @@ class Simulator implements VirtualHomeSimulator {
   }
 
   private createAlertEvent(alertId: string, severity: 'info' | 'warning' | 'high', roomId: RoomId, message: string, recommendedAction: string, reason: string): AlertCreatedEvent {
+    const sourceRuleId = sourceRuleIdFromReason(reason);
+    const sourceEntityIds = sourceRuleId ? sourceEntityIdsForRule(sourceRuleId) : undefined;
     this.state.snapshot.alerts[alertId] = {
       id: alertId,
       severity,
@@ -1089,7 +1094,9 @@ class Simulator implements VirtualHomeSimulator {
       message,
       recommendedAction,
       status: 'active',
-      createdAt: this.state.snapshot.simClock.currentTime
+      createdAt: this.state.snapshot.simClock.currentTime,
+      ...(sourceRuleId ? { sourceRuleId } : {}),
+      ...(sourceEntityIds ? { sourceEntityIds } : {})
     };
     return this.createEvent({
       type: 'AlertCreated',
@@ -1098,6 +1105,8 @@ class Simulator implements VirtualHomeSimulator {
       roomId,
       message,
       recommendedAction,
+      ...(sourceRuleId ? { sourceRuleId } : {}),
+      ...(sourceEntityIds ? { sourceEntityIds } : {}),
       reason
     });
   }
@@ -1142,7 +1151,8 @@ class Simulator implements VirtualHomeSimulator {
       simTime: this.state.snapshot.simClock.currentTime,
       homeId: this.homeId,
       scenarioId: this.state.snapshot.scenarioId,
-      sequence
+      sequence,
+      rngStateAfter: this.state.random.getState()
     };
   }
 
@@ -1274,7 +1284,9 @@ function replayEventsOntoSnapshot(snapshot: TwinSnapshot, events: TwinEvent[]): 
           message: event.message,
           recommendedAction: event.recommendedAction,
           status: 'active',
-          createdAt: event.simTime
+          createdAt: event.simTime,
+          ...(event.sourceRuleId ? { sourceRuleId: event.sourceRuleId } : {}),
+          ...(event.sourceEntityIds ? { sourceEntityIds: [...event.sourceEntityIds] } : {})
         };
         break;
       case 'AlertStatusChanged': {
@@ -1340,7 +1352,10 @@ function replayTelemetryEvent(snapshot: TwinSnapshot, event: DeviceTelemetryEven
 }
 
 function resolveAlertsForRule(snapshot: TwinSnapshot, ruleId: string, resolvedAt: string): void {
-  const alertIds = alertIdsForRule(ruleId);
+  const sourceAlertIds = Object.values(snapshot.alerts)
+    .filter((alert) => alert.sourceRuleId === ruleId)
+    .map((alert) => alert.id);
+  const alertIds = sourceAlertIds.length > 0 ? sourceAlertIds : legacyAlertIdsForRule(ruleId);
   for (const alertId of alertIds) {
     const alert = snapshot.alerts[alertId];
     if (!alert) {
@@ -1351,15 +1366,44 @@ function resolveAlertsForRule(snapshot: TwinSnapshot, ruleId: string, resolvedAt
   }
 }
 
-function alertIdsForRule(ruleId: string): string[] {
+function legacyAlertIdsForRule(ruleId: string): string[] {
   const alertIds: Record<string, string[]> = {
     close_water_valve_on_leak: ['water_leak_001'],
     door_left_open: ['door_left_open_001'],
     fridge_left_open: ['fridge_left_open_001'],
     network_offline: ['network_offline_001'],
-    senior_no_activity: ['senior_inactive_001']
+    senior_no_activity: ['senior_no_activity_001', 'senior_inactive_001']
   };
   return alertIds[ruleId] ?? [];
+}
+
+function sourceRuleIdFromReason(reason: string): string | undefined {
+  return reason.startsWith('rule:') ? reason.slice('rule:'.length) : undefined;
+}
+
+function sourceEntityIdsForRule(ruleId: string): string[] {
+  const sourceEntityIds: Record<string, string[]> = {
+    close_water_valve_on_leak: ['water_leak_01', 'water_valve_01'],
+    door_left_open: ['door_lock_01', 'doorbell_camera_01'],
+    fridge_left_open: ['fridge_01'],
+    network_offline: ['router_01'],
+    senior_no_activity: ['senior_1', 'master_sleep_01'],
+    senior_wellness_check: ['senior_1', 'master_sleep_01'],
+    sleep_mode: ['living_light_01', 'tv_01'],
+    cooking_ventilation: ['stove_01', 'range_hood_01', 'kitchen_light_01'],
+    stove_unattended_safety: ['stove_01'],
+    away_mode: ['door_lock_01', 'living_light_01', 'tv_01'],
+    pet_garden_sprinkler_pause: ['pet_1', 'sprinkler_01'],
+    remote_work_comfort: ['adult_2', 'study_co2_01', 'router_01']
+  };
+  return sourceEntityIds[ruleId] ? [...sourceEntityIds[ruleId]] : [];
+}
+
+function rngStateAfterEvents(events: TwinEvent[]): number | undefined {
+  return [...events]
+    .sort((left, right) => right.sequence - left.sequence)
+    .find((event) => typeof event.rngStateAfter === 'number')
+    ?.rngStateAfter;
 }
 
 function restoreRuleStates(events: TwinEvent[], elapsedMinutes: number, currentTime: string): Map<string, RuleLifecycleState> {

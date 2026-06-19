@@ -318,6 +318,40 @@ describe('server API', () => {
     await server.close();
   });
 
+  it('sends run_changed instead of mixing old replay events with the current run snapshot', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-ws-run-changed-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    const previousRun = (await server.inject({ method: 'GET', url: '/api/state' })).json() as { runId: string; simClock: { sequence: number } };
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/away_day/start'
+    });
+    const currentRun = (await server.inject({ method: 'GET', url: '/api/state' })).json() as { runId: string; simClock: { sequence: number } };
+
+    const firstMessage = createTypedMessagePromise('twin.run_changed');
+    const ws = await server.injectWS(`/ws?runId=${previousRun.runId}&afterSequence=${previousRun.simClock.sequence}`, {}, {
+      onInit: firstMessage.attach
+    });
+    const update = await firstMessage.value;
+
+    expect(update).toMatchObject({
+      type: 'twin.run_changed',
+      previousRunId: previousRun.runId,
+      runId: currentRun.runId,
+      sequence: currentRun.simClock.sequence
+    });
+    expect(update).not.toHaveProperty('events');
+
+    ws.close();
+    await server.close();
+  });
+
   it('marks WebSocket replay as incomplete when missed events exceed the replay window', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-ws-replay-window-'));
     dirs.push(dir);
@@ -462,6 +496,31 @@ describe('server API', () => {
     expect(publicState.activities).toEqual({});
     expect(JSON.stringify(publicState)).not.toContain('adult_1');
     expect(JSON.stringify(publicState)).not.toContain('breakfast');
+
+    await server.close();
+  });
+
+  it('redacts sensitive device events and telemetry from public projections', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-public-device-privacy-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/inject',
+      payload: { kind: 'door_left_open' }
+    });
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 3 }
+    });
+
+    const publicEvents = (await server.inject({ method: 'GET', url: '/api/events?limit=100&privacy=public' })).json() as Array<{ deviceId?: string; deviceType?: string }>;
+    const publicTelemetry = (await server.inject({ method: 'GET', url: '/api/telemetry?limit=100&privacy=public' })).json() as Array<{ deviceId?: string; deviceType?: string }>;
+
+    expect(publicEvents.some((event) => event.deviceId === 'door_lock_01' || event.deviceId === 'doorbell_camera_01')).toBe(false);
+    expect(publicTelemetry.some((event) => event.deviceId === 'bathroom_water_01')).toBe(false);
 
     await server.close();
   });
@@ -620,6 +679,14 @@ describe('server API', () => {
     });
     expect(invalidDaily.statusCode).toBe(400);
     expect(invalidDaily.json().error).toMatchObject({ code: 'VALIDATION_FAILED' });
+
+    const impossibleDaily = await server.inject({
+      method: 'POST',
+      url: '/api/daily/start',
+      payload: { date: '2026-02-31' }
+    });
+    expect(impossibleDaily.statusCode).toBe(400);
+    expect(impossibleDaily.json().error).toMatchObject({ code: 'VALIDATION_FAILED' });
 
     const invalidEvents = await server.inject({ method: 'GET', url: '/api/events?limit=forever' });
     expect(invalidEvents.statusCode).toBe(400);

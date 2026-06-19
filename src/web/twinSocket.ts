@@ -21,7 +21,15 @@ export interface TwinSocketHeartbeatMessage {
   sequence: number;
 }
 
-export type TwinSocketMessage = TwinSocketUpdateMessage | TwinSocketHeartbeatMessage;
+export interface TwinSocketRunChangedMessage {
+  type: 'twin.run_changed';
+  previousRunId: string;
+  runId: string;
+  sequence: number;
+  snapshot: TwinSnapshot;
+}
+
+export type TwinSocketMessage = TwinSocketUpdateMessage | TwinSocketHeartbeatMessage | TwinSocketRunChangedMessage;
 
 export function buildTwinSocketUrl(location: Pick<Location, 'protocol' | 'host'>, cursor?: TwinSocketCursor | null): string {
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';

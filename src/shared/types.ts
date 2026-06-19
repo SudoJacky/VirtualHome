@@ -122,6 +122,8 @@ export interface AlertState {
   status: AlertLifecycleStatus;
   createdAt: string;
   resolvedAt?: string;
+  sourceRuleId?: string;
+  sourceEntityIds?: string[];
 }
 
 export interface TwinSnapshot {
@@ -156,6 +158,7 @@ export interface BaseTwinEvent {
   homeId: string;
   scenarioId: string;
   sequence: number;
+  rngStateAfter?: number;
   reason?: string;
 }
 
@@ -224,6 +227,8 @@ export interface AlertCreatedEvent extends BaseTwinEvent {
   roomId: RoomId;
   message: string;
   recommendedAction: string;
+  sourceRuleId?: string;
+  sourceEntityIds?: string[];
 }
 
 export interface AlertStatusChangedEvent extends BaseTwinEvent {
