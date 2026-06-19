@@ -32,6 +32,21 @@ describe('dashboard view model', () => {
     expect(merged).toHaveLength(events.length);
   });
 
+  it('keeps the frontend event stream isolated to the active run', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    const firstRunEvents = simulator.advanceMinutes(12);
+    const firstRunId = simulator.getSnapshot().runId;
+
+    const secondStart = simulator.startScenario('away_day');
+    const secondRunId = simulator.getSnapshot().runId;
+    const merged = mergeTwinEvents(firstRunEvents, secondStart);
+
+    expect(firstRunId).not.toBe(secondRunId);
+    expect(merged).toEqual(secondStart);
+    expect(merged.every((event) => event.runId === secondRunId)).toBe(true);
+  });
+
   it('marks recently moved people for restrained floorplan animation', () => {
     const simulator = createSimulator({ seed: 314 });
     simulator.startScenario('weekday_normal');
@@ -103,6 +118,84 @@ describe('dashboard view model', () => {
     ]);
   });
 
+  it('labels injected abnormalities as source events in the frontend timeline', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('network_offline');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const sourceEvent = model.recentEvents.find((event) => event.type === 'AbnormalityInjected');
+
+    expect(sourceEvent).toMatchObject({
+      label: 'Network outage injected; affected: Home Router'
+    });
+    expect(model.recentEvents.some((event) => event.label.includes('Home network is offline'))).toBe(true);
+  });
+
+  it('keeps resolved alerts out of active alert counts while preserving workflow history', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('fridge_left_open');
+    simulator.resolveAbnormality('fridge_left_open');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const workflow = model.alertWorkflows.find((item) => item.alertId === 'fridge_left_open_001');
+
+    expect(model.alerts.map((alert) => alert.id)).not.toContain('fridge_left_open_001');
+    expect(workflow).toMatchObject({
+      lifecycleStatus: 'resolved',
+      status: 'Resolved'
+    });
+    expect(workflow?.steps.at(-1)).toBe('Status: resolved');
+  });
+
+  it('treats legacy alerts without lifecycle status as active', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('fridge_left_open');
+    const snapshot = simulator.getSnapshot();
+    delete (snapshot.alerts.fridge_left_open_001 as { status?: string }).status;
+
+    const model = createDashboardModel(snapshot, simulator.getEvents());
+    const workflow = model.alertWorkflows.find((item) => item.alertId === 'fridge_left_open_001');
+
+    expect(model.alerts.map((alert) => alert.id)).toContain('fridge_left_open_001');
+    expect(workflow).toMatchObject({
+      lifecycleStatus: 'active',
+      status: 'Needs attention'
+    });
+  });
+
+  it('labels alert status changes as readable audit timeline events', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('fridge_left_open');
+    simulator.setAlertStatus('fridge_left_open_001', 'acknowledged');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const statusEvent = model.recentEvents.find((event) => event.type === 'AlertStatusChanged');
+
+    expect(statusEvent).toMatchObject({
+      label: 'Fridge door has remained open status changed from active to acknowledged'
+    });
+  });
+
+  it('explains pet-driven garden safety automation with readable facts', () => {
+    const simulator = createSimulator({ seed: 1 });
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(258);
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const explanation = model.automationExplanations.find((item) => item.ruleId === 'pet_garden_sprinkler_pause');
+
+    expect(explanation).toMatchObject({
+      ruleName: 'Pet garden sprinkler pause',
+      matchedFacts: ['pet is in the garden sprinkler zone'],
+      actions: ['pause garden sprinkler']
+    });
+    expect(explanation?.decisionChain[0]).toEqual({ label: 'Human activity', value: 'Pet garden activity' });
+  });
+
   it('adds scenario cards and telemetry meaning for demo mode', () => {
     const simulator = createSimulator({ seed: 7 });
     simulator.startScenario('weekday_normal');
@@ -129,7 +222,7 @@ describe('dashboard view model', () => {
     expect(model.controlRecordFilters.devices).toContain('Induction Stove');
     expect(model.controlRecordFilters.people).toContain('Hybrid work adult');
     expect(model.controlRecordFilters.scenarios).toContain('weekday_normal');
-    expect(model.controlRecordFilters.alertSeverities).toEqual(['info']);
+    expect(model.controlRecordFilters.alertSeverities).toEqual(expect.arrayContaining(['info', 'warning']));
     expect(model.controlRecordFilters.timeRange?.from).toMatch(/T/);
     expect(model.controlRecordFilters.timeRange?.to).toMatch(/T/);
 

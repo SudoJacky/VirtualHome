@@ -1,4 +1,5 @@
 import type { RoomId, Severity, TwinEvent, TwinSnapshot } from '../shared/types';
+import { getDeviceCapability, isDeviceTypeAbnormal, isDeviceTypeActive, summarizeDeviceState } from '../shared/deviceRegistry';
 import { devicePoints, getRoomLayout, roomLayouts, type RoomLayout } from './floorplanLayout';
 
 export type FloorplanAlertSeverity = 'info' | 'warning' | 'critical';
@@ -130,16 +131,17 @@ export function createFloorplan3DModel(snapshot: TwinSnapshot, events: TwinEvent
 
   const devices = Object.values(snapshot.devices).map((device) => {
     const point = devicePoints.find((candidate) => candidate.deviceId === device.id);
-    const active = isDeviceActive(device.type, device.state);
+    const capability = getDeviceCapability(device.type);
+    const active = isDeviceTypeActive(device.type, device.state);
     return {
       id: device.id,
       roomId: device.roomId,
-      label: getDeviceLabel(device.id),
+      label: capability.shortLabel,
       active,
-      abnormal: active && isDeviceAbnormal(device.type, device.state),
-      markerKind: getMarkerKind(device.type),
-      animationHint: getAnimationHint(device.type, device.state, active),
-      statusLabel: getDeviceStatusLabel(device.type, device.state),
+      abnormal: active && isDeviceTypeAbnormal(device.type, device.state),
+      markerKind: capability.markerKind as DeviceMarkerKind,
+      animationHint: capability.animationHint as DeviceAnimationHint,
+      statusLabel: summarizeDeviceState(device.type, device.state),
       x: point?.x ?? getRoomLayout(device.roomId).x,
       z: point?.z ?? getRoomLayout(device.roomId).z,
       y: point?.y ?? 0.32

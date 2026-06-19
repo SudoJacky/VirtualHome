@@ -14,6 +14,7 @@ export type HomeMode = 'morning' | 'away' | 'evening_home' | 'sleeping' | 'alert
 export type PersonKind = 'human' | 'pet';
 
 export type Severity = 'info' | 'warning' | 'high';
+export type AlertLifecycleStatus = 'active' | 'acknowledged' | 'resolved' | 'ignored';
 
 export interface RoomDefinition {
   id: RoomId;
@@ -43,11 +44,43 @@ export interface Catalog {
   devices: DeviceDefinition[];
 }
 
+export interface HomeDefinition {
+  building: {
+    id: string;
+    name: string;
+  };
+  floors: Array<{
+    id: string;
+    name: string;
+    level: number;
+    rooms: RoomDefinition[];
+    fixtures: {
+      devices: DeviceDefinition[];
+    };
+  }>;
+  topology: {
+    connections: Array<{
+      from: RoomId;
+      to: RoomId;
+    }>;
+  };
+  people: PersonDefinition[];
+}
+
 export interface SimClock {
   currentTime: string;
   speed: number;
   paused: boolean;
   sequence: number;
+}
+
+export interface RunContext {
+  runId: string;
+  seed: number;
+  rngState: number;
+  scenarioVersion: string;
+  engineVersion: string;
+  startedAt: string;
 }
 
 export interface PersonState {
@@ -63,6 +96,8 @@ export interface RoomState {
   id: RoomId;
   name: string;
   occupancy: boolean;
+  humanOccupancy: boolean;
+  motionDetected: boolean;
   people: string[];
   temperatureC: number;
   humidityPercent: number;
@@ -84,11 +119,15 @@ export interface AlertState {
   roomId: RoomId;
   message: string;
   recommendedAction: string;
+  status: AlertLifecycleStatus;
   createdAt: string;
+  resolvedAt?: string;
 }
 
 export interface TwinSnapshot {
   homeId: string;
+  runId: string;
+  runContext: RunContext;
   scenarioId: string;
   simClock: SimClock;
   homeState: {
@@ -110,6 +149,7 @@ export interface TwinSnapshot {
 
 export interface BaseTwinEvent {
   id: string;
+  runId: string;
   type: string;
   ts: string;
   simTime: string;
@@ -164,6 +204,19 @@ export interface AutomationTriggeredEvent extends BaseTwinEvent {
   actions: string[];
 }
 
+export interface RuleRecoveredEvent extends BaseTwinEvent {
+  type: 'RuleRecovered';
+  ruleId: string;
+  recoveredFacts: string[];
+  cooldownUntil: string;
+}
+
+export interface AbnormalityInjectedEvent extends BaseTwinEvent {
+  type: 'AbnormalityInjected';
+  kind: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity';
+  affectedEntities: string[];
+}
+
 export interface AlertCreatedEvent extends BaseTwinEvent {
   type: 'AlertCreated';
   alertId: string;
@@ -171,6 +224,13 @@ export interface AlertCreatedEvent extends BaseTwinEvent {
   roomId: RoomId;
   message: string;
   recommendedAction: string;
+}
+
+export interface AlertStatusChangedEvent extends BaseTwinEvent {
+  type: 'AlertStatusChanged';
+  alertId: string;
+  previousStatus: AlertLifecycleStatus;
+  status: AlertLifecycleStatus;
 }
 
 export interface ScenarioControlEvent extends BaseTwinEvent {
@@ -186,7 +246,10 @@ export type TwinEvent =
   | ActivityStartedEvent
   | ActivityEndedEvent
   | AutomationTriggeredEvent
+  | RuleRecoveredEvent
+  | AbnormalityInjectedEvent
   | AlertCreatedEvent
+  | AlertStatusChangedEvent
   | ScenarioControlEvent;
 
 export type StaticScenarioId = 'weekday_normal' | 'away_day' | 'night_water_leak';

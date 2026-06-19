@@ -1,129 +1,348 @@
 import websocket from '@fastify/websocket';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
+import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
+import { getHomeDefinition } from '../sim/catalog';
 import { createSimulator } from '../sim/engine';
 import { getScenarioIds } from '../sim/scenarios';
-import type { StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
+import { getDeviceCapabilityMetadata } from '../shared/deviceRegistry';
+import type { HomeDefinition, StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
+import { createDeviceAccessRecords } from './deviceAccess';
+import { loadHomeDefinitionFromFile } from './homeDefinitionLoader';
+import { buildOpenApiDocument } from './openapi';
 import { TwinDatabase } from './persistence';
+import { projectEventsForPrivacy, projectSnapshotForPrivacy, type PrivacyMode } from './privacy';
+import { summarizeTelemetry } from './telemetrySummary';
 
 export interface ServerOptions {
   databasePath: string;
   autoTick?: boolean;
   tickMs?: number;
+  heartbeatMs?: number;
+  snapshotIntervalEvents?: number;
+  telemetryRetentionEvents?: number;
+  homeDefinition?: HomeDefinition;
+  homeDefinitionPath?: string;
 }
 
-interface AdvancePayload {
-  minutes?: number;
-}
+const limitQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  runId: z.string().min(1).optional(),
+  privacy: z.enum(['admin', 'public']).default('admin')
+});
+const telemetrySummaryQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(1000).default(500),
+  runId: z.string().min(1).optional()
+});
+const auditQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).default(100)
+});
+const privacyQuerySchema = z.object({
+  privacy: z.enum(['admin', 'public']).default('admin')
+});
+const websocketQuerySchema = z.object({
+  privacy: z.enum(['admin', 'public']).default('admin'),
+  runId: z.string().min(1).optional(),
+  afterSequence: z.coerce.number().int().min(0).optional()
+});
+const idempotencyPayloadSchema = z.object({
+  idempotencyKey: z.string().trim().min(1).max(128).optional()
+});
+const advancePayloadSchema = idempotencyPayloadSchema.extend({
+  minutes: z.coerce.number().int().min(1).max(1440).default(1)
+});
+const dailyStartPayloadSchema = idempotencyPayloadSchema.extend({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  seed: z.coerce.number().int().min(0).max(0xffffffff).optional()
+});
+const injectPayloadSchema = idempotencyPayloadSchema.extend({
+  kind: z.enum(['door_left_open', 'fridge_left_open', 'network_offline', 'senior_no_activity'])
+});
+const resolvePayloadSchema = injectPayloadSchema;
+const alertStatusPayloadSchema = idempotencyPayloadSchema.extend({
+  status: z.enum(['active', 'acknowledged', 'ignored'])
+});
 
-interface InjectPayload {
-  kind?: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity';
-}
+type UpdateResponse = {
+  snapshot: TwinSnapshot;
+  events: TwinEvent[];
+};
 
-interface DailyStartPayload {
-  date?: string;
-  seed?: number;
-}
+const websocketReplayLimit = 500;
 
 export function createServer(options: ServerOptions): FastifyInstance {
   mkdirSync(path.dirname(options.databasePath), { recursive: true });
   const app = Fastify({ logger: false });
-  const simulator = createSimulator({ seed: 20260617 });
-  const db = new TwinDatabase(options.databasePath);
-  const sockets = new Set<{ send: (payload: string) => void }>();
+  const homeDefinition = options.homeDefinition ?? (options.homeDefinitionPath
+    ? loadHomeDefinitionFromFile(options.homeDefinitionPath)
+    : getHomeDefinition());
+  const simulator = createSimulator({ seed: 20260617, homeDefinition });
+  const db = new TwinDatabase(options.databasePath, {
+    snapshotIntervalEvents: options.snapshotIntervalEvents,
+    telemetryRetentionEvents: options.telemetryRetentionEvents
+  });
+  const latestSnapshot = db.getLatestSnapshot();
+  const restoredFromDatabase = Boolean(latestSnapshot?.runId);
+  if (latestSnapshot?.runId) {
+    simulator.restore(latestSnapshot, db.getEventsForRun(latestSnapshot.runId));
+  }
+  const sockets = new Set<{ privacy: PrivacyMode; send: (payload: string) => void }>();
   const scenarioIds = getScenarioIds();
   let tickHandle: NodeJS.Timeout | undefined;
+  let heartbeatHandle: NodeJS.Timeout | undefined;
 
   app.register(websocket);
 
+  app.get('/api/openapi.json', async () => buildOpenApiDocument());
+
   function recordAndBroadcast(events: TwinEvent[]): TwinSnapshot {
     const snapshot = simulator.getSnapshot();
-    db.recordSnapshot(snapshot);
-    db.recordEvents(events);
-    const payload = JSON.stringify({ type: 'twin.update', snapshot, events });
+    const snapshotRecorded = db.recordUpdate(snapshot, events);
     for (const socket of sockets) {
+      const payload = JSON.stringify({
+        type: 'twin.update',
+        runId: snapshot.runId,
+        sequence: snapshot.simClock.sequence,
+        ...(snapshotRecorded ? { snapshot: projectSnapshotForPrivacy(snapshot, socket.privacy) } : {}),
+        replayComplete: true,
+        events: projectEventsForPrivacy(events, socket.privacy)
+      });
       socket.send(payload);
     }
     return snapshot;
   }
 
+  function broadcastHeartbeat(): void {
+    const snapshot = simulator.getSnapshot();
+    const payload = JSON.stringify({
+      type: 'twin.heartbeat',
+      ts: new Date().toISOString(),
+      runId: snapshot.runId,
+      sequence: snapshot.simClock.sequence
+    });
+    for (const socket of sockets) {
+      socket.send(payload);
+    }
+  }
+
+  function recordAccess(
+    endpoint: string,
+    privacy: PrivacyMode,
+    runId: string | null,
+    sequence: number | null,
+    details?: Record<string, unknown>
+  ): void {
+    db.recordAccessAudit({
+      method: 'GET',
+      endpoint,
+      privacy,
+      runId,
+      sequence,
+      details
+    });
+  }
+
   app.get('/api/scenarios', async () => scenarioIds.map((id) => ({ id })));
 
-  app.get('/api/state', async () => simulator.getSnapshot());
+  app.get('/api/home-definition', async () => structuredClone(homeDefinition));
 
-  app.get('/api/events', async (request) => {
-    const query = request.query as { limit?: string };
-    return db.getRecentEvents(Number(query.limit ?? 100));
+  app.get('/api/state', async (request, reply) => {
+    const result = privacyQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const snapshot = simulator.getSnapshot();
+    recordAccess('/api/state', result.data.privacy, snapshot.runId, snapshot.simClock.sequence);
+    return projectSnapshotForPrivacy(snapshot, result.data.privacy);
   });
 
-  app.get('/api/telemetry', async (request) => {
-    const query = request.query as { limit?: string };
-    return db.getRecentTelemetry(Number(query.limit ?? 100));
+  app.get('/api/events', async (request, reply) => {
+    const result = limitQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const snapshot = simulator.getSnapshot();
+    const runId = result.data.runId ?? snapshot.runId;
+    recordAccess('/api/events', result.data.privacy, runId, snapshot.simClock.sequence, { limit: result.data.limit });
+    return projectEventsForPrivacy(db.getRecentEvents(result.data.limit, runId), result.data.privacy);
+  });
+
+  app.get('/api/telemetry', async (request, reply) => {
+    const result = limitQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const snapshot = simulator.getSnapshot();
+    const runId = result.data.runId ?? snapshot.runId;
+    recordAccess('/api/telemetry', result.data.privacy, runId, snapshot.simClock.sequence, { limit: result.data.limit });
+    return db.getRecentTelemetry(result.data.limit, runId);
+  });
+
+  app.get('/api/telemetry/summary', async (request, reply) => {
+    const result = telemetrySummaryQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const snapshot = simulator.getSnapshot();
+    const runId = result.data.runId ?? snapshot.runId;
+    recordAccess('/api/telemetry/summary', 'admin', runId, snapshot.simClock.sequence, { limit: result.data.limit });
+    return summarizeTelemetry(db.getRecentTelemetry(result.data.limit, runId), result.data.limit, runId);
+  });
+
+  app.get('/api/device-twins', async () => {
+    const snapshot = simulator.getSnapshot();
+    recordAccess('/api/device-twins', 'admin', snapshot.runId, snapshot.simClock.sequence);
+    return createDeviceAccessRecords(snapshot, db.getRecentEvents(500, snapshot.runId));
+  });
+
+  app.get('/api/device-capabilities', async () => getDeviceCapabilityMetadata());
+
+  app.get('/api/audit/access', async (request, reply) => {
+    const result = auditQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return db.getRecentAccessAudit(result.data.limit);
   });
 
   app.post('/api/scenarios/:id/start', async (request, reply) => {
     const params = request.params as { id: StaticScenarioId };
+    const result = idempotencyPayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
     if (!scenarioIds.includes(params.id)) {
       return reply.status(404).send({ error: 'Unknown scenario' });
     }
-    const events = simulator.startScenario(params.id);
-    const snapshot = recordAndBroadcast(events);
-    return { snapshot, events };
+    return runIdempotentCommand(reply, result.data.idempotencyKey, `POST /api/scenarios/${params.id}/start`, stripIdempotencyKey(result.data), () => {
+      const events = simulator.startScenario(params.id);
+      const snapshot = recordAndBroadcast(events);
+      return { snapshot, events };
+    });
   });
 
   app.post('/api/daily/start', async (request, reply) => {
-    const payload = request.body as DailyStartPayload;
-    const date = payload.date ?? todayInShanghai();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return reply.status(400).send({ error: 'Date must use YYYY-MM-DD' });
+    const result = dailyStartPayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
     }
-    const seed = payload.seed === undefined ? undefined : Number(payload.seed);
-    const events = simulator.startDailyScenario({ date, seed: Number.isFinite(seed) ? seed : undefined });
-    const snapshot = recordAndBroadcast(events);
-    return { snapshot, events };
+    return runIdempotentCommand(reply, result.data.idempotencyKey, 'POST /api/daily/start', stripIdempotencyKey(result.data), () => {
+      const date = result.data.date ?? todayInShanghai();
+      const events = simulator.startDailyScenario({ date, seed: result.data.seed });
+      const snapshot = recordAndBroadcast(events);
+      return { snapshot, events };
+    });
   });
 
-  app.post('/api/control/advance', async (request) => {
-    const payload = request.body as AdvancePayload;
-    const minutes = Math.max(1, Math.min(Number(payload.minutes ?? 1), 1440));
-    const events = simulator.advanceMinutes(minutes);
-    const snapshot = recordAndBroadcast(events);
-    return { snapshot, events };
+  app.post('/api/control/advance', async (request, reply) => {
+    const result = advancePayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return runIdempotentCommand(reply, result.data.idempotencyKey, 'POST /api/control/advance', stripIdempotencyKey(result.data), () => {
+      const events = simulator.advanceMinutes(result.data.minutes);
+      const snapshot = recordAndBroadcast(events);
+      return { snapshot, events };
+    });
   });
 
-  app.post('/api/control/pause', async () => {
-    const events = simulator.setPaused(true);
-    const snapshot = recordAndBroadcast(events);
-    return { snapshot, events };
+  app.post('/api/control/pause', async (request, reply) => {
+    const result = idempotencyPayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return runIdempotentCommand(reply, result.data.idempotencyKey, 'POST /api/control/pause', stripIdempotencyKey(result.data), () => {
+      const events = simulator.setPaused(true);
+      const snapshot = recordAndBroadcast(events);
+      return { snapshot, events };
+    });
   });
 
-  app.post('/api/control/resume', async () => {
-    const events = simulator.setPaused(false);
-    const snapshot = recordAndBroadcast(events);
-    return { snapshot, events };
+  app.post('/api/control/resume', async (request, reply) => {
+    const result = idempotencyPayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return runIdempotentCommand(reply, result.data.idempotencyKey, 'POST /api/control/resume', stripIdempotencyKey(result.data), () => {
+      const events = simulator.setPaused(false);
+      const snapshot = recordAndBroadcast(events);
+      return { snapshot, events };
+    });
   });
 
   app.post('/api/control/inject', async (request, reply) => {
-    const payload = request.body as InjectPayload;
-    if (!payload.kind) {
-      return reply.status(400).send({ error: 'Missing abnormality kind' });
+    const result = injectPayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
     }
-    const events = simulator.injectAbnormality(payload.kind);
-    const snapshot = recordAndBroadcast(events);
-    return { snapshot, events };
+    return runIdempotentCommand(reply, result.data.idempotencyKey, 'POST /api/control/inject', stripIdempotencyKey(result.data), () => {
+      const events = simulator.injectAbnormality(result.data.kind);
+      const snapshot = recordAndBroadcast(events);
+      return { snapshot, events };
+    });
+  });
+
+  app.post('/api/control/resolve', async (request, reply) => {
+    const result = resolvePayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return runIdempotentCommand(reply, result.data.idempotencyKey, 'POST /api/control/resolve', stripIdempotencyKey(result.data), () => {
+      const events = simulator.resolveAbnormality(result.data.kind);
+      const snapshot = recordAndBroadcast(events);
+      return { snapshot, events };
+    });
+  });
+
+  app.post('/api/alerts/:alertId/status', async (request, reply) => {
+    const params = request.params as { alertId: string };
+    const result = alertStatusPayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    if (!simulator.getSnapshot().alerts[params.alertId]) {
+      return sendNotFound(reply, 'Unknown alert');
+    }
+    return runIdempotentCommand(reply, result.data.idempotencyKey, `POST /api/alerts/${params.alertId}/status`, stripIdempotencyKey(result.data), () => {
+      const events = simulator.setAlertStatus(params.alertId, result.data.status);
+      const snapshot = recordAndBroadcast(events ?? []);
+      return { snapshot, events: events ?? [] };
+    });
   });
 
   app.register(async (fastify) => {
-    fastify.get('/ws', { websocket: true }, (socket) => {
-      sockets.add(socket);
-      socket.send(JSON.stringify({ type: 'twin.update', snapshot: simulator.getSnapshot(), events: [] }));
-      socket.on('close', () => sockets.delete(socket));
+    fastify.get('/ws', { websocket: true }, (socket, request) => {
+      const result = websocketQuerySchema.safeParse(request.query);
+      const privacy = result.success ? result.data.privacy : 'public';
+      const replayCandidates = result.success && result.data.runId && result.data.afterSequence !== undefined
+        ? db.getEventsAfter(result.data.runId, result.data.afterSequence, websocketReplayLimit + 1)
+        : [];
+      const replayComplete = replayCandidates.length <= websocketReplayLimit;
+      const replayEvents = replayCandidates.slice(0, websocketReplayLimit);
+      const client = { privacy, send: (payload: string) => socket.send(payload) };
+      sockets.add(client);
+      const snapshot = simulator.getSnapshot();
+      recordAccess('/ws', privacy, snapshot.runId, snapshot.simClock.sequence, result.success
+        ? { afterSequence: result.data.afterSequence ?? null }
+        : { validation: 'failed' });
+      socket.send(JSON.stringify({
+        type: 'twin.update',
+        runId: snapshot.runId,
+        sequence: snapshot.simClock.sequence,
+        snapshot: projectSnapshotForPrivacy(snapshot, privacy),
+        replayComplete,
+        events: projectEventsForPrivacy(replayEvents, privacy)
+      }));
+      socket.on('close', () => sockets.delete(client));
     });
   });
 
   app.addHook('onReady', async () => {
-    recordAndBroadcast(simulator.startDailyScenario({ date: todayInShanghai(), seed: 20260617 }));
+    if (!restoredFromDatabase) {
+      recordAndBroadcast(simulator.startDailyScenario({ date: todayInShanghai(), seed: 20260617 }));
+    }
     if (options.autoTick !== false) {
       tickHandle = setInterval(() => {
         const events = simulator.advanceMinutes(1);
@@ -132,16 +351,46 @@ export function createServer(options: ServerOptions): FastifyInstance {
         }
       }, options.tickMs ?? 1000);
     }
+    const heartbeatMs = options.heartbeatMs ?? 15000;
+    if (heartbeatMs > 0) {
+      heartbeatHandle = setInterval(() => broadcastHeartbeat(), heartbeatMs);
+    }
   });
 
   app.addHook('onClose', async () => {
     if (tickHandle) {
       clearInterval(tickHandle);
     }
+    if (heartbeatHandle) {
+      clearInterval(heartbeatHandle);
+    }
     db.close();
   });
 
   return app;
+
+  function runIdempotentCommand(
+    reply: FastifyReply,
+    idempotencyKey: string | undefined,
+    scope: string,
+    payload: unknown,
+    action: () => UpdateResponse
+  ): UpdateResponse | FastifyReply {
+    if (!idempotencyKey) {
+      return action();
+    }
+    const requestHash = hashRequest(scope, payload);
+    const cached = db.getIdempotencyRecord<UpdateResponse>(idempotencyKey);
+    if (cached) {
+      if (cached.requestHash !== requestHash) {
+        return sendIdempotencyConflict(reply);
+      }
+      return cached.response;
+    }
+    const response = action();
+    db.recordIdempotencyResponse(idempotencyKey, requestHash, response);
+    return response;
+  }
 }
 
 function todayInShanghai(): string {
@@ -151,4 +400,59 @@ function todayInShanghai(): string {
     month: '2-digit',
     day: '2-digit'
   }).format(new Date());
+}
+
+function sendValidationError(reply: FastifyReply, error: z.ZodError): FastifyReply {
+  return reply.status(400).send({
+    error: {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request input',
+      issues: error.issues.map((issue) => ({
+        path: issue.path.join('.'),
+        message: issue.message
+      }))
+    }
+  });
+}
+
+function sendIdempotencyConflict(reply: FastifyReply): FastifyReply {
+  return reply.status(409).send({
+    error: {
+      code: 'IDEMPOTENCY_CONFLICT',
+      message: 'Idempotency key was already used with a different request'
+    }
+  });
+}
+
+function sendNotFound(reply: FastifyReply, message: string): FastifyReply {
+  return reply.status(404).send({
+    error: {
+      code: 'NOT_FOUND',
+      message
+    }
+  });
+}
+
+function stripIdempotencyKey<T extends { idempotencyKey?: string }>(payload: T): Omit<T, 'idempotencyKey'> {
+  const { idempotencyKey: _idempotencyKey, ...rest } = payload;
+  return rest;
+}
+
+function hashRequest(scope: string, payload: unknown): string {
+  return createHash('sha256')
+    .update(stableJson({ scope, payload }))
+    .digest('hex');
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
 }

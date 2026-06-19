@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { getCatalog } from '../src/sim/catalog';
 import { createSimulator } from '../src/sim/engine';
+import { getDeviceCapability } from '../src/shared/deviceRegistry';
 import { createFloorplan3DModel } from '../src/web/floorplan3dModel';
 import { devicePoints, roomLayouts } from '../src/web/floorplanLayout';
 
@@ -42,8 +43,9 @@ describe('3D floorplan layout and model', () => {
       animationHint: 'pulse'
     });
     const robotVacuum = model.devices.find((device) => device.id === 'robot_vacuum_01');
-    expect(robotVacuum?.markerKind).toBe('mobile');
-    expect(robotVacuum?.animationHint).toBe(robotVacuum?.statusLabel === 'cleaning' ? 'patrol' : 'pulse');
+    const robotVacuumCapability = getDeviceCapability('robot_vacuum');
+    expect(robotVacuum?.markerKind).toBe(robotVacuumCapability.markerKind);
+    expect(robotVacuum?.animationHint).toBe(robotVacuumCapability.animationHint);
     expect(model.devices.find((device) => device.id === 'washer_01')).toMatchObject({
       markerKind: 'appliance',
       animationHint: 'vibrate'

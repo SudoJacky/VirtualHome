@@ -1,5 +1,6 @@
 import { getCatalog } from '../sim/catalog';
-import type { AlertState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
+import { isDeviceTypeActive } from '../shared/deviceRegistry';
+import type { AlertLifecycleStatus, AlertState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
 
 export interface DashboardEvent {
   id: string;
@@ -108,6 +109,7 @@ export interface AlertWorkflow {
   title: string;
   roomName: string;
   severity: AlertState['severity'];
+  lifecycleStatus: AlertLifecycleStatus;
   status: string;
   steps: string[];
 }
@@ -232,7 +234,7 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
     .filter((room) => room.occupancy)
     .map((room) => room.name);
   const activeDeviceCount = Object.values(snapshot.devices)
-    .filter((device) => isDeviceActive(device.type, device.state))
+    .filter((device) => isDeviceTypeActive(device.type, device.state))
     .length;
   const controlRecords = createControlRecords(events);
   const automationExplanations = createAutomationExplanations(events, controlRecords);
@@ -243,7 +245,7 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
     occupancyCount: snapshot.homeState.occupancyCount,
     occupiedRooms,
     activeDeviceCount,
-    alerts: Object.values(snapshot.alerts).sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+    alerts: activeAlerts(snapshot).sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
     householdActivity: createHouseholdActivity(snapshot),
     controlRecords,
     controlRecordFilters: createControlRecordFilters(controlRecords),
@@ -262,8 +264,11 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
 }
 
 export function mergeTwinEvents(current: TwinEvent[], incoming: TwinEvent[], limit = 100): TwinEvent[] {
+  const activeRunId = latestRunId(incoming) ?? latestRunId(current);
+  const currentForRun = activeRunId ? current.filter((event) => event.runId === activeRunId) : current;
+  const incomingForRun = activeRunId ? incoming.filter((event) => event.runId === activeRunId) : incoming;
   const byId = new Map<string, TwinEvent>();
-  for (const event of [...current, ...incoming]) {
+  for (const event of [...currentForRun, ...incomingForRun]) {
     byId.set(event.id, event);
   }
   return [...byId.values()]
@@ -271,9 +276,39 @@ export function mergeTwinEvents(current: TwinEvent[], incoming: TwinEvent[], lim
     .slice(-limit);
 }
 
+function latestRunId(events: TwinEvent[]): string | undefined {
+  return events.at(-1)?.runId ?? events[0]?.runId;
+}
+
 function formatEvent(event: TwinEvent): DashboardEvent {
   if (event.type === 'AlertCreated') {
     return { id: event.id, time: event.simTime, type: event.type, label: `${event.message} (${event.severity})` };
+  }
+  if (event.type === 'AlertStatusChanged') {
+    return {
+      id: event.id,
+      time: event.simTime,
+      type: event.type,
+      label: `${formatAlertTitle(event.alertId)} status changed from ${event.previousStatus} to ${event.status}`
+    };
+  }
+  if (event.type === 'AbnormalityInjected') {
+    const affected = event.affectedEntities.map(formatAffectedEntity).join(', ');
+    return {
+      id: event.id,
+      time: event.simTime,
+      type: event.type,
+      label: `${formatAbnormalityKind(event.kind)} injected; affected: ${affected}`
+    };
+  }
+  if (event.type === 'RuleRecovered') {
+    const facts = event.recoveredFacts.map(formatMatchedFact).join(', ');
+    return {
+      id: event.id,
+      time: event.simTime,
+      type: event.type,
+      label: `${formatRuleName(event.ruleId)} recovered after ${facts}`
+    };
   }
   if (event.type === 'AutomationTriggered') {
     return { id: event.id, time: event.simTime, type: event.type, label: `${formatRuleName(event.ruleId)}: ${event.explanation}` };
@@ -360,7 +395,7 @@ function createFloorplanRooms(snapshot: TwinSnapshot, events: TwinEvent[]): Dash
 
   for (const device of Object.values(snapshot.devices)) {
     const room = rooms[device.roomId];
-    const active = isDeviceActive(device.type, device.state);
+    const active = isDeviceTypeActive(device.type, device.state);
     room.devices.push({
       id: device.id,
       label: getDeviceLabel(device.id),
@@ -376,7 +411,7 @@ function createFloorplanRooms(snapshot: TwinSnapshot, events: TwinEvent[]): Dash
 }
 
 function createHouseholdActivity(snapshot: TwinSnapshot): HouseholdActivity {
-  const activeAlert = Object.values(snapshot.alerts).sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+  const activeAlert = activeAlerts(snapshot).sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
   if (activeAlert) {
     return {
       title: `${formatRoomName(activeAlert.roomId)} ${formatAlertKind(activeAlert.message)} response`,
@@ -570,16 +605,41 @@ function createAlertWorkflows(snapshot: TwinSnapshot, events: TwinEvent[]): Aler
         title: alert.message,
         roomName: formatRoomName(alert.roomId),
         severity: alert.severity,
-        status: responded ? 'Automation responded' : 'Needs attention',
+        lifecycleStatus: getAlertLifecycleStatus(alert),
+        status: formatAlertWorkflowStatus(alert, responded),
         steps: [
           'Alert detected',
           responded ? 'Automation response started' : 'Awaiting automation or operator review',
           responded ? `Device action executed: ${action}` : `Recommended action: ${action}`,
           `User notification prepared: ${action}`,
-          'Status: waiting for manual confirmation'
+          formatAlertWorkflowFinalStep(alert)
         ]
       };
     });
+}
+
+function activeAlerts(snapshot: TwinSnapshot): AlertState[] {
+  return Object.values(snapshot.alerts).filter((alert) => getAlertLifecycleStatus(alert) === 'active');
+}
+
+function formatAlertWorkflowStatus(alert: AlertState, responded: boolean): string {
+  const status = getAlertLifecycleStatus(alert);
+  if (status === 'resolved') return 'Resolved';
+  if (status === 'acknowledged') return 'Acknowledged';
+  if (status === 'ignored') return 'Ignored';
+  return responded ? 'Automation responded' : 'Needs attention';
+}
+
+function formatAlertWorkflowFinalStep(alert: AlertState): string {
+  const status = getAlertLifecycleStatus(alert);
+  if (status === 'resolved') return 'Status: resolved';
+  if (status === 'acknowledged') return 'Status: acknowledged';
+  if (status === 'ignored') return 'Status: ignored';
+  return 'Status: waiting for manual confirmation';
+}
+
+function getAlertLifecycleStatus(alert: AlertState): AlertLifecycleStatus {
+  return alert.status ?? 'active';
 }
 
 function createDemoSpotlight(
@@ -750,6 +810,37 @@ function formatRuleName(ruleId: string): string {
   return sentenceCase(ruleId.replaceAll('_', ' '));
 }
 
+function formatAlertTitle(alertId: string): string {
+  const titles: Record<string, string> = {
+    fridge_left_open_001: 'Fridge door has remained open',
+    network_offline_001: 'Home network is offline',
+    senior_no_activity_001: 'Senior activity not detected',
+    water_leak_001: 'Bathroom leak detected while home is sleeping',
+    door_left_open_001: 'Entrance door has been left open'
+  };
+  return titles[alertId] ?? sentenceCase(alertId.replaceAll('_', ' '));
+}
+
+function formatAffectedEntity(entityId: string): string {
+  const entities: Record<string, string> = {
+    fridge_01: 'Kitchen Fridge',
+    router_01: 'Home Router',
+    senior_1: 'Senior resident',
+    entrance_door_01: 'Entrance Door'
+  };
+  return entities[entityId] ?? formatDeviceName(entityId);
+}
+
+function formatAbnormalityKind(kind: string): string {
+  const labels: Record<string, string> = {
+    door_left_open: 'Door left open',
+    fridge_left_open: 'Fridge door left open',
+    network_offline: 'Network outage',
+    senior_no_activity: 'Senior inactivity'
+  };
+  return labels[kind] ?? sentenceCase(kind.replaceAll('_', ' '));
+}
+
 function inferRuleName(reason: string): string {
   if (reason.startsWith('activity:')) return 'Household activity';
   if (reason.startsWith('routine:')) return 'Daily routine';
@@ -769,7 +860,8 @@ function formatMatchedFact(reason: string): string {
     kitchen_occupied_and_stove_power: 'kitchen is occupied and stove power is high',
     stove_power_without_kitchen_occupancy: 'stove power is high while kitchen is empty',
     'occupancy_count:0': 'human occupancy count is 0',
-    'water_leak_sensor:true': 'water leak sensor is true'
+    'water_leak_sensor:true': 'water leak sensor is true',
+    'habit:pet_1:garden': 'pet is in the garden sprinkler zone'
   };
   return facts[reason] ?? formatReason(reason);
 }
@@ -800,6 +892,7 @@ function inferAutomationRoom(ruleId: string): RoomId | null {
   if (ruleId === 'close_water_valve_on_leak') return 'bathroom';
   if (ruleId === 'sleep_mode') return 'living_room';
   if (ruleId === 'away_mode') return 'entrance';
+  if (ruleId === 'pet_garden_sprinkler_pause') return 'garden';
   return null;
 }
 
@@ -813,6 +906,7 @@ function inferHumanActivity(ruleId: string): string {
   if (ruleId === 'cooking_ventilation') return 'Cooking in kitchen';
   if (ruleId === 'stove_unattended_safety') return 'Kitchen empty';
   if (ruleId === 'away_mode') return 'Family away';
+  if (ruleId === 'pet_garden_sprinkler_pause') return 'Pet garden activity';
   return 'Household activity';
 }
 

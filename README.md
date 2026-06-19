@@ -1,6 +1,6 @@
 # VirtualHome Twin Demo
 
-Standalone virtual home digital twin demo based on `MVP.md`.
+Standalone smart-home simulation and digital-twin demo.
 
 ## Run
 
@@ -13,6 +13,20 @@ npm install
 Start the API server:
 
 ```bash
+npm run server
+```
+
+To run the server with a different compatible home template in PowerShell:
+
+```powershell
+$env:VIRTUALHOME_HOME_DEFINITION = ".\my-home-definition.json"
+npm run server
+```
+
+For long-running demos, cap retained telemetry rows per simulation run:
+
+```powershell
+$env:VIRTUALHOME_TELEMETRY_RETENTION_EVENTS = "5000"
 npm run server
 ```
 
@@ -30,18 +44,37 @@ http://127.0.0.1:5173
 
 ## What is implemented
 
-- TypeScript simulation core for one virtual family home.
-- Nine rooms, four human family members, one pet, and 20 virtual devices.
-- Three scenarios: normal weekday, away day, and night water leak.
-- Internal twin events for people movement, device state, telemetry, rules, alerts, and scenario control.
-- SQLite-backed event, telemetry, and state snapshot persistence.
-- Fastify REST API and WebSocket updates.
-- React demo console with floorplan, device state, alerts, timeline, scenario controls, manual advance, pause/resume, and abnormality injection.
+- TypeScript simulation core for one default model-driven virtual family home.
+- Nine rooms, four human family members, one pet, and 30 virtual devices loaded from `src/sim/defaultHomeDefinition.json`.
+- Three static scenarios plus generated daily routines from date and seed.
+- Internal twin events for people movement, device state, telemetry, rules, alerts, scenario control, and recovery.
+- SQLite-backed append-only events, optionally capped telemetry, idempotency records, and checkpointed state snapshots.
+- Startup recovery from persisted snapshots with event replay.
+- Fastify REST API, OpenAPI document at `/api/openapi.json`, and WebSocket event-delta updates with heartbeat/reconnect cursors.
+- Adapter-facing device twin view at `/api/device-twins` with desired state, reported state, connectivity, freshness, and command acknowledgement metadata.
+- Telemetry summary endpoint at `/api/telemetry/summary` for aggregated metrics over recent event windows.
+- Server-side privacy projection for public state/events.
+- React demo console with floorplan, device state, alerts, timeline, scenario controls, daily routine generation, manual advance, pause/resume, abnormality injection, retryable commands, and recovery actions.
+
+## Boundary
+
+This repository is still a single-home simulation sandbox. It now exposes protocol and adapter seams that a real digital twin would need, but it does not yet connect to MQTT, Matter, Home Assistant, authentication, RBAC, or multiple persisted homes. The simulated home definition is externalized as a default template so future work can load other homes without rewriting the simulator.
+
+## API Surface
+
+- `GET /api/openapi.json` describes the REST and WebSocket protocol.
+- `GET /api/state`, `/api/events`, and `/api/telemetry` expose current state and recent history.
+- `GET /api/home-definition` exposes the default model-driven home template.
+- `GET /api/device-twins` exposes adapter-facing device access records.
+- `GET /api/device-capabilities` exposes the serializable device capability registry.
+- `GET /api/telemetry/summary` returns aggregated telemetry metrics.
+- `GET /api/audit/access` returns recent read-access audit records for privacy-sensitive APIs.
+- `POST /api/daily/start`, `/api/scenarios/:id/start`, and `/api/control/*` mutate the simulation. Control requests accept `idempotencyKey` for safe retries.
+- `GET /ws` streams `twin.update` event deltas and `twin.heartbeat` messages. Clients reconnect with `runId` and `afterSequence`.
 
 ## Verification
 
 ```bash
-npm test
-npm run typecheck
-npm run build
+npm ci
+npm run verify
 ```

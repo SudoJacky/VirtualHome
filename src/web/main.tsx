@@ -17,14 +17,11 @@ import {
 } from 'lucide-react';
 import type { DeviceState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { Floorplan3D, type FloorplanLayers, type FloorplanSelection } from './Floorplan3D';
+import { ApiClientError, createIdempotencyKey, getJson, postUpdate, type ApiUpdate } from './apiClient';
 import { createFloorplan3DModel, type Floorplan3DDevice, type Floorplan3DRoom, type FloorplanEventReplay } from './floorplan3dModel';
+import { buildTwinSocketUrl, cursorFromSnapshot, cursorFromUpdate, needsFullTwinRefresh, nextReconnectDelayMs, parseTwinSocketMessage, type TwinSocketCursor } from './twinSocket';
 import { createDashboardModel, mergeTwinEvents } from './viewModel';
 import './styles.css';
-
-interface ApiUpdate {
-  snapshot: TwinSnapshot;
-  events: TwinEvent[];
-}
 
 function App(): React.ReactElement {
   const [snapshot, setSnapshot] = React.useState<TwinSnapshot | null>(null);
@@ -44,20 +41,113 @@ function App(): React.ReactElement {
   const [activeReplayStepIndex, setActiveReplayStepIndex] = React.useState(0);
   const [activeDemoSpotlightId, setActiveDemoSpotlightId] = React.useState<string | null>(null);
   const [demoHoldUntil, setDemoHoldUntil] = React.useState<string | null>(null);
+  const [pendingAction, setPendingAction] = React.useState<string | null>(null);
+  const [apiError, setApiError] = React.useState<string | null>(null);
+  const [failedAction, setFailedAction] = React.useState<{ label: string; run: () => Promise<void> } | null>(null);
+  const [socketStatus, setSocketStatus] = React.useState<'connecting' | 'live' | 'reconnecting' | 'offline'>('connecting');
+  const [lastHeartbeatAt, setLastHeartbeatAt] = React.useState<string | null>(null);
   const demoHoldTimerRef = React.useRef<number | null>(null);
   const pointerActivationRef = React.useRef(false);
+  const socketCursorRef = React.useRef<TwinSocketCursor | null>(null);
 
   React.useEffect(() => {
-    void fetch('/api/state').then((response) => response.json()).then(setSnapshot);
-    void fetch('/api/events?limit=80').then((response) => response.json()).then(setEvents);
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${protocol}://${window.location.host}/ws`);
-    ws.addEventListener('message', (message) => {
-      const update = JSON.parse(message.data) as { snapshot: TwinSnapshot; events: TwinEvent[] };
-      setSnapshot(update.snapshot);
-      setEvents((current) => mergeTwinEvents(current, update.events));
+    let disposed = false;
+    let reconnectAttempt = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let socket: WebSocket | undefined;
+
+    async function refreshSnapshotFromApi(): Promise<void> {
+      const state = await getJson<TwinSnapshot>('/api/state');
+      if (disposed) return;
+      socketCursorRef.current = cursorFromSnapshot(state);
+      setSnapshot(state);
+    }
+
+    async function refreshTwinStateFromApi(): Promise<void> {
+      const [state, recentEvents] = await Promise.all([
+        getJson<TwinSnapshot>('/api/state'),
+        getJson<TwinEvent[]>('/api/events?limit=80')
+      ]);
+      if (disposed) return;
+      socketCursorRef.current = cursorFromSnapshot(state);
+      setSnapshot(state);
+      setEvents(recentEvents);
+    }
+
+    void refreshSnapshotFromApi().catch(() => {
+      if (!disposed) {
+        setSocketStatus('offline');
+      }
     });
-    return () => ws.close();
+    void getJson<TwinEvent[]>('/api/events?limit=80').then(setEvents).catch(() => {
+      if (!disposed) {
+        setSocketStatus('offline');
+      }
+    });
+
+    function connect(): void {
+      if (disposed) return;
+      setSocketStatus(reconnectAttempt === 0 ? 'connecting' : 'reconnecting');
+      socket = new WebSocket(buildTwinSocketUrl(window.location, socketCursorRef.current));
+      socket.addEventListener('open', () => {
+        reconnectAttempt = 0;
+        setSocketStatus('live');
+      });
+      socket.addEventListener('message', (message) => {
+        const update = parseTwinSocketMessage(String(message.data));
+        if (update.type === 'twin.heartbeat') {
+          socketCursorRef.current = { runId: update.runId, sequence: update.sequence };
+          setLastHeartbeatAt(update.ts);
+          setSocketStatus('live');
+          return;
+        }
+        socketCursorRef.current = cursorFromUpdate(update);
+        if (needsFullTwinRefresh(update)) {
+          if (update.snapshot) {
+            setSnapshot(update.snapshot);
+          }
+          setEvents([]);
+          void refreshTwinStateFromApi().catch(() => {
+            if (!disposed) {
+              setSocketStatus('offline');
+            }
+          });
+          setSocketStatus('live');
+          return;
+        }
+        if (update.snapshot) {
+          setSnapshot(update.snapshot);
+        } else {
+          void refreshSnapshotFromApi().catch(() => {
+            if (!disposed) {
+              setSocketStatus('offline');
+            }
+          });
+        }
+        setEvents((current) => mergeTwinEvents(current, update.events));
+        setSocketStatus('live');
+      });
+      socket.addEventListener('close', () => {
+        if (disposed) return;
+        setSocketStatus('reconnecting');
+        reconnectTimer = setTimeout(connect, nextReconnectDelayMs(reconnectAttempt));
+        reconnectAttempt += 1;
+      });
+      socket.addEventListener('error', () => {
+        if (!disposed) {
+          setSocketStatus('offline');
+        }
+      });
+    }
+
+    connect();
+    return () => {
+      disposed = true;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+      }
+      socket?.close();
+    };
   }, []);
 
   React.useEffect(() => {
@@ -96,18 +186,18 @@ function App(): React.ReactElement {
     setFloorplanSelection(spotlight.focusDeviceId ? { type: 'device', id: spotlight.focusDeviceId } : { type: 'room', id: spotlight.roomId });
   }, [activeDemoSpotlightId, events, sidebarMode, snapshot]);
 
-  async function startDailySimulation(): Promise<void> {
+  async function startDailySimulation(idempotencyKey: string): Promise<void> {
     resetDemoSpotlight();
-    const update = await postUpdate('/api/daily/start', { date: dailyDate, seed: dailySeed });
+    const update = await postUpdate('/api/daily/start', { date: dailyDate, seed: dailySeed }, { idempotencyKey });
     applyUpdate(update, true);
   }
 
-  async function startScenarioCard(cardId: string): Promise<void> {
+  async function startScenarioCard(cardId: string, idempotencyKey: string): Promise<void> {
     resetDemoSpotlight();
     if (cardId === 'weekday_normal' || cardId === 'away_day' || cardId === 'night_water_leak') {
-      const update = await postUpdate(`/api/scenarios/${cardId}/start`, {});
+      const update = await postUpdate(`/api/scenarios/${cardId}/start`, {}, { idempotencyKey });
       if (cardId === 'night_water_leak') {
-        const advanced = await postUpdate('/api/control/advance', { minutes: 10 });
+        const advanced = await postUpdate('/api/control/advance', { minutes: 10 }, { idempotencyKey: `${idempotencyKey}:advance` });
         applyUpdate({ snapshot: advanced.snapshot, events: [...update.events, ...advanced.events] }, true);
         holdDemoSpotlight(2000);
         return;
@@ -116,8 +206,8 @@ function App(): React.ReactElement {
       return;
     }
     if (cardId === 'kitchen_air_quality') {
-      const update = await postUpdate('/api/scenarios/weekday_normal/start', {});
-      const advanced = await postUpdate('/api/control/advance', { minutes: 750 });
+      const update = await postUpdate('/api/scenarios/weekday_normal/start', {}, { idempotencyKey: `${idempotencyKey}:start` });
+      const advanced = await postUpdate('/api/control/advance', { minutes: 750 }, { idempotencyKey: `${idempotencyKey}:advance` });
       applyUpdate({ snapshot: advanced.snapshot, events: [...update.events, ...advanced.events] }, true);
       holdDemoSpotlight(2000);
       return;
@@ -129,30 +219,50 @@ function App(): React.ReactElement {
       network_offline: 'network_offline'
     };
     if (injectionMap[cardId]) {
-      const update = await postUpdate('/api/control/inject', { kind: injectionMap[cardId] });
+      const update = await postUpdate('/api/control/inject', { kind: injectionMap[cardId] }, { idempotencyKey });
       applyUpdate(update);
       holdDemoSpotlight(2000);
     }
   }
 
-  async function advance(minutes: number): Promise<void> {
-    const update = await postUpdate('/api/control/advance', { minutes });
+  async function advance(minutes: number, idempotencyKey: string): Promise<void> {
+    const update = await postUpdate('/api/control/advance', { minutes }, { idempotencyKey });
     applyUpdate(update);
   }
 
-  async function inject(kind: string): Promise<void> {
-    const update = await postUpdate('/api/control/inject', { kind });
+  async function inject(kind: string, idempotencyKey: string): Promise<void> {
+    const update = await postUpdate('/api/control/inject', { kind }, { idempotencyKey });
     applyUpdate(update);
   }
 
-  async function setPaused(paused: boolean): Promise<void> {
-    const update = await postUpdate(paused ? '/api/control/pause' : '/api/control/resume', {});
+  async function resolve(kind: string, idempotencyKey: string): Promise<void> {
+    const update = await postUpdate('/api/control/resolve', { kind }, { idempotencyKey });
+    applyUpdate(update);
+  }
+
+  async function setPaused(paused: boolean, idempotencyKey: string): Promise<void> {
+    const update = await postUpdate(paused ? '/api/control/pause' : '/api/control/resume', {}, { idempotencyKey });
     applyUpdate(update);
   }
 
   function applyUpdate(update: ApiUpdate, replaceEvents = false): void {
+    socketCursorRef.current = cursorFromSnapshot(update.snapshot);
     setSnapshot(update.snapshot);
     setEvents((current) => replaceEvents ? update.events : mergeTwinEvents(current, update.events));
+  }
+
+  async function runApiAction(label: string, action: (idempotencyKey: string) => Promise<void>, idempotencyKey = createIdempotencyKey()): Promise<void> {
+    setPendingAction(label);
+    setApiError(null);
+    try {
+      await action(idempotencyKey);
+      setFailedAction(null);
+    } catch (error) {
+      setApiError(formatApiActionError(error));
+      setFailedAction({ label, run: () => runApiAction(label, action, idempotencyKey) });
+    } finally {
+      setPendingAction(null);
+    }
   }
 
   function resetDemoSpotlight(): void {
@@ -168,14 +278,14 @@ function App(): React.ReactElement {
 
   function holdDemoSpotlight(ms: number): void {
     setDemoHoldUntil(new Date(Date.now() + ms).toISOString());
-    void setPaused(true);
+    void setPaused(true, createIdempotencyKey());
     if (demoHoldTimerRef.current !== null) {
       window.clearTimeout(demoHoldTimerRef.current);
     }
     demoHoldTimerRef.current = window.setTimeout(() => {
       setDemoHoldUntil(null);
       demoHoldTimerRef.current = null;
-      void setPaused(false);
+      void setPaused(false, createIdempotencyKey());
     }, ms);
   }
 
@@ -255,16 +365,16 @@ function App(): React.ReactElement {
           <>
             <section className="control-group">
               <h2>Playback</h2>
-              <button onClick={() => setPaused(!snapshot.simClock.paused)}>
+              <button onClick={() => void runApiAction(snapshot.simClock.paused ? 'Resume simulation' : 'Pause simulation', (key) => setPaused(!snapshot.simClock.paused, key))}>
                 {snapshot.simClock.paused ? <Play size={16} /> : <Pause size={16} />}
                 {snapshot.simClock.paused ? 'Resume simulation' : 'Pause simulation'}
               </button>
-              <button onClick={() => advance(15)}><Zap size={16} /> Jump 15 min</button>
+              <button onClick={() => void runApiAction('Jump 15 min', (key) => advance(15, key))}><Zap size={16} /> Jump 15 min</button>
             </section>
             <section className="control-group scenario-script">
               <h2>Scenario Scripts</h2>
               {model.scenarioCards.map((scenario) => (
-                <button key={scenario.id} className="scenario-card" onClick={() => startScenarioCard(scenario.id)}>
+                <button key={scenario.id} className="scenario-card" onClick={() => void runApiAction(scenario.title, (key) => startScenarioCard(scenario.id, key))}>
                   <strong>{scenario.title}</strong>
                   <span>{scenario.businessValue}</span>
                   <small>{scenario.expectedTimeline}</small>
@@ -303,24 +413,32 @@ function App(): React.ReactElement {
                   <Shuffle size={16} />
                 </button>
               </div>
-              <button onClick={() => startDailySimulation()}><CalendarDays size={16} /> Generate day</button>
+              <button onClick={() => void runApiAction('Generate day', startDailySimulation)}><CalendarDays size={16} /> Generate day</button>
             </section>
 
             <section className="control-group">
               <h2>Control</h2>
-              <button onClick={() => advance(1)}><StepForward size={16} /> +1 min</button>
-              <button onClick={() => advance(15)}><Zap size={16} /> +15 min</button>
-              <button onClick={() => setPaused(!snapshot.simClock.paused)}>
+              <button onClick={() => void runApiAction('+1 min', (key) => advance(1, key))}><StepForward size={16} /> +1 min</button>
+              <button onClick={() => void runApiAction('+15 min', (key) => advance(15, key))}><Zap size={16} /> +15 min</button>
+              <button onClick={() => void runApiAction(snapshot.simClock.paused ? 'Resume' : 'Pause', (key) => setPaused(!snapshot.simClock.paused, key))}>
                 <Pause size={16} /> {snapshot.simClock.paused ? 'Resume' : 'Pause'}
               </button>
             </section>
 
             <section className="control-group">
               <h2>Inject</h2>
-              <button onClick={() => inject('fridge_left_open')}><Bell size={16} /> Fridge open</button>
-              <button onClick={() => inject('door_left_open')}><Bell size={16} /> Door open</button>
-              <button onClick={() => inject('network_offline')}><Bell size={16} /> Network off</button>
-              <button onClick={() => inject('senior_no_activity')}><Radar size={16} /> No activity</button>
+              <button onClick={() => void runApiAction('Fridge open', (key) => inject('fridge_left_open', key))}><Bell size={16} /> Fridge open</button>
+              <button onClick={() => void runApiAction('Door open', (key) => inject('door_left_open', key))}><Bell size={16} /> Door open</button>
+              <button onClick={() => void runApiAction('Network off', (key) => inject('network_offline', key))}><Bell size={16} /> Network off</button>
+              <button onClick={() => void runApiAction('No activity', (key) => inject('senior_no_activity', key))}><Radar size={16} /> No activity</button>
+            </section>
+
+            <section className="control-group">
+              <h2>Resolve</h2>
+              <button onClick={() => void runApiAction('Resolve fridge', (key) => resolve('fridge_left_open', key))}><Bell size={16} /> Fridge closed</button>
+              <button onClick={() => void runApiAction('Resolve door', (key) => resolve('door_left_open', key))}><Bell size={16} /> Door secured</button>
+              <button onClick={() => void runApiAction('Resolve network', (key) => resolve('network_offline', key))}><Bell size={16} /> Network online</button>
+              <button onClick={() => void runApiAction('Resolve activity', (key) => resolve('senior_no_activity', key))}><Radar size={16} /> Check-in done</button>
             </section>
           </>
         )}
@@ -338,6 +456,10 @@ function App(): React.ReactElement {
               {snapshot.simClock.paused ? 'Paused' : 'Auto running'}
             </span>
             <div className="sim-time"><Clock size={16} /> {formatTime(model.simTime)}</div>
+            <span className={`status-pill socket-${socketStatus}`} title={lastHeartbeatAt ? `Last heartbeat ${formatTime(lastHeartbeatAt)}` : undefined}>
+              <i />
+              {socketStatusLabel(socketStatus)}
+            </span>
           </div>
         </header>
 
@@ -347,6 +469,18 @@ function App(): React.ReactElement {
           <Metric label="Active devices" value={model.activeDeviceCount} />
           <Metric label="Alerts" value={model.alerts.length} intent={model.alerts.length > 0 ? 'alert' : 'normal'} />
         </section>
+
+        {pendingAction || apiError ? (
+          <section className={`api-status ${apiError ? 'error' : 'pending'}`} role={apiError ? 'alert' : 'status'}>
+            <div>
+              <strong>{apiError ? 'Request failed' : 'Request in progress'}</strong>
+              <span>{apiError ?? pendingAction}</span>
+            </div>
+            {apiError && failedAction ? (
+              <button onClick={() => void failedAction.run()}>Retry {failedAction.label}</button>
+            ) : null}
+          </section>
+        ) : null}
 
         <section className="story-row">
           <div className="story-card primary-story">
@@ -1065,15 +1199,6 @@ function RawEventStream({ events }: { events: TwinEvent[] }): React.ReactElement
   );
 }
 
-async function postUpdate(url: string, payload: unknown): Promise<ApiUpdate> {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  return response.json() as Promise<ApiUpdate>;
-}
-
 function todayInShanghai(): string {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',
@@ -1081,6 +1206,23 @@ function todayInShanghai(): string {
     month: '2-digit',
     day: '2-digit'
   }).format(new Date());
+}
+
+function formatApiActionError(error: unknown): string {
+  if (error instanceof ApiClientError) {
+    return `${error.message} (${error.status})`;
+  }
+  if (error instanceof Error) {
+    return error.name === 'AbortError' ? 'Request timed out. Please retry.' : error.message;
+  }
+  return 'Request failed. Please retry.';
+}
+
+function socketStatusLabel(status: 'connecting' | 'live' | 'reconnecting' | 'offline'): string {
+  if (status === 'live') return 'WS live';
+  if (status === 'reconnecting') return 'WS reconnecting';
+  if (status === 'offline') return 'WS offline';
+  return 'WS connecting';
 }
 
 function summarizeState(state: Record<string, string | number | boolean | null>): string {
