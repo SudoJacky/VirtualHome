@@ -314,5 +314,14 @@ export class TwinDatabase {
         LIMIT ?
       )
     `).run(homeId, runId, homeId, runId, this.telemetryRetentionEvents);
+
+    this.db.prepare(`
+      DELETE FROM events
+      WHERE home_id = ? AND run_id = ? AND type = 'DeviceTelemetry' AND id NOT IN (
+        SELECT id
+        FROM telemetry
+        WHERE home_id = ? AND run_id = ?
+      )
+    `).run(homeId, runId, homeId, runId);
   }
 }

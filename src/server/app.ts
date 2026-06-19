@@ -13,7 +13,7 @@ import { createDeviceAccessRecords } from './deviceAccess';
 import { loadHomeDefinitionFromFile } from './homeDefinitionLoader';
 import { buildOpenApiDocument } from './openapi';
 import { TwinDatabase } from './persistence';
-import { projectEventsForPrivacy, projectSnapshotForPrivacy, type PrivacyMode } from './privacy';
+import { projectEventsForPrivacy, projectSnapshotForPrivacy, projectTelemetryForPrivacy, type PrivacyMode } from './privacy';
 import { summarizeTelemetry } from './telemetrySummary';
 
 export interface ServerOptions {
@@ -54,7 +54,7 @@ const advancePayloadSchema = idempotencyPayloadSchema.extend({
   minutes: z.coerce.number().int().min(1).max(1440).default(1)
 });
 const dailyStartPayloadSchema = idempotencyPayloadSchema.extend({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(isValidCalendarDate, { message: 'Invalid calendar date' }).optional(),
   seed: z.coerce.number().int().min(0).max(0xffffffff).optional()
 });
 const injectPayloadSchema = idempotencyPayloadSchema.extend({
@@ -177,7 +177,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
     const snapshot = simulator.getSnapshot();
     const runId = result.data.runId ?? snapshot.runId;
     recordAccess('/api/telemetry', result.data.privacy, runId, snapshot.simClock.sequence, { limit: result.data.limit });
-    return db.getRecentTelemetry(result.data.limit, runId);
+    return projectTelemetryForPrivacy(db.getRecentTelemetry(result.data.limit, runId), result.data.privacy);
   });
 
   app.get('/api/telemetry/summary', async (request, reply) => {
@@ -316,17 +316,28 @@ export function createServer(options: ServerOptions): FastifyInstance {
     fastify.get('/ws', { websocket: true }, (socket, request) => {
       const result = websocketQuerySchema.safeParse(request.query);
       const privacy = result.success ? result.data.privacy : 'public';
-      const replayCandidates = result.success && result.data.runId && result.data.afterSequence !== undefined
-        ? db.getEventsAfter(result.data.runId, result.data.afterSequence, websocketReplayLimit + 1)
-        : [];
-      const replayComplete = replayCandidates.length <= websocketReplayLimit;
-      const replayEvents = replayCandidates.slice(0, websocketReplayLimit);
       const client = { privacy, send: (payload: string) => socket.send(payload) };
       sockets.add(client);
       const snapshot = simulator.getSnapshot();
       recordAccess('/ws', privacy, snapshot.runId, snapshot.simClock.sequence, result.success
         ? { afterSequence: result.data.afterSequence ?? null }
         : { validation: 'failed' });
+      if (result.success && result.data.runId && result.data.runId !== snapshot.runId) {
+        socket.send(JSON.stringify({
+          type: 'twin.run_changed',
+          previousRunId: result.data.runId,
+          runId: snapshot.runId,
+          sequence: snapshot.simClock.sequence,
+          snapshot: projectSnapshotForPrivacy(snapshot, privacy)
+        }));
+        socket.on('close', () => sockets.delete(client));
+        return;
+      }
+      const replayCandidates = result.success && result.data.runId && result.data.afterSequence !== undefined
+        ? db.getEventsAfter(result.data.runId, result.data.afterSequence, websocketReplayLimit + 1)
+        : [];
+      const replayComplete = replayCandidates.length <= websocketReplayLimit;
+      const replayEvents = replayCandidates.slice(0, websocketReplayLimit);
       socket.send(JSON.stringify({
         type: 'twin.update',
         runId: snapshot.runId,
@@ -400,6 +411,14 @@ function todayInShanghai(): string {
     month: '2-digit',
     day: '2-digit'
   }).format(new Date());
+}
+
+function isValidCalendarDate(date: string): boolean {
+  const [year, month, day] = date.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day;
 }
 
 function sendValidationError(reply: FastifyReply, error: z.ZodError): FastifyReply {

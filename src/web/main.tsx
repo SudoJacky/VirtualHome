@@ -96,8 +96,14 @@ function App(): React.ReactElement {
       socket.addEventListener('message', (message) => {
         const update = parseTwinSocketMessage(String(message.data));
         if (update.type === 'twin.heartbeat') {
-          socketCursorRef.current = { runId: update.runId, sequence: update.sequence };
           setLastHeartbeatAt(update.ts);
+          setSocketStatus('live');
+          return;
+        }
+        if (update.type === 'twin.run_changed') {
+          socketCursorRef.current = { runId: update.runId, sequence: update.sequence };
+          setSnapshot(update.snapshot);
+          setEvents([]);
           setSocketStatus('live');
           return;
         }
