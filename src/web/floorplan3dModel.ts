@@ -1,4 +1,4 @@
-import type { RoomId, Severity, TwinEvent, TwinSnapshot } from '../shared/types';
+import type { PersonKind, RoomId, Severity, TwinEvent, TwinSnapshot } from '../shared/types';
 import { getDeviceCapability, isDeviceTypeAbnormal, isDeviceTypeActive, summarizeDeviceState } from '../shared/deviceRegistry';
 import { devicePoints, getRoomLayout, roomLayouts, type RoomLayout } from './floorplanLayout';
 
@@ -11,6 +11,15 @@ export interface FloorplanPoint {
   z: number;
 }
 
+export interface PersonVisualStyle {
+  form: 'human' | 'pet';
+  bodyColor: string;
+  accentColor: string;
+  skinColor: string;
+  height: number;
+  width: number;
+}
+
 export interface Floorplan3DRoom extends RoomLayout {
   occupied: boolean;
   lit: boolean;
@@ -21,6 +30,7 @@ export interface Floorplan3DRoom extends RoomLayout {
 
 export interface Floorplan3DPerson {
   id: string;
+  kind: PersonKind;
   roomId: RoomId;
   label: string;
   activity: string;
@@ -28,6 +38,8 @@ export interface Floorplan3DPerson {
   x: number;
   z: number;
   movementPath: FloorplanPoint[];
+  movementTrailVisible: boolean;
+  visualStyle: PersonVisualStyle;
 }
 
 export interface Floorplan3DDevice {
@@ -119,13 +131,16 @@ export function createFloorplan3DModel(snapshot: TwinSnapshot, events: TwinEvent
       const anchor = offsetWithinRoom(roomId, index, 0.26);
       return {
         id: person.id,
+        kind: person.kind,
         roomId,
         label: getPersonLabel(person.id),
         activity: person.activity,
         recent: recentlyMovedPeople.has(person.id),
         x: anchor.x,
         z: anchor.z,
-        movementPath: createMovementPath(person.id, roomId, anchor, index, latestMoveByPerson.get(person.id))
+        movementPath: createMovementPath(person.id, roomId, anchor, index, latestMoveByPerson.get(person.id)),
+        movementTrailVisible: false,
+        visualStyle: getPersonVisualStyle(person.id, person.kind)
       };
     });
 
@@ -392,6 +407,63 @@ function getPersonLabel(personId: string): string {
     pet_1: 'P'
   };
   return labels[personId] ?? personId.slice(0, 2).toUpperCase();
+}
+
+function getPersonVisualStyle(personId: string, kind: PersonKind): PersonVisualStyle {
+  if (kind === 'pet') {
+    return {
+      form: 'pet',
+      bodyColor: '#9a6a35',
+      accentColor: '#6e4a24',
+      skinColor: '#c99a62',
+      height: 0.28,
+      width: 0.34
+    };
+  }
+
+  const styles: Record<string, PersonVisualStyle> = {
+    adult_1: {
+      form: 'human',
+      bodyColor: '#245b7a',
+      accentColor: '#d8b476',
+      skinColor: '#c98f63',
+      height: 0.78,
+      width: 0.28
+    },
+    adult_2: {
+      form: 'human',
+      bodyColor: '#2f765f',
+      accentColor: '#b7d7c3',
+      skinColor: '#a97455',
+      height: 0.76,
+      width: 0.28
+    },
+    child_1: {
+      form: 'human',
+      bodyColor: '#7b5aa6',
+      accentColor: '#f0d57a',
+      skinColor: '#d4a174',
+      height: 0.62,
+      width: 0.23
+    },
+    senior_1: {
+      form: 'human',
+      bodyColor: '#6f7780',
+      accentColor: '#e4e7dc',
+      skinColor: '#b98b68',
+      height: 0.72,
+      width: 0.27
+    }
+  };
+
+  return styles[personId] ?? {
+    form: 'human',
+    bodyColor: '#185a89',
+    accentColor: '#d9e8f4',
+    skinColor: '#c98f63',
+    height: 0.74,
+    width: 0.27
+  };
 }
 
 function getDeviceLabel(deviceId: string): string {
