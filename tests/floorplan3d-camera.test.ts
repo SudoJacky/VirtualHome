@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createCameraAutoFrameState, updateCameraAutoFrameState } from '../src/web/Floorplan3D';
+import { createCameraAutoFrameState, getRoomVisualTreatment, updateCameraAutoFrameState } from '../src/web/Floorplan3D';
 
 describe('3D floorplan camera control', () => {
   it('pauses automatic framing after manual camera control until the focus target changes', () => {
@@ -36,5 +36,16 @@ describe('3D floorplan camera control', () => {
       focusKey: 'device:water_valve_01',
       autoFrame: true
     });
+  });
+
+  it('does not use a floor wash to show selected rooms', () => {
+    const treatment = getRoomVisualTreatment({
+      selected: true,
+      occupied: false,
+      alertSeverity: undefined
+    });
+
+    expect(treatment.floorAccentOpacity).toBe(0);
+    expect(treatment.wallColor).not.toBe('#1e6fbb');
   });
 });

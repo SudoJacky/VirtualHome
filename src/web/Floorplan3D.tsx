@@ -5,8 +5,8 @@ import { Bell, CircuitBoard, RotateCcw, Thermometer, Users } from 'lucide-react'
 import * as THREE from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import type { RoomId } from '../shared/types';
-import { fixtureLayouts, type FixtureLayout } from './floorplanLayout';
-import type { Floorplan3DDevice, Floorplan3DModel, Floorplan3DPerson, Floorplan3DRoom, FloorplanAutomationLink } from './floorplan3dModel';
+import { fixtureLayouts, roomConnectionOpenings, wallSegments, type FixtureLayout, type RoomConnectionOpening, type WallSegment } from './floorplanLayout';
+import type { Floorplan3DDevice, Floorplan3DModel, Floorplan3DPerson, Floorplan3DRoom, FloorplanAutomationLink, PersonVisualStyle } from './floorplan3dModel';
 
 export interface FloorplanLayers {
   people: boolean;
@@ -48,6 +48,54 @@ export function updateCameraAutoFrameState(
     return state;
   }
   return { focusKey: event.focusKey, autoFrame: true };
+}
+
+export interface RoomVisualTreatment {
+  borderColor: string;
+  wallColor: string;
+  doorColor: string;
+  floorAccentOpacity: number;
+}
+
+export function getRoomVisualTreatment({
+  selected,
+  occupied,
+  alertSeverity
+}: {
+  selected: boolean;
+  occupied: boolean;
+  alertSeverity: Floorplan3DRoom['alertSeverity'] | undefined;
+}): RoomVisualTreatment {
+  if (alertSeverity) {
+    return {
+      borderColor: '#bc2f2f',
+      wallColor: '#8f3434',
+      doorColor: '#f0ded8',
+      floorAccentOpacity: 0.18
+    };
+  }
+  if (selected) {
+    return {
+      borderColor: '#2f756d',
+      wallColor: '#516166',
+      doorColor: '#eef7f3',
+      floorAccentOpacity: 0
+    };
+  }
+  if (occupied) {
+    return {
+      borderColor: '#267e71',
+      wallColor: '#516166',
+      doorColor: '#e7efed',
+      floorAccentOpacity: 0.035
+    };
+  }
+  return {
+    borderColor: '#516166',
+    wallColor: '#516166',
+    doorColor: '#e7efed',
+    floorAccentOpacity: 0
+  };
 }
 
 interface Floorplan3DProps {
@@ -135,6 +183,7 @@ function FloorplanScene({ model, layers, selected, onSelect }: Omit<Floorplan3DP
         <planeGeometry args={[11.8, 8.9]} />
         <meshStandardMaterial color="#dfe9e5" roughness={0.96} transparent opacity={0.42} />
       </mesh>
+      <HomeShell />
 
       {model.rooms.map((room) => (
         <RoomMesh
@@ -187,7 +236,11 @@ function RoomMesh({
   const alert = showAlerts && room.alertSeverity;
   const material = getRoomMaterial(room);
   const floorColor = alert ? getAlertColor(room.alertSeverity) : room.lit ? material.litColor : room.floorColor;
-  const outlineColor = selected ? '#1e6fbb' : alert ? '#bc2f2f' : room.occupied ? '#267e71' : '#516166';
+  const treatment = getRoomVisualTreatment({
+    selected,
+    occupied: room.occupied,
+    alertSeverity: alert ? room.alertSeverity : undefined
+  });
 
   function handleClick(event: ThreeEvent<MouseEvent>): void {
     event.stopPropagation();
@@ -205,19 +258,17 @@ function RoomMesh({
         <boxGeometry args={[room.width, 0.08, room.depth]} />
         <meshStandardMaterial color={floorColor} roughness={material.roughness} metalness={material.metalness} />
       </mesh>
-      <mesh position={[room.x, 0.065, room.z]} rotation={[-Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[Math.min(room.width, room.depth) * 0.05, Math.max(room.width, room.depth) * 0.54, 4]} />
-        <meshBasicMaterial color={outlineColor} transparent opacity={selected ? 0.11 : room.occupied ? 0.06 : 0.025} />
-      </mesh>
-      <Wall x={room.x} z={room.z - room.depth / 2} width={room.width} depth={room.wallThickness} height={room.wallHeight} color={outlineColor} />
-      <Wall x={room.x} z={room.z + room.depth / 2} width={room.width} depth={room.wallThickness} height={room.wallHeight} color={outlineColor} />
-      <Wall x={room.x - room.width / 2} z={room.z} width={room.wallThickness} depth={room.depth} height={room.wallHeight} color={outlineColor} />
-      <Wall x={room.x + room.width / 2} z={room.z} width={room.wallThickness} depth={room.depth} height={room.wallHeight} color={outlineColor} />
-      {room.id !== 'garden' ? <DoorHint room={room} color={selected ? '#d7eef4' : '#e7efed'} /> : null}
+      {treatment.floorAccentOpacity > 0 ? (
+        <mesh position={[room.x, 0.066, room.z]} rotation={[-Math.PI / 2, 0, 0]}>
+          <ringGeometry args={[Math.min(room.width, room.depth) * 0.12, Math.max(room.width, room.depth) * 0.5, 4]} />
+          <meshBasicMaterial color={treatment.borderColor} transparent opacity={treatment.floorAccentOpacity} />
+        </mesh>
+      ) : null}
+      <RoomPerimeterLine room={room} color={treatment.borderColor} selected={selected} alert={Boolean(alert)} />
       {room.lit ? (
         <pointLight position={[room.x, 0.75, room.z]} intensity={0.55} distance={2.8} color="#ffdca0" />
       ) : null}
-      {alert ? <AlertPulse room={room} color={outlineColor} /> : null}
+      {alert ? <AlertPulse room={room} color={treatment.borderColor} /> : null}
       <Text
         anchorX="left"
         anchorY="middle"
@@ -249,26 +300,73 @@ function RoomMesh({
   );
 }
 
+function RoomPerimeterLine({ room, color, selected, alert }: { room: Floorplan3DRoom; color: string; selected: boolean; alert: boolean }): React.ReactElement {
+  const y = selected || alert ? 0.145 : 0.11;
+  const left = room.x - room.width / 2 + 0.05;
+  const right = room.x + room.width / 2 - 0.05;
+  const front = room.z - room.depth / 2 + 0.05;
+  const back = room.z + room.depth / 2 - 0.05;
+  const points: [number, number, number][] = [
+    [left, y, front],
+    [right, y, front],
+    [right, y, back],
+    [left, y, back],
+    [left, y, front]
+  ];
+
+  return (
+    <Line
+      points={points}
+      color={color}
+      lineWidth={selected || alert ? 1.9 : 0.7}
+      transparent
+      opacity={selected || alert ? 0.86 : room.occupied ? 0.38 : 0.16}
+    />
+  );
+}
+
+function HomeShell(): React.ReactElement {
+  return (
+    <group>
+      {wallSegments.map((segment) => (
+        <HomeWall key={segment.id} segment={segment} />
+      ))}
+      {roomConnectionOpenings.map((opening) => (
+        <OpeningThreshold key={opening.id} opening={opening} />
+      ))}
+    </group>
+  );
+}
+
+function HomeWall({ segment }: { segment: WallSegment }): React.ReactElement {
+  const color = segment.kind === 'exterior' ? '#40555b' : '#697b78';
+  return (
+    <Wall
+      x={segment.x}
+      z={segment.z}
+      width={segment.width}
+      depth={segment.depth}
+      height={segment.height}
+      color={color}
+    />
+  );
+}
+
+function OpeningThreshold({ opening }: { opening: RoomConnectionOpening }): React.ReactElement {
+  const color = opening.kind === 'wide-opening' ? '#b8cfc8' : opening.kind === 'open-plan' ? '#c6d8d2' : '#d6dfdc';
+  return (
+    <mesh position={[opening.x, 0.105, opening.z]} receiveShadow>
+      <boxGeometry args={[opening.width, 0.035, opening.depth]} />
+      <meshStandardMaterial color={color} roughness={0.68} metalness={0.02} />
+    </mesh>
+  );
+}
+
 function Wall({ x, z, width, depth, height, color }: { x: number; z: number; width: number; depth: number; height: number; color: string }): React.ReactElement {
   return (
     <mesh position={[x, height / 2 + 0.08, z]} castShadow receiveShadow>
       <boxGeometry args={[width, height, depth]} />
       <meshStandardMaterial color={color} roughness={0.7} metalness={0.03} />
-    </mesh>
-  );
-}
-
-function DoorHint({ room, color }: { room: Floorplan3DRoom; color: string }): React.ReactElement {
-  const horizontal = room.width >= room.depth;
-  const width = horizontal ? 0.55 : room.wallThickness + 0.02;
-  const depth = horizontal ? room.wallThickness + 0.02 : 0.55;
-  const x = horizontal ? room.x - room.width * 0.22 : room.x - room.width / 2;
-  const z = horizontal ? room.z + room.depth / 2 : room.z - room.depth * 0.12;
-
-  return (
-    <mesh position={[x, 0.18, z]}>
-      <boxGeometry args={[width, 0.36, depth]} />
-      <meshStandardMaterial color={color} roughness={0.55} transparent opacity={0.9} />
     </mesh>
   );
 }
@@ -312,25 +410,34 @@ function FixtureMesh({ fixture }: { fixture: FixtureLayout }): React.ReactElemen
 
 function PersonMarker({ person }: { person: Floorplan3DPerson }): React.ReactElement {
   const groupRef = React.useRef<THREE.Group>(null);
+  const movementKey = React.useMemo(
+    () => person.movementPath.map((point) => `${point.x.toFixed(2)},${point.z.toFixed(2)}`).join('|'),
+    [person.movementPath]
+  );
+  const animationRef = React.useRef({ key: '', startedAt: 0 });
 
   useFrame(({ clock }) => {
     if (!groupRef.current) return;
     const path = person.movementPath;
-    const bob = Math.sin(clock.elapsedTime * 2.4 + person.id.length) * 0.025;
+    if (animationRef.current.key !== movementKey) {
+      animationRef.current = { key: movementKey, startedAt: clock.elapsedTime };
+    }
+    const baseY = person.visualStyle.form === 'pet' ? 0.12 : 0.08;
+    const bob = Math.sin(clock.elapsedTime * (person.visualStyle.form === 'pet' ? 3.1 : 2.4) + person.id.length) * 0.018;
     if (person.recent && path.length >= 2) {
-      const progress = Math.min((clock.elapsedTime % 2.2) / 1.6, 1);
+      const progress = Math.min((clock.elapsedTime - animationRef.current.startedAt) / 1.25, 1);
       const eased = easeInOutCubic(progress);
       const from = path[0];
       const to = path[path.length - 1];
-      groupRef.current.position.set(lerp(from.x, to.x, eased), 0.42 + bob, lerp(from.z, to.z, eased));
+      groupRef.current.position.set(lerp(from.x, to.x, eased), baseY + bob, lerp(from.z, to.z, eased));
     } else {
-      groupRef.current.position.y = 0.42 + bob;
+      groupRef.current.position.set(person.x, baseY + bob, person.z);
     }
   });
 
   return (
-    <group ref={groupRef} position={[person.x, 0.42, person.z]}>
-      {person.recent && person.movementPath.length >= 2 ? (
+    <group ref={groupRef} position={[person.x, person.visualStyle.form === 'pet' ? 0.12 : 0.08, person.z]}>
+      {person.movementTrailVisible && person.recent && person.movementPath.length >= 2 ? (
         <Line
           points={person.movementPath.map((point) => [point.x - person.x, -0.29, point.z - person.z] as [number, number, number])}
           color="#185a89"
@@ -339,13 +446,85 @@ function PersonMarker({ person }: { person: Floorplan3DPerson }): React.ReactEle
           opacity={0.36}
         />
       ) : null}
-      <mesh castShadow>
-        <sphereGeometry args={[0.13, 24, 24]} />
-        <meshStandardMaterial color={person.id === 'pet_1' ? '#9a6a35' : '#185a89'} emissive={person.recent ? '#185a89' : '#000000'} emissiveIntensity={person.recent ? 0.25 : 0} />
-      </mesh>
-      <Html center position={[0, 0.28, 0]}>
+      {person.visualStyle.form === 'pet'
+        ? <PetFigure style={person.visualStyle} recent={person.recent} />
+        : <HumanFigure style={person.visualStyle} recent={person.recent} />}
+      <Html center position={[0, person.visualStyle.height + 0.1, 0]}>
         <span className={`person-label ${person.recent ? 'recent' : ''}`} title={person.activity}>{person.label}</span>
       </Html>
+    </group>
+  );
+}
+
+function HumanFigure({ style, recent }: { style: PersonVisualStyle; recent: boolean }): React.ReactElement {
+  const scale = style.height / 0.76;
+  const emissiveIntensity = recent ? 0.18 : 0;
+
+  return (
+    <group scale={[scale, scale, scale]}>
+      <mesh position={[0, 0.61, 0]} castShadow>
+        <sphereGeometry args={[0.105, 24, 24]} />
+        <meshStandardMaterial color={style.skinColor} roughness={0.62} />
+      </mesh>
+      <mesh position={[0, 0.42, 0]} castShadow>
+        <cylinderGeometry args={[style.width * 0.34, style.width * 0.48, 0.32, 18]} />
+        <meshStandardMaterial color={style.bodyColor} emissive={style.bodyColor} emissiveIntensity={emissiveIntensity} roughness={0.58} />
+      </mesh>
+      <mesh position={[0, 0.52, 0]} castShadow>
+        <boxGeometry args={[style.width * 1.1, 0.055, 0.08]} />
+        <meshStandardMaterial color={style.accentColor} roughness={0.6} />
+      </mesh>
+      {[-1, 1].map((side) => (
+        <mesh key={`arm-${side}`} position={[side * style.width * 0.62, 0.38, 0]} rotation={[0, 0, side * 0.32]} castShadow>
+          <cylinderGeometry args={[0.026, 0.026, 0.27, 12]} />
+          <meshStandardMaterial color={style.bodyColor} roughness={0.6} />
+        </mesh>
+      ))}
+      {[-1, 1].map((side) => (
+        <mesh key={`leg-${side}`} position={[side * style.width * 0.18, 0.18, 0]} castShadow>
+          <cylinderGeometry args={[0.033, 0.036, 0.32, 12]} />
+          <meshStandardMaterial color="#313f44" roughness={0.68} />
+        </mesh>
+      ))}
+      <mesh position={[0, 0.04, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[style.width * 0.58, 24]} />
+        <meshBasicMaterial color={style.bodyColor} transparent opacity={recent ? 0.22 : 0.12} />
+      </mesh>
+    </group>
+  );
+}
+
+function PetFigure({ style, recent }: { style: PersonVisualStyle; recent: boolean }): React.ReactElement {
+  return (
+    <group>
+      <mesh position={[0, 0.18, 0]} scale={[style.width * 1.15, style.height * 0.72, style.width * 0.72]} castShadow>
+        <sphereGeometry args={[0.5, 24, 18]} />
+        <meshStandardMaterial color={style.bodyColor} emissive={style.bodyColor} emissiveIntensity={recent ? 0.12 : 0} roughness={0.78} />
+      </mesh>
+      <mesh position={[style.width * 0.48, 0.23, 0]} scale={[style.width * 0.58, style.height * 0.5, style.width * 0.46]} castShadow>
+        <sphereGeometry args={[0.5, 20, 16]} />
+        <meshStandardMaterial color={style.accentColor} roughness={0.72} />
+      </mesh>
+      {[-1, 1].map((side) => (
+        <mesh key={`ear-${side}`} position={[style.width * 0.56, 0.36, side * style.width * 0.13]} rotation={[0, 0, -0.35]} castShadow>
+          <coneGeometry args={[0.045, 0.12, 12]} />
+          <meshStandardMaterial color={style.accentColor} roughness={0.72} />
+        </mesh>
+      ))}
+      {[-1, 1].flatMap((x) => [-1, 1].map((z) => (
+        <mesh key={`${x}-${z}`} position={[x * style.width * 0.18, 0.065, z * style.width * 0.22]} castShadow>
+          <cylinderGeometry args={[0.025, 0.026, 0.12, 10]} />
+          <meshStandardMaterial color={style.accentColor} roughness={0.7} />
+        </mesh>
+      )))}
+      <mesh position={[-style.width * 0.48, 0.23, 0]} rotation={[0, 0, 0.85]} castShadow>
+        <cylinderGeometry args={[0.018, 0.025, 0.24, 10]} />
+        <meshStandardMaterial color={style.accentColor} roughness={0.7} />
+      </mesh>
+      <mesh position={[0, 0.035, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[style.width * 0.62, 24]} />
+        <meshBasicMaterial color={style.bodyColor} transparent opacity={recent ? 0.2 : 0.1} />
+      </mesh>
     </group>
   );
 }

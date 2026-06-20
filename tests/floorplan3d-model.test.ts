@@ -3,7 +3,7 @@ import { getCatalog } from '../src/sim/catalog';
 import { createSimulator } from '../src/sim/engine';
 import { getDeviceCapability } from '../src/shared/deviceRegistry';
 import { createFloorplan3DModel } from '../src/web/floorplan3dModel';
-import { devicePoints, roomLayouts } from '../src/web/floorplanLayout';
+import { devicePoints, roomConnectionOpenings, roomLayouts, wallSegments } from '../src/web/floorplanLayout';
 
 describe('3D floorplan layout and model', () => {
   it('defines renderable layout metadata for every room and catalog device', () => {
@@ -113,6 +113,39 @@ describe('3D floorplan layout and model', () => {
     const recentPerson = model.people.find((person) => person.recent);
 
     expect(recentPerson?.movementPath.length).toBeGreaterThanOrEqual(2);
+    expect(recentPerson?.movementTrailVisible).toBe(false);
     expect(recentPerson?.movementPath.every((point) => Number.isFinite(point.x) && Number.isFinite(point.z))).toBe(true);
+  });
+
+  it('adds differentiated visual styles for humans and pets', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('night_water_leak');
+
+    const model = createFloorplan3DModel(simulator.getSnapshot(), simulator.getEvents());
+    const humans = model.people.filter((person) => person.kind === 'human');
+    const pet = model.people.find((person) => person.kind === 'pet');
+
+    expect(humans).toHaveLength(4);
+    expect(new Set(humans.map((person) => person.visualStyle.bodyColor)).size).toBeGreaterThan(2);
+    expect(humans.every((person) => person.visualStyle.height >= 0.62)).toBe(true);
+    expect(pet?.visualStyle).toMatchObject({
+      bodyColor: '#9a6a35',
+      height: 0.28,
+      form: 'pet'
+    });
+  });
+
+  it('defines a connected home shell with visible room openings', () => {
+    const layoutRoomIds = new Set(roomLayouts.map((room) => room.id));
+
+    expect(wallSegments.filter((segment) => segment.kind === 'exterior').length).toBeGreaterThanOrEqual(4);
+    expect(wallSegments.some((segment) => segment.kind === 'interior')).toBe(true);
+    expect(roomConnectionOpenings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'living_room', to: 'kitchen', kind: 'open-plan' }),
+      expect.objectContaining({ from: 'living_room', to: 'dining_room', kind: 'open-plan' }),
+      expect.objectContaining({ from: 'living_room', to: 'garden', kind: 'wide-opening' })
+    ]));
+    expect(roomConnectionOpenings.every((opening) => layoutRoomIds.has(opening.from) && layoutRoomIds.has(opening.to))).toBe(true);
+    expect(roomConnectionOpenings.every((opening) => opening.width > 0 && opening.depth > 0)).toBe(true);
   });
 });
