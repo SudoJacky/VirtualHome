@@ -1,6 +1,6 @@
 import { getCatalog } from '../sim/catalog';
-import { isDeviceTypeActive } from '../shared/deviceRegistry';
-import type { AlertLifecycleStatus, AlertState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
+import { getDeviceCapability, isDeviceTypeAbnormal, isDeviceTypeActive, summarizeDeviceState } from '../shared/deviceRegistry';
+import type { AlertLifecycleStatus, AlertState, DeviceState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
 
 export interface DashboardEvent {
   id: string;
@@ -16,14 +16,18 @@ export interface DashboardModel {
   occupiedRooms: string[];
   activeDeviceCount: number;
   alerts: AlertState[];
+  alertStatusSummary: AlertStatusSummary;
+  homeBriefing: HomeBriefing;
   householdActivity: HouseholdActivity;
   controlRecords: ControlRecord[];
   controlRecordFilters: ControlRecordFilters;
+  deviceControlCards: DeviceControlCard[];
   automationExplanations: AutomationExplanation[];
   alertWorkflows: AlertWorkflow[];
   scenarioCards: ScenarioCard[];
   demoSpotlight: DemoSpotlight | null;
   recentEvents: DashboardEvent[];
+  insightCards: InsightCard[];
   telemetrySeries: Array<{
     id: string;
     label: string;
@@ -58,6 +62,34 @@ export interface HouseholdActivity {
   summary: string;
   roomName: string;
   participants: string[];
+  nextAction: string;
+}
+
+export interface AlertStatusSummary {
+  new: number;
+  acknowledged: number;
+  unresolved: number;
+  resolved: number;
+  ignored: number;
+}
+
+export interface PriorityItem {
+  id: string;
+  kind: 'alert' | 'automation' | 'device_health' | 'comfort' | 'activity';
+  priority: number;
+  headline: string;
+  summary: string;
+  roomId: RoomId;
+  roomName: string;
+  action: string;
+  sourceId?: string;
+}
+
+export interface HomeBriefing {
+  status: 'Good' | 'Watch' | 'Needs attention';
+  summary: string;
+  primaryItem: PriorityItem | null;
+  highlights: string[];
   nextAction: string;
 }
 
@@ -111,7 +143,57 @@ export interface AlertWorkflow {
   severity: AlertState['severity'];
   lifecycleStatus: AlertLifecycleStatus;
   status: string;
+  recommendedAction: string;
+  evidence: string[];
+  actions: AlertWorkflowAction[];
   steps: string[];
+}
+
+export interface AlertWorkflowAction {
+  kind: 'acknowledge' | 'remind' | 'ignore' | 'evidence' | 'replay' | 'resolve';
+  label: string;
+  endpoint?: string;
+  status?: AlertLifecycleStatus;
+  highRisk: boolean;
+}
+
+export interface DeviceControlCard {
+  deviceId: string;
+  displayName: string;
+  roomName: string;
+  deviceType: string;
+  statusLabel: string;
+  connectivity: 'online' | 'offline';
+  disabledReason: string | null;
+  commandStatus: 'none' | 'requested' | 'sent' | 'acknowledged' | 'failed';
+  controls: DeviceCommandControl[];
+}
+
+export interface DeviceCommandControl {
+  command: string;
+  label: string;
+  controlType: 'button' | 'toggle' | 'slider' | 'select';
+  field: string | null;
+  value: string | number | boolean | null;
+  min?: number;
+  max?: number;
+  options?: string[];
+  disabled: boolean;
+  disabledReason: string | null;
+  highRisk: boolean;
+}
+
+export interface InsightCard {
+  id: string;
+  category: 'energy' | 'water' | 'health_comfort' | 'device_health';
+  priority: number;
+  title: string;
+  reason: string;
+  recommendedAction: string;
+  expectedEffect: string;
+  roomName: string;
+  relatedDeviceId: string;
+  status: 'normal' | 'watch' | 'alert';
 }
 
 export interface ScenarioCard {
@@ -239,6 +321,9 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
   const controlRecords = createControlRecords(events);
   const automationExplanations = createAutomationExplanations(events, controlRecords);
   const alertWorkflows = createAlertWorkflows(snapshot, events);
+  const telemetrySeries = createTelemetrySeries(events);
+  const priorityQueue = createPriorityQueue(snapshot, controlRecords, automationExplanations, telemetrySeries);
+  const alertStatusSummary = createAlertStatusSummary(snapshot);
   return {
     homeMode: snapshot.homeState.mode,
     simTime: snapshot.simClock.currentTime,
@@ -246,19 +331,23 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
     occupiedRooms,
     activeDeviceCount,
     alerts: activeAlerts(snapshot).sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+    alertStatusSummary,
+    homeBriefing: createHomeBriefing(snapshot, alertStatusSummary, priorityQueue, automationExplanations),
     householdActivity: createHouseholdActivity(snapshot),
     controlRecords,
     controlRecordFilters: createControlRecordFilters(controlRecords),
+    deviceControlCards: createDeviceControlCards(snapshot, events),
     automationExplanations,
     alertWorkflows,
     scenarioCards,
-    demoSpotlight: createDemoSpotlight(snapshot, controlRecords, automationExplanations, alertWorkflows),
+    demoSpotlight: createDemoSpotlight(snapshot, controlRecords, automationExplanations, alertWorkflows, priorityQueue),
     recentEvents: events
       .filter((event) => event.type !== 'DeviceTelemetry')
       .slice(-20)
       .reverse()
       .map(formatEvent),
-    telemetrySeries: createTelemetrySeries(events),
+    insightCards: createInsightCards(snapshot, telemetrySeries),
+    telemetrySeries,
     floorplanRooms: createFloorplanRooms(snapshot, events)
   };
 }
@@ -278,6 +367,123 @@ export function mergeTwinEvents(current: TwinEvent[], incoming: TwinEvent[], lim
 
 function latestRunId(events: TwinEvent[]): string | undefined {
   return events.at(-1)?.runId ?? events[0]?.runId;
+}
+
+function createAlertStatusSummary(snapshot: TwinSnapshot): AlertStatusSummary {
+  const alerts = Object.values(snapshot.alerts);
+  const summary: AlertStatusSummary = { new: 0, acknowledged: 0, unresolved: 0, resolved: 0, ignored: 0 };
+  for (const alert of alerts) {
+    const status = getAlertLifecycleStatus(alert);
+    if (status === 'active') summary.new += 1;
+    if (status === 'acknowledged') summary.acknowledged += 1;
+    if (status === 'resolved') summary.resolved += 1;
+    if (status === 'ignored') summary.ignored += 1;
+    if (isUnresolvedAlert(alert)) summary.unresolved += 1;
+  }
+  return summary;
+}
+
+function createPriorityQueue(
+  snapshot: TwinSnapshot,
+  controlRecords: ControlRecord[],
+  automationExplanations: AutomationExplanation[],
+  telemetrySeries: DashboardModel['telemetrySeries']
+): PriorityItem[] {
+  const alertItems = activeAlerts(snapshot).map((alert) => ({
+    id: `alert:${alert.id}`,
+    kind: 'alert' as const,
+    priority: alertPriority(alert),
+    headline: alert.message,
+    summary: `${formatRoomName(alert.roomId)} needs review: ${formatAction(alert.recommendedAction)}.`,
+    roomId: alert.roomId,
+    roomName: formatRoomName(alert.roomId),
+    action: `Confirm ${formatAction(alert.recommendedAction)}`,
+    sourceId: alert.id
+  }));
+  const automationItems = automationExplanations.slice(0, 3).map((automation, index) => {
+    const record = controlRecords.find((candidate) => candidate.reason === `rule:${automation.ruleId}`);
+    const roomId = record ? devicesById.get(record.deviceId)?.roomId ?? inferAutomationRoom(automation.ruleId) ?? firstOccupiedRoom(snapshot) : inferAutomationRoom(automation.ruleId) ?? firstOccupiedRoom(snapshot);
+    return {
+      id: `automation:${automation.id}`,
+      kind: 'automation' as const,
+      priority: 38 - index,
+      headline: automation.ruleName,
+      summary: automation.explanation,
+      roomId,
+      roomName: formatRoomName(roomId),
+      action: automation.actions[0] ? `Review ${automation.actions[0]}` : 'Review automation result',
+      sourceId: automation.id
+    };
+  });
+  const telemetryItems = telemetrySeries
+    .filter((series) => series.thresholdStatus !== 'normal')
+    .map((series) => {
+      const deviceId = series.id.split(':')[0] ?? '';
+      const roomId = devicesById.get(deviceId)?.roomId ?? firstOccupiedRoom(snapshot);
+      return {
+        id: `telemetry:${series.id}`,
+        kind: 'comfort' as const,
+        priority: series.thresholdStatus === 'alert' ? 62 : 48,
+        headline: series.label,
+        summary: series.insight,
+        roomId,
+        roomName: formatRoomName(roomId),
+        action: recommendedTelemetryAction(series.id),
+        sourceId: series.id
+      };
+    });
+  const activity = createHouseholdActivity(snapshot);
+  const activityItem: PriorityItem = {
+    id: `activity:${snapshot.scenarioId}`,
+    kind: 'activity',
+    priority: 10,
+    headline: activity.title,
+    summary: activity.summary,
+    roomId: firstOccupiedRoom(snapshot),
+    roomName: activity.roomName,
+    action: activity.nextAction
+  };
+  return [...alertItems, ...telemetryItems, ...automationItems, activityItem]
+    .sort((left, right) => right.priority - left.priority || left.headline.localeCompare(right.headline));
+}
+
+function createHomeBriefing(
+  snapshot: TwinSnapshot,
+  alertSummary: AlertStatusSummary,
+  priorityQueue: PriorityItem[],
+  automationExplanations: AutomationExplanation[]
+): HomeBriefing {
+  const primaryItem = priorityQueue[0] ?? null;
+  const status: HomeBriefing['status'] = alertSummary.unresolved > 0
+    ? 'Needs attention'
+    : priorityQueue.some((item) => item.priority >= 48)
+      ? 'Watch'
+      : 'Good';
+  const unresolvedText = alertSummary.unresolved === 1 ? '1 item needs handling' : `${alertSummary.unresolved} items need handling`;
+  const summary = alertSummary.unresolved > 0
+    ? unresolvedText
+    : snapshot.homeState.occupancyCount > 0
+      ? 'Household routines are running normally'
+      : 'Home is monitoring security while everyone is away';
+  const latestAutomation = automationExplanations[0];
+  return {
+    status,
+    summary,
+    primaryItem,
+    highlights: [
+      primaryItem ? primaryItem.summary : summary,
+      latestAutomation ? `Latest automation: ${latestAutomation.ruleName}` : 'No automation has fired yet',
+      `Mode: ${snapshot.homeState.mode.replaceAll('_', ' ')}`
+    ],
+    nextAction: primaryItem?.action ?? inferNextAction(snapshot.homeState.mode)
+  };
+}
+
+function alertPriority(alert: AlertState): number {
+  const severityRank: Record<AlertState['severity'], number> = { info: 52, warning: 72, high: 96 };
+  const status = getAlertLifecycleStatus(alert);
+  const statusPenalty = status === 'acknowledged' ? 10 : status === 'ignored' ? 28 : 0;
+  return severityRank[alert.severity] - statusPenalty;
 }
 
 function formatEvent(event: TwinEvent): DashboardEvent {
@@ -408,6 +614,101 @@ function createFloorplanRooms(snapshot: TwinSnapshot, events: TwinEvent[]): Dash
   }
 
   return rooms;
+}
+
+function createDeviceControlCards(snapshot: TwinSnapshot, events: TwinEvent[]): DeviceControlCard[] {
+  const latestStateChangeByDevice = new Map<string, Extract<TwinEvent, { type: 'DeviceStateChanged' }>>();
+  for (const event of events) {
+    if (event.type === 'DeviceStateChanged') {
+      latestStateChangeByDevice.set(event.deviceId, event);
+    }
+  }
+  return Object.values(snapshot.devices)
+    .map((device) => createDeviceControlCard(device, latestStateChangeByDevice.get(device.id)))
+    .sort((left, right) => left.roomName.localeCompare(right.roomName) || left.displayName.localeCompare(right.displayName));
+}
+
+function createDeviceControlCard(
+  device: DeviceState,
+  latestStateChange: Extract<TwinEvent, { type: 'DeviceStateChanged' }> | undefined
+): DeviceControlCard {
+  const capability = getDeviceCapability(device.type);
+  const connectivity = device.state.online === false ? 'offline' : 'online';
+  const disabledReason = connectivity === 'offline' ? 'Device is offline' : null;
+  return {
+    deviceId: device.id,
+    displayName: formatDeviceName(device.id),
+    roomName: formatRoomName(device.roomId),
+    deviceType: device.type,
+    statusLabel: summarizeDeviceState(device.type, device.state),
+    connectivity,
+    disabledReason,
+    commandStatus: latestStateChange ? 'acknowledged' : 'none',
+    controls: capability.supportedCommands.map((command) => createDeviceCommandControl(command, device, disabledReason))
+  };
+}
+
+function createDeviceCommandControl(command: string, device: DeviceState, disabledReason: string | null): DeviceCommandControl {
+  const field = commandField(command, device.type);
+  const highRisk = isHighRiskCommand(command, device.type);
+  const base = {
+    command,
+    label: commandLabel(command),
+    field,
+    value: field ? device.state[field] ?? null : null,
+    disabled: Boolean(disabledReason),
+    disabledReason,
+    highRisk
+  };
+  if (command.startsWith('set_')) {
+    const options = field ? commandOptions(device, field) : [];
+    if (options.length > 0) {
+      return { ...base, controlType: 'select', options };
+    }
+    return { ...base, controlType: 'slider', min: commandMin(field), max: commandMax(field) };
+  }
+  if (['turn_on', 'turn_off', 'open', 'close', 'lock', 'unlock'].includes(command)) {
+    return { ...base, controlType: 'toggle' };
+  }
+  return { ...base, controlType: 'button' };
+}
+
+function createInsightCards(snapshot: TwinSnapshot, telemetrySeries: DashboardModel['telemetrySeries']): InsightCard[] {
+  const telemetryInsights = telemetrySeries.map((series) => {
+    const deviceId = series.id.split(':')[0] ?? '';
+    const metric = series.id.split(':')[1] ?? '';
+    const device = snapshot.devices[deviceId];
+    const category = insightCategory(metric, device?.type);
+    return {
+      id: `telemetry:${series.id}`,
+      category,
+      priority: insightPriority(series.thresholdStatus, category) + airQualityBoost(metric),
+      title: insightTitle(metric, device?.roomId),
+      reason: series.insight,
+      recommendedAction: recommendedTelemetryAction(series.id),
+      expectedEffect: expectedTelemetryEffect(metric),
+      roomName: device ? formatRoomName(device.roomId) : 'Whole home',
+      relatedDeviceId: deviceId,
+      status: series.thresholdStatus
+    };
+  });
+  const healthInsights = Object.values(snapshot.devices)
+    .filter((device) => isDeviceTypeAbnormal(device.type, device.state) || device.state.online === false)
+    .map((device) => ({
+      id: `device:${device.id}`,
+      category: 'device_health' as const,
+      priority: device.state.online === false ? 88 : 70,
+      title: `${formatDeviceName(device.id)} needs attention`,
+      reason: summarizeDeviceState(device.type, device.state),
+      recommendedAction: device.state.online === false ? 'Check connectivity or restart the device' : 'Inspect the device state',
+      expectedEffect: 'Restores reliable automation input and command execution.',
+      roomName: formatRoomName(device.roomId),
+      relatedDeviceId: device.id,
+      status: 'alert' as const
+    }));
+  return [...healthInsights, ...telemetryInsights]
+    .sort((left, right) => right.priority - left.priority)
+    .slice(0, 8);
 }
 
 function createHouseholdActivity(snapshot: TwinSnapshot): HouseholdActivity {
@@ -607,6 +908,9 @@ function createAlertWorkflows(snapshot: TwinSnapshot, events: TwinEvent[]): Aler
         severity: alert.severity,
         lifecycleStatus: getAlertLifecycleStatus(alert),
         status: formatAlertWorkflowStatus(alert, responded),
+        recommendedAction: formatAction(alert.recommendedAction),
+        evidence: createAlertEvidence(alert, events),
+        actions: createAlertWorkflowActions(alert),
         steps: [
           'Alert detected',
           responded ? 'Automation response started' : 'Awaiting automation or operator review',
@@ -618,8 +922,57 @@ function createAlertWorkflows(snapshot: TwinSnapshot, events: TwinEvent[]): Aler
     });
 }
 
+function createAlertWorkflowActions(alert: AlertState): AlertWorkflowAction[] {
+  const status = getAlertLifecycleStatus(alert);
+  const statusEndpoint = `/api/alerts/${encodeURIComponent(alert.id)}/status`;
+  return [
+    {
+      kind: 'acknowledge',
+      label: status === 'acknowledged' ? 'Acknowledged' : 'Confirm received',
+      endpoint: statusEndpoint,
+      status: 'acknowledged',
+      highRisk: false
+    },
+    { kind: 'remind', label: 'Remind later', highRisk: false },
+    {
+      kind: 'ignore',
+      label: 'Ignore once',
+      endpoint: statusEndpoint,
+      status: 'ignored',
+      highRisk: alert.severity === 'high'
+    },
+    { kind: 'evidence', label: 'View evidence', highRisk: false },
+    { kind: 'replay', label: 'View 3D replay', highRisk: false },
+    {
+      kind: 'resolve',
+      label: status === 'resolved' ? 'Resolved' : 'Mark resolved',
+      endpoint: statusEndpoint,
+      status: 'resolved',
+      highRisk: false
+    }
+  ];
+}
+
+function createAlertEvidence(alert: AlertState, events: TwinEvent[]): string[] {
+  const sourceEntities = alert.sourceEntityIds ?? [];
+  const entityEvidence = sourceEntities.map((entityId) => `${formatAffectedEntity(entityId)} reported the condition`);
+  const eventEvidence = events
+    .filter((event): event is Extract<TwinEvent, { type: 'DeviceStateChanged' }> => (
+      event.type === 'DeviceStateChanged' &&
+      (sourceEntities.includes(event.deviceId) || event.roomId === alert.roomId)
+    ))
+    .slice(-3)
+    .map((event) => `${formatDeviceName(event.deviceId)} state: ${formatStateAction(event.state)}`);
+  return [...entityEvidence, ...eventEvidence].slice(0, 4);
+}
+
 function activeAlerts(snapshot: TwinSnapshot): AlertState[] {
-  return Object.values(snapshot.alerts).filter((alert) => getAlertLifecycleStatus(alert) === 'active');
+  return Object.values(snapshot.alerts).filter(isUnresolvedAlert);
+}
+
+function isUnresolvedAlert(alert: AlertState): boolean {
+  const status = getAlertLifecycleStatus(alert);
+  return status === 'active' || status === 'acknowledged';
 }
 
 function formatAlertWorkflowStatus(alert: AlertState, responded: boolean): string {
@@ -642,12 +995,115 @@ function getAlertLifecycleStatus(alert: AlertState): AlertLifecycleStatus {
   return alert.status ?? 'active';
 }
 
+function commandField(command: string, deviceType: string): string | null {
+  if (command === 'set_brightness') return 'brightness';
+  if (command === 'set_position') return 'positionPercent';
+  if (command === 'set_target') return 'targetC';
+  if (command === 'set_level') return 'level';
+  if (command === 'set_speed') return 'speed';
+  if (command === 'turn_on' || command === 'turn_off') return 'power';
+  if (command === 'open' || command === 'close') return deviceType === 'curtain' ? 'positionPercent' : 'valveOpen';
+  if (command === 'lock' || command === 'unlock') return 'locked';
+  return null;
+}
+
+function commandLabel(command: string): string {
+  return sentenceCase(command.replaceAll('_', ' '));
+}
+
+function isHighRiskCommand(command: string, deviceType: string): boolean {
+  return deviceType === 'door_lock' || deviceType === 'water_valve' && command === 'open' || deviceType === 'stove' && command !== 'turn_off';
+}
+
+function commandOptions(device: DeviceState, field: string): string[] {
+  if (field === 'mode' && device.type === 'air_conditioner') {
+    return ['auto', 'cool', 'heat', 'fan'];
+  }
+  return [];
+}
+
+function commandMin(field: string | null): number {
+  if (field === 'targetC') return 16;
+  return 0;
+}
+
+function commandMax(field: string | null): number {
+  if (field === 'targetC') return 30;
+  if (field === 'level' || field === 'speed') return 5;
+  return 100;
+}
+
+function insightCategory(metric: string, deviceType: string | undefined): InsightCard['category'] {
+  if (metric.includes('flow') || metric.includes('total') || deviceType?.includes('water')) return 'water';
+  if (metric.includes('power')) return 'energy';
+  if (metric.includes('co2') || metric.includes('pm25') || metric.includes('temperature') || metric.includes('humidity')) return 'health_comfort';
+  return 'device_health';
+}
+
+function insightPriority(status: InsightCard['status'], category: InsightCard['category']): number {
+  const statusScore = status === 'alert' ? 82 : status === 'watch' ? 58 : 24;
+  const categoryBoost: Record<InsightCard['category'], number> = {
+    device_health: 8,
+    health_comfort: 6,
+    water: 5,
+    energy: 2
+  };
+  return statusScore + categoryBoost[category];
+}
+
+function airQualityBoost(metric: string): number {
+  return metric === 'co2' || metric === 'pm25' ? 12 : 0;
+}
+
+function insightTitle(metric: string, roomId: RoomId | undefined): string {
+  const room = roomId ? formatRoomName(roomId) : 'Home';
+  if (metric === 'co2' || metric === 'pm25') return `${room} air quality trend`;
+  if (metric.includes('temperature') || metric.includes('humidity')) return `${room} comfort trend`;
+  if (metric.includes('flow') || metric.includes('total')) return `${room} water use trend`;
+  return `${room} device telemetry trend`;
+}
+
+function recommendedTelemetryAction(id: string): string {
+  const metric = id.split(':')[1] ?? '';
+  if (metric === 'co2' || metric === 'pm25') return 'Ventilate the room for 10 minutes';
+  if (metric === 'flow_l_min') return 'Inspect water flow and close the valve if needed';
+  if (metric === 'temperature_c') return 'Adjust climate target or airflow';
+  if (metric === 'humidity_percent') return 'Check ventilation and moisture sources';
+  return 'Review the related device';
+}
+
+function expectedTelemetryEffect(metric: string): string {
+  if (metric === 'co2' || metric === 'pm25') return 'Air quality should return toward the preferred range.';
+  if (metric === 'flow_l_min') return 'Unexpected water usage should stop or be explained.';
+  if (metric === 'temperature_c') return 'Room comfort should stabilize over the next cycle.';
+  return 'The reading should move back toward its normal range.';
+}
+
 function createDemoSpotlight(
   snapshot: TwinSnapshot,
   controlRecords: ControlRecord[],
   automationExplanations: AutomationExplanation[],
-  alertWorkflows: AlertWorkflow[]
+  alertWorkflows: AlertWorkflow[],
+  priorityQueue: PriorityItem[]
 ): DemoSpotlight | null {
+  const primaryAlert = priorityQueue.find((item) => item.kind === 'alert' && item.priority >= 72);
+  if (primaryAlert?.sourceId) {
+    const activeAlert = snapshot.alerts[primaryAlert.sourceId];
+    const workflow = alertWorkflows.find((candidate) => candidate.alertId === primaryAlert.sourceId);
+    if (activeAlert) {
+      return {
+        id: `alert:${activeAlert.id}`,
+        scenarioId: snapshot.scenarioId,
+        kind: 'alert',
+        headline: workflow?.title ?? activeAlert.message,
+        summary: activeAlert.recommendedAction,
+        roomId: activeAlert.roomId,
+        roomName: formatRoomName(activeAlert.roomId),
+        pauseMs: 2000
+      };
+    }
+  }
+
   const latestAutomation = automationExplanations[0];
   if (latestAutomation) {
     const record = controlRecords.find((candidate) => candidate.reason === `rule:${latestAutomation.ruleId}`);
@@ -668,7 +1124,7 @@ function createDemoSpotlight(
     };
   }
 
-  const activeAlert = Object.values(snapshot.alerts).sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+  const activeAlert = activeAlerts(snapshot).sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
   if (activeAlert) {
     const workflow = alertWorkflows.find((candidate) => candidate.alertId === activeAlert.id);
     return {

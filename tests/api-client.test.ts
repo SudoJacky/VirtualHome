@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ApiClientError, getJson, postAlertStatus, postUpdate } from '../src/web/apiClient';
+import { ApiClientError, getJson, postAlertStatus, postDeviceCommand, postUpdate } from '../src/web/apiClient';
 
 describe('web API client', () => {
   it('posts JSON updates through the configured endpoint', async () => {
@@ -45,6 +45,23 @@ describe('web API client', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: 'acknowledged', idempotencyKey: 'alert-key' }),
+      signal: expect.any(AbortSignal)
+    });
+  });
+
+  it('posts simulated device commands through the encoded device endpoint', async () => {
+    const update = { snapshot: { runId: 'run_1' }, events: [] };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(update), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }));
+
+    await expect(postDeviceCommand('living light/1', 'set_brightness', 62, { fetcher: fetchMock, idempotencyKey: 'device-key' })).resolves.toStrictEqual(update);
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/devices/living%20light%2F1/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'set_brightness', value: 62, idempotencyKey: 'device-key' }),
       signal: expect.any(AbortSignal)
     });
   });

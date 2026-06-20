@@ -28,7 +28,8 @@ export interface GetJsonOptions {
   timeoutMs?: number;
 }
 
-export type AlertStatusCommand = 'active' | 'acknowledged' | 'ignored';
+export type AlertStatusCommand = 'active' | 'acknowledged' | 'resolved' | 'ignored';
+export type DeviceCommandValue = string | number | boolean | null;
 
 export function createIdempotencyKey(): string {
   return `cmd_${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
@@ -98,6 +99,15 @@ export async function postAlertStatus(
   options: PostUpdateOptions = {}
 ): Promise<ApiUpdate> {
   return postUpdate(`/api/alerts/${encodeURIComponent(alertId)}/status`, { status }, options);
+}
+
+export async function postDeviceCommand(
+  deviceId: string,
+  command: string,
+  value: DeviceCommandValue = null,
+  options: PostUpdateOptions = {}
+): Promise<ApiUpdate> {
+  return postUpdate(`/api/devices/${encodeURIComponent(deviceId)}/command`, { command, value }, options);
 }
 
 function withIdempotencyKey(payload: unknown, idempotencyKey: string | undefined): unknown {

@@ -98,6 +98,23 @@ export interface Floorplan3DModel {
   eventReplays: FloorplanEventReplay[];
 }
 
+export type FloorplanDeviceDisplayMode = 'active' | 'all' | 'abnormal' | 'sensor' | 'actuator' | 'appliance' | 'security' | 'mobile';
+
+export function selectVisibleFloorplanDevices(
+  devices: Floorplan3DDevice[],
+  mode: FloorplanDeviceDisplayMode,
+  selected: { type: 'device'; id: string } | { type: 'room'; id: RoomId } | null
+): Floorplan3DDevice[] {
+  const selectedDeviceId = selected?.type === 'device' ? selected.id : null;
+  return devices.filter((device) => (
+    device.id === selectedDeviceId ||
+    mode === 'all' ||
+    mode === 'active' && (device.active || device.abnormal) ||
+    mode === 'abnormal' && device.abnormal ||
+    device.markerKind === mode
+  ));
+}
+
 export function createFloorplan3DModel(snapshot: TwinSnapshot, events: TwinEvent[]): Floorplan3DModel {
   const alertSeverityByRoom = new Map<RoomId, FloorplanAlertSeverity>();
   for (const alert of Object.values(snapshot.alerts)) {

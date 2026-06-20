@@ -653,6 +653,19 @@ export function buildOpenApiDocument(): Record<string, unknown> {
           responses: updateResponses()
         }
       },
+      '/api/devices/{deviceId}/command': {
+        post: {
+          summary: 'Execute a supported simulated device command',
+          parameters: [{
+            name: 'deviceId',
+            in: 'path',
+            required: true,
+            schema: stringSchema
+          }],
+          requestBody: jsonBody(deviceCommandRequestSchema()),
+          responses: updateResponses(true)
+        }
+      },
       '/api/alerts/{alertId}/status': {
         post: {
           summary: 'Change an alert lifecycle status',
@@ -790,7 +803,26 @@ function alertStatusRequestSchema(): JsonSchema {
     properties: {
       status: {
         type: 'string',
-        enum: ['active', 'acknowledged', 'ignored']
+        enum: ['active', 'acknowledged', 'resolved', 'ignored']
+      },
+      idempotencyKey: idempotencyKeySchema
+    }
+  };
+}
+
+function deviceCommandRequestSchema(): JsonSchema {
+  return {
+    type: 'object',
+    required: ['command'],
+    properties: {
+      command: stringSchema,
+      value: {
+        anyOf: [
+          stringSchema,
+          { type: 'number' },
+          { type: 'boolean' },
+          { type: 'null' }
+        ]
       },
       idempotencyKey: idempotencyKeySchema
     }

@@ -70,6 +70,7 @@ describe('server API', () => {
       '/api/control/advance',
       '/api/control/inject',
       '/api/control/resolve',
+      '/api/devices/{deviceId}/command',
       '/api/alerts/{alertId}/status',
       '/api/audit/access',
       '/ws'
@@ -112,6 +113,10 @@ describe('server API', () => {
     expect(document.components.schemas.TwinEvent.anyOf).toContainEqual({ $ref: '#/components/schemas/AbnormalityInjectedEvent' });
     expect(document.paths['/api/alerts/{alertId}/status'].post.responses['404'].content['application/json'].schema)
       .toEqual({ $ref: '#/components/schemas/NotFoundError' });
+    expect(document.paths['/api/alerts/{alertId}/status'].post.requestBody.content['application/json'].schema.properties.status.enum)
+      .toContain('resolved');
+    expect(document.paths['/api/devices/{deviceId}/command'].post.requestBody.content['application/json'].schema.required)
+      .toContain('command');
     expect(document.paths['/ws'].get.responses['101'].description).toContain('TwinSocketUpdateMessage');
     expect(document.paths['/ws'].get.responses['101'].description).toContain('TwinSocketHeartbeatMessage');
 
@@ -769,6 +774,79 @@ describe('server API', () => {
     expect(restored.json().alerts.fridge_left_open_001.status).toBe('acknowledged');
 
     await restartedServer.close();
+  });
+
+  it('resolves alert status directly through the alert lifecycle endpoint', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-alert-resolved-status-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/inject',
+      payload: { kind: 'fridge_left_open' }
+    });
+
+    const resolve = await server.inject({
+      method: 'POST',
+      url: '/api/alerts/fridge_left_open_001/status',
+      payload: { status: 'resolved' }
+    });
+
+    expect(resolve.statusCode).toBe(200);
+    expect(resolve.json().snapshot.alerts.fridge_left_open_001).toMatchObject({
+      status: 'resolved',
+      resolvedAt: expect.any(String)
+    });
+    expect(resolve.json().events[0]).toMatchObject({
+      type: 'AlertStatusChanged',
+      alertId: 'fridge_left_open_001',
+      status: 'resolved'
+    });
+
+    await server.close();
+  });
+
+  it('executes supported simulated device commands through a command endpoint', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-device-command-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/devices/living_light_01/command',
+      payload: { command: 'set_brightness', value: 62 }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().snapshot.devices.living_light_01.state).toMatchObject({
+      power: 'on',
+      brightness: 62
+    });
+    expect(response.json().events[0]).toMatchObject({
+      type: 'DeviceStateChanged',
+      deviceId: 'living_light_01',
+      reason: 'operator:device_command:set_brightness'
+    });
+
+    await server.close();
+  });
+
+  it('rejects unsupported simulated device commands', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-device-command-invalid-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/devices/study_co2_01/command',
+      payload: { command: 'turn_on' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.message).toBe('Unsupported device command');
+
+    await server.close();
   });
 
   it('returns a structured not found error for unknown alert status changes', async () => {
