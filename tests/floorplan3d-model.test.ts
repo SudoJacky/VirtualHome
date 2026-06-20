@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { getCatalog } from '../src/sim/catalog';
 import { createSimulator } from '../src/sim/engine';
 import { getDeviceCapability } from '../src/shared/deviceRegistry';
-import { createFloorplan3DModel } from '../src/web/floorplan3dModel';
+import { createFloorplan3DModel, selectVisibleFloorplanDevices } from '../src/web/floorplan3dModel';
 import { devicePoints, roomConnectionOpenings, roomLayouts, wallSegments } from '../src/web/floorplanLayout';
 
 describe('3D floorplan layout and model', () => {
@@ -147,5 +147,19 @@ describe('3D floorplan layout and model', () => {
     ]));
     expect(roomConnectionOpenings.every((opening) => layoutRoomIds.has(opening.from) && layoutRoomIds.has(opening.to))).toBe(true);
     expect(roomConnectionOpenings.every((opening) => opening.width > 0 && opening.depth > 0)).toBe(true);
+  });
+
+  it('supports task-oriented 3D device display modes', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('network_offline');
+
+    const model = createFloorplan3DModel(simulator.getSnapshot(), simulator.getEvents());
+
+    expect(selectVisibleFloorplanDevices(model.devices, 'active', null).every((device) => device.active || device.abnormal)).toBe(true);
+    expect(selectVisibleFloorplanDevices(model.devices, 'all', null)).toHaveLength(model.devices.length);
+    expect(selectVisibleFloorplanDevices(model.devices, 'abnormal', null).map((device) => device.id)).toContain('router_01');
+    expect(selectVisibleFloorplanDevices(model.devices, 'security', null).every((device) => device.markerKind === 'security')).toBe(true);
+    expect(selectVisibleFloorplanDevices(model.devices, 'active', { type: 'device', id: 'tv_01' }).map((device) => device.id)).toContain('tv_01');
   });
 });

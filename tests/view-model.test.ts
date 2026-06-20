@@ -245,17 +245,117 @@ describe('dashboard view model', () => {
 
     expect(model.demoSpotlight).toMatchObject({
       scenarioId: 'night_water_leak',
-      kind: 'automation',
+      kind: 'alert',
       roomId: 'bathroom',
       roomName: 'Bathroom',
-      focusDeviceId: 'water_valve_01',
-      replayRuleId: 'close_water_valve_on_leak',
       pauseMs: 2000
     });
-    expect(model.demoSpotlight?.automationId).toBe(model.automationExplanations[0].id);
-    expect(model.demoSpotlight?.controlRecordId).toBe(model.controlRecords[0].id);
-    expect(model.demoSpotlight?.headline).toBe('Close water valve on leak');
-    expect(model.demoSpotlight?.summary).toContain('Bathroom leak sensor is active');
+    expect(model.demoSpotlight?.headline).toBe('Bathroom leak detected while home is sleeping');
+    expect(model.demoSpotlight?.summary).toContain('close_water_valve');
+  });
+
+  it('builds a home briefing around unresolved priorities instead of raw dashboard counts', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('fridge_left_open');
+    simulator.setAlertStatus('fridge_left_open_001', 'acknowledged');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+
+    expect(model.alertStatusSummary).toMatchObject({
+      new: 0,
+      acknowledged: 1,
+      unresolved: 1,
+      resolved: 0,
+      ignored: 0
+    });
+    expect(model.homeBriefing.status).toBe('Needs attention');
+    expect(model.homeBriefing.primaryItem?.kind).toBe('alert');
+    expect(model.homeBriefing.primaryItem?.headline).toBe('Fridge door has remained open');
+    expect(model.homeBriefing.nextAction).toContain('Confirm');
+    expect(model.alerts.map((alert) => alert.id)).toContain('fridge_left_open_001');
+  });
+
+  it('prioritizes unresolved high severity alerts over newer automation spotlights', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('night_water_leak');
+    simulator.advanceMinutes(10);
+    simulator.advanceMinutes(740);
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+
+    expect(model.demoSpotlight).toMatchObject({
+      kind: 'alert',
+      headline: 'Bathroom leak detected while home is sleeping',
+      roomId: 'bathroom'
+    });
+  });
+
+  it('adds actionable alert operations with replay and resolution affordances', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('network_offline');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const workflow = model.alertWorkflows.find((item) => item.alertId === 'network_offline_001');
+
+    expect(workflow?.actions.map((action) => action.kind)).toEqual([
+      'acknowledge',
+      'remind',
+      'ignore',
+      'evidence',
+      'replay',
+      'resolve'
+    ]);
+    expect(workflow?.recommendedAction).toBe('restart router');
+    expect(workflow?.evidence.some((item) => item.includes('Home Router'))).toBe(true);
+  });
+
+  it('creates registry-driven device control cards with command controls and lifecycle state', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('network_offline');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const router = model.deviceControlCards.find((card) => card.deviceId === 'router_01');
+    const light = model.deviceControlCards.find((card) => card.deviceId === 'living_light_01');
+
+    expect(router).toMatchObject({
+      deviceId: 'router_01',
+      displayName: 'Home Router',
+      connectivity: 'offline',
+      disabledReason: 'Device is offline',
+      commandStatus: 'acknowledged'
+    });
+    expect(router?.controls[0]).toMatchObject({
+      command: 'restart',
+      controlType: 'button',
+      disabled: true
+    });
+    expect(light?.controls.map((control) => control.command)).toEqual(['turn_on', 'turn_off', 'set_brightness']);
+    expect(light?.controls.find((control) => control.command === 'set_brightness')).toMatchObject({
+      controlType: 'slider',
+      field: 'brightness',
+      min: 0,
+      max: 100
+    });
+  });
+
+  it('promotes telemetry into prioritized insight cards', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(780);
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const airInsight = model.insightCards.find((insight) => insight.title.includes('air quality'));
+
+    expect(model.insightCards.length).toBeGreaterThan(0);
+    expect(airInsight).toMatchObject({
+      title: expect.stringContaining('air quality'),
+      recommendedAction: expect.any(String),
+      expectedEffect: expect.any(String)
+    });
+    expect(model.insightCards[0].priority).toBeGreaterThanOrEqual(model.insightCards.at(-1)?.priority ?? 0);
   });
 
   it('surfaces expanded random household devices on the floorplan', () => {

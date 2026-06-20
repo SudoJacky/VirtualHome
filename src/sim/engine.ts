@@ -42,7 +42,8 @@ export interface VirtualHomeSimulator {
   getEvents(): TwinEvent[];
   injectAbnormality(kind: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity'): TwinEvent[];
   resolveAbnormality(kind: 'door_left_open' | 'fridge_left_open' | 'network_offline' | 'senior_no_activity'): TwinEvent[];
-  setAlertStatus(alertId: string, status: Extract<AlertLifecycleStatus, 'active' | 'acknowledged' | 'ignored'>): TwinEvent[] | null;
+  setAlertStatus(alertId: string, status: AlertLifecycleStatus): TwinEvent[] | null;
+  commandDevice(deviceId: string, command: string, value?: string | number | boolean | null): TwinEvent[] | null;
 }
 
 type RuleLifecycleStatus = 'active' | 'cooldown';
@@ -280,7 +281,7 @@ class Simulator implements VirtualHomeSimulator {
     return events;
   }
 
-  setAlertStatus(alertId: string, status: Extract<AlertLifecycleStatus, 'active' | 'acknowledged' | 'ignored'>): TwinEvent[] | null {
+  setAlertStatus(alertId: string, status: AlertLifecycleStatus): TwinEvent[] | null {
     const alert = this.state.snapshot.alerts[alertId];
     if (!alert) {
       return null;
@@ -289,6 +290,8 @@ class Simulator implements VirtualHomeSimulator {
     alert.status = status;
     if (status === 'active') {
       delete alert.resolvedAt;
+    } else if (status === 'resolved') {
+      alert.resolvedAt = this.state.snapshot.simClock.currentTime;
     }
     const event = this.createEvent({
       type: 'AlertStatusChanged',
@@ -297,6 +300,23 @@ class Simulator implements VirtualHomeSimulator {
       status,
       reason: `operator:alert:${status}`
     });
+    this.state.emittedEvents.push(event);
+    return [event];
+  }
+
+  commandDevice(deviceId: string, command: string, value: string | number | boolean | null = null): TwinEvent[] | null {
+    const device = this.state.snapshot.devices[deviceId];
+    if (!device) {
+      return null;
+    }
+    const capability = getDeviceCapability(device.type);
+    if (!capability.supportedCommands.includes(command)) {
+      return null;
+    }
+    const patch = commandPatch(device.type, command, value, device.state);
+    const event = this.setDeviceState(deviceId, patch, `operator:device_command:${command}`);
+    this.rebuildRooms();
+    this.updateOccupancy();
     this.state.emittedEvents.push(event);
     return [event];
   }
@@ -1349,6 +1369,44 @@ function replayTelemetryEvent(snapshot: TwinSnapshot, event: DeviceTelemetryEven
       room.humidityPercent = event.measurements.humidity_percent;
     }
   }
+}
+
+function commandPatch(
+  deviceType: string,
+  command: string,
+  value: string | number | boolean | null,
+  currentState: Record<string, string | number | boolean | null>
+): Record<string, string | number | boolean | null> {
+  if (command === 'lock') return { locked: true };
+  if (command === 'unlock') return { locked: false };
+  if (command === 'turn_on') return { power: 'on', brightness: typeof currentState.brightness === 'number' ? Math.max(currentState.brightness, 60) : currentState.brightness ?? 1 };
+  if (command === 'turn_off') return { power: 'off', brightness: typeof currentState.brightness === 'number' ? 0 : currentState.brightness ?? 0 };
+  if (command === 'set_brightness') return { power: 'on', brightness: numericCommandValue(value, 60, 0, 100) };
+  if (command === 'open') {
+    return deviceType === 'curtain' ? { positionPercent: 100 } : { valveOpen: true };
+  }
+  if (command === 'close') {
+    return deviceType === 'curtain' ? { positionPercent: 0 } : { valveOpen: false };
+  }
+  if (command === 'set_position') return { positionPercent: numericCommandValue(value, 50, 0, 100) };
+  if (command === 'set_target') return { power: 'on', targetC: numericCommandValue(value, 26, 16, 30) };
+  if (command === 'set_level') return { powerW: numericCommandValue(value, 0, 0, 1400), level: numericCommandValue(value, 0, 0, 9) };
+  if (command === 'set_speed') return { power: 'on', speed: numericCommandValue(value, 2, 0, 5) };
+  if (command === 'start') return { status: 'running', powerW: Number(currentState.powerW ?? 450) || 450 };
+  if (command === 'stop' || command === 'pause') return { status: command === 'pause' ? 'paused' : 'idle', powerW: 0 };
+  if (command === 'dock') return { status: 'docked' };
+  if (command === 'restart') return { online: true, latencyMs: 18 };
+  if (command === 'record') return { recording: true };
+  if (command === 'ring') return { ringing: true };
+  return {};
+}
+
+function numericCommandValue(value: string | number | boolean | null, fallback: number, min: number, max: number): number {
+  const numeric = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : fallback;
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, numeric));
 }
 
 function resolveAlertsForRule(snapshot: TwinSnapshot, ruleId: string, resolvedAt: string): void {

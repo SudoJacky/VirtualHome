@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import type { RoomId } from '../shared/types';
 import { fixtureLayouts, roomConnectionOpenings, wallSegments, type FixtureLayout, type RoomConnectionOpening, type WallSegment } from './floorplanLayout';
-import type { Floorplan3DDevice, Floorplan3DModel, Floorplan3DPerson, Floorplan3DRoom, FloorplanAutomationLink, PersonVisualStyle } from './floorplan3dModel';
+import { selectVisibleFloorplanDevices, type Floorplan3DDevice, type Floorplan3DModel, type Floorplan3DPerson, type Floorplan3DRoom, type FloorplanAutomationLink, type FloorplanDeviceDisplayMode, type PersonVisualStyle } from './floorplan3dModel';
 
 export interface FloorplanLayers {
   people: boolean;
@@ -102,11 +102,12 @@ interface Floorplan3DProps {
   model: Floorplan3DModel;
   layers: FloorplanLayers;
   selected: FloorplanSelection;
+  deviceDisplayMode: FloorplanDeviceDisplayMode;
   onToggleLayer: (layer: keyof FloorplanLayers) => void;
   onSelect: (selection: FloorplanSelection) => void;
 }
 
-export function Floorplan3D({ model, layers, selected, onToggleLayer, onSelect }: Floorplan3DProps): React.ReactElement {
+export function Floorplan3D({ model, layers, selected, deviceDisplayMode, onToggleLayer, onSelect }: Floorplan3DProps): React.ReactElement {
   const controlsRef = React.useRef<OrbitControlsImpl | null>(null);
   const cameraAutoFrameRef = React.useRef(createCameraAutoFrameState('overview'));
   const handleManualCameraControl = React.useCallback(() => {
@@ -141,7 +142,7 @@ export function Floorplan3D({ model, layers, selected, onToggleLayer, onSelect }
       >
         <color attach="background" args={['#edf4f2']} />
         <SceneLighting model={model} />
-        <FloorplanScene model={model} layers={layers} selected={selected} onSelect={onSelect} />
+        <FloorplanScene model={model} layers={layers} selected={selected} deviceDisplayMode={deviceDisplayMode} onSelect={onSelect} />
         <CameraController
           model={model}
           selected={selected}
@@ -170,8 +171,8 @@ export function Floorplan3D({ model, layers, selected, onToggleLayer, onSelect }
   );
 }
 
-function FloorplanScene({ model, layers, selected, onSelect }: Omit<Floorplan3DProps, 'onToggleLayer'>): React.ReactElement {
-  const visibleDevices = model.devices.filter((device) => device.active || device.abnormal || selected?.type === 'device' && selected.id === device.id);
+function FloorplanScene({ model, layers, selected, deviceDisplayMode, onSelect }: Omit<Floorplan3DProps, 'onToggleLayer'>): React.ReactElement {
+  const visibleDevices = selectVisibleFloorplanDevices(model.devices, deviceDisplayMode, selected);
 
   return (
     <group rotation={[0, -0.18, 0]}>

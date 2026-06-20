@@ -17,8 +17,8 @@ import {
 } from 'lucide-react';
 import type { DeviceState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { Floorplan3D, type FloorplanLayers, type FloorplanSelection } from './Floorplan3D';
-import { ApiClientError, createIdempotencyKey, getJson, postUpdate, type ApiUpdate } from './apiClient';
-import { createFloorplan3DModel, type Floorplan3DDevice, type Floorplan3DRoom, type FloorplanEventReplay } from './floorplan3dModel';
+import { ApiClientError, createIdempotencyKey, getJson, postAlertStatus, postDeviceCommand, postUpdate, type ApiUpdate, type DeviceCommandValue } from './apiClient';
+import { createFloorplan3DModel, type Floorplan3DDevice, type Floorplan3DRoom, type FloorplanDeviceDisplayMode, type FloorplanEventReplay } from './floorplan3dModel';
 import { buildTwinSocketUrl, cursorFromSnapshot, cursorFromUpdate, needsFullTwinRefresh, nextReconnectDelayMs, parseTwinSocketMessage, type TwinSocketCursor } from './twinSocket';
 import { createDashboardModel, mergeTwinEvents } from './viewModel';
 import './styles.css';
@@ -26,8 +26,9 @@ import './styles.css';
 function App(): React.ReactElement {
   const [snapshot, setSnapshot] = React.useState<TwinSnapshot | null>(null);
   const [events, setEvents] = React.useState<TwinEvent[]>([]);
-  const [sidebarMode, setSidebarMode] = React.useState<'demo' | 'debug'>('demo');
+  const [sidebarMode, setSidebarMode] = React.useState<'home' | 'studio' | 'debug'>('home');
   const [floorplanView, setFloorplanView] = React.useState<'3d' | '2d'>('3d');
+  const [deviceDisplayMode, setDeviceDisplayMode] = React.useState<FloorplanDeviceDisplayMode>('active');
   const [dailyDate, setDailyDate] = React.useState(() => todayInShanghai());
   const [dailySeed, setDailySeed] = React.useState(20260617);
   const [floorplanLayers, setFloorplanLayers] = React.useState<FloorplanLayers>({
@@ -165,7 +166,7 @@ function App(): React.ReactElement {
   }, []);
 
   React.useEffect(() => {
-    if (!snapshot || sidebarMode !== 'demo') {
+    if (!snapshot || sidebarMode !== 'studio') {
       return;
     }
     const demoModel = createDashboardModel(snapshot, events);
@@ -243,6 +244,16 @@ function App(): React.ReactElement {
 
   async function resolve(kind: string, idempotencyKey: string): Promise<void> {
     const update = await postUpdate('/api/control/resolve', { kind }, { idempotencyKey });
+    applyUpdate(update);
+  }
+
+  async function changeAlertStatus(alertId: string, status: 'active' | 'acknowledged' | 'resolved' | 'ignored', idempotencyKey: string): Promise<void> {
+    const update = await postAlertStatus(alertId, status, { idempotencyKey });
+    applyUpdate(update);
+  }
+
+  async function executeDeviceCommand(deviceId: string, command: string, value: DeviceCommandValue, idempotencyKey: string): Promise<void> {
+    const update = await postDeviceCommand(deviceId, command, value, { idempotencyKey });
     applyUpdate(update);
   }
 
@@ -334,6 +345,41 @@ function App(): React.ReactElement {
     setFloorplanSelection({ type: 'device', id: record.deviceId });
   }
 
+  function focusReplayForAlert(alertId: string): void {
+    const workflow = model.alertWorkflows.find((item) => item.alertId === alertId);
+    const alert = snapshot?.alerts[alertId];
+    if (!workflow || !alert) return;
+    const replay = alert.sourceRuleId
+      ? floorplanModel.eventReplays.find((candidate) => candidate.ruleId === alert.sourceRuleId)
+      : null;
+    if (replay) {
+      focusReplayStep(replay, 0);
+      return;
+    }
+    setFloorplanSelection({ type: 'room', id: alert.roomId });
+  }
+
+  function handleAlertAction(
+    workflow: ReturnType<typeof createDashboardModel>['alertWorkflows'][number],
+    action: ReturnType<typeof createDashboardModel>['alertWorkflows'][number]['actions'][number]
+  ): void {
+    if (action.kind === 'replay' || action.kind === 'evidence') {
+      focusReplayForAlert(workflow.alertId);
+      return;
+    }
+    if (action.kind === 'remind') {
+      setApiError(null);
+      setPendingAction('Reminder noted');
+      window.setTimeout(() => setPendingAction(null), 900);
+      return;
+    }
+    if (!action.status) return;
+    if (action.highRisk && !window.confirm(`${action.label} for ${workflow.title}?`)) {
+      return;
+    }
+    void runApiAction(action.label, (key) => changeAlertStatus(workflow.alertId, action.status!, key));
+  }
+
   function activateFromPointer(action: () => void): void {
     pointerActivationRef.current = true;
     action();
@@ -354,20 +400,39 @@ function App(): React.ReactElement {
           <Home size={24} />
           <div>
             <strong>VirtualHome</strong>
-            <span>Twin Demo</span>
+            <span>{sidebarMode === 'home' ? 'Home' : sidebarMode === 'studio' ? 'Studio' : 'Debug'}</span>
           </div>
         </div>
 
         <div className="mode-toggle" aria-label="Console mode">
-          <button className={sidebarMode === 'demo' ? 'active' : ''} onClick={() => setSidebarMode('demo')}>
-            <Play size={14} /> Demo
+          <button className={sidebarMode === 'home' ? 'active' : ''} onClick={() => setSidebarMode('home')}>
+            <Home size={14} /> Home
+          </button>
+          <button className={sidebarMode === 'studio' ? 'active' : ''} onClick={() => setSidebarMode('studio')}>
+            <Play size={14} /> Studio
           </button>
           <button className={sidebarMode === 'debug' ? 'active' : ''} onClick={() => setSidebarMode('debug')}>
             <Bug size={14} /> Debug
           </button>
         </div>
 
-        {sidebarMode === 'demo' ? (
+        {sidebarMode === 'home' ? (
+          <>
+            <section className="control-group home-briefing-sidebar">
+              <h2>Briefing</h2>
+              <strong>{model.homeBriefing.status}</strong>
+              <span>{model.homeBriefing.summary}</span>
+              <small>{model.homeBriefing.nextAction}</small>
+            </section>
+            <section className="control-group">
+              <h2>Quick actions</h2>
+              <button onClick={() => setFloorplanSelection(model.homeBriefing.primaryItem ? { type: 'room', id: model.homeBriefing.primaryItem.roomId } : null)}>
+                <Radar size={16} /> Focus priority
+              </button>
+              <button onClick={() => setFloorplanView('3d')}><Play size={16} /> Open 3D view</button>
+            </section>
+          </>
+        ) : sidebarMode === 'studio' ? (
           <>
             <section className="control-group">
               <h2>Playback</h2>
@@ -473,7 +538,8 @@ function App(): React.ReactElement {
           <Metric label="People home" value={model.occupancyCount} />
           <Metric label="Occupied rooms" value={model.occupiedRooms.length} />
           <Metric label="Active devices" value={model.activeDeviceCount} />
-          <Metric label="Alerts" value={model.alerts.length} intent={model.alerts.length > 0 ? 'alert' : 'normal'} />
+          <Metric label="Unresolved alerts" value={model.alertStatusSummary.unresolved} intent={model.alertStatusSummary.unresolved > 0 ? 'alert' : 'normal'} />
+          <Metric label="Acknowledged" value={model.alertStatusSummary.acknowledged} />
         </section>
 
         {pendingAction || apiError ? (
@@ -487,6 +553,22 @@ function App(): React.ReactElement {
             ) : null}
           </section>
         ) : null}
+
+        <section className={`panel home-briefing ${model.homeBriefing.status === 'Needs attention' ? 'alert' : model.homeBriefing.status === 'Watch' ? 'watch' : 'normal'}`}>
+          <div>
+            <span className="eyebrow">Home briefing</span>
+            <h2>{model.homeBriefing.status}</h2>
+            <p>{model.homeBriefing.summary}</p>
+          </div>
+          <div className="briefing-primary">
+            <strong>{model.homeBriefing.primaryItem?.headline ?? 'No priority item'}</strong>
+            <span>{model.homeBriefing.primaryItem?.summary ?? 'The home is operating within expected ranges.'}</span>
+            <small>{model.homeBriefing.nextAction}</small>
+          </div>
+          <div className="briefing-highlights">
+            {model.homeBriefing.highlights.map((highlight) => <span key={highlight}>{highlight}</span>)}
+          </div>
+        </section>
 
         <section className="story-row">
           <div className="story-card primary-story">
@@ -546,12 +628,27 @@ function App(): React.ReactElement {
             <div className="view-toggle" aria-label="Floorplan view">
               <button className={floorplanView === '3d' ? 'active' : ''} onClick={() => setFloorplanView('3d')}>3D</button>
               <button className={floorplanView === '2d' ? 'active' : ''} onClick={() => setFloorplanView('2d')}>2D</button>
+              <select
+                aria-label="3D device display mode"
+                value={deviceDisplayMode}
+                onChange={(event) => setDeviceDisplayMode(event.target.value as FloorplanDeviceDisplayMode)}
+              >
+                <option value="active">Focus</option>
+                <option value="all">All devices</option>
+                <option value="abnormal">Abnormal</option>
+                <option value="sensor">Sensors</option>
+                <option value="actuator">Actuators</option>
+                <option value="appliance">Appliances</option>
+                <option value="security">Security</option>
+                <option value="mobile">Mobile</option>
+              </select>
             </div>
             {floorplanView === '3d' ? (
               <Floorplan3D
                 model={floorplanModel}
                 layers={floorplanLayers}
                 selected={floorplanSelection}
+                deviceDisplayMode={deviceDisplayMode}
                 onToggleLayer={toggleFloorplanLayer}
                 onSelect={setFloorplanSelection}
               />
@@ -581,12 +678,14 @@ function App(): React.ReactElement {
             room={selectedRoom}
             device={selectedDevice}
             snapshotDevice={selectedDevice ? snapshot.devices[selectedDevice.id] : null}
+            deviceControlCard={selectedDevice ? model.deviceControlCards.find((card) => card.deviceId === selectedDevice.id) ?? null : null}
             roomOccupants={selectedRoom ? model.floorplanRooms[selectedRoom.id].people : []}
             roomDevices={selectedRoom ? model.floorplanRooms[selectedRoom.id].devices : []}
             roomRecords={selectedRoom ? model.controlRecords.filter((record) => record.roomName === selectedRoom.label).slice(0, 3) : []}
             activeDeviceCount={model.activeDeviceCount}
             occupiedRoomCount={model.occupiedRooms.length}
             onSelectDevice={(deviceId) => setFloorplanSelection({ type: 'device', id: deviceId })}
+            onCommand={(deviceId, command, value) => void runApiAction(`${command} ${deviceId}`, (key) => executeDeviceCommand(deviceId, command, value, key))}
           />
 
           <div className="panel">
@@ -595,11 +694,49 @@ function App(): React.ReactElement {
               <div key={workflow.alertId} className="workflow-card">
                 <strong>{workflow.title}</strong>
                 <span>{workflow.roomName} / {workflow.status}</span>
+                <p>{workflow.recommendedAction}</p>
+                <div className="workflow-actions">
+                  {workflow.actions.map((action) => (
+                    <button
+                      key={`${workflow.alertId}-${action.kind}`}
+                      className={action.highRisk ? 'danger-action' : ''}
+                      disabled={workflow.lifecycleStatus === 'resolved' && action.kind !== 'evidence' && action.kind !== 'replay'}
+                      onClick={() => handleAlertAction(workflow, action)}
+                    >
+                      {action.label}
+                    </button>
+                  ))}
+                </div>
+                {workflow.evidence.length > 0 ? (
+                  <ul className="evidence-list">
+                    {workflow.evidence.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                ) : null}
                 <ol>
                   {workflow.steps.map((step) => <li key={step}>{step}</li>)}
                 </ol>
               </div>
             ))}
+          </div>
+
+          <div className="panel">
+            <h2>Home Insights</h2>
+            <div className="insight-list">
+              {model.insightCards.map((insight) => (
+                <button
+                  key={insight.id}
+                  className={`insight-card ${insight.status}`}
+                  onClick={() => setFloorplanSelection({ type: 'device', id: insight.relatedDeviceId })}
+                >
+                  <span>{insight.category.replace('_', ' ')}</span>
+                  <strong>{insight.title}</strong>
+                  <small>{insight.reason}</small>
+                  <em>{insight.recommendedAction}</em>
+                  <small>{insight.expectedEffect}</small>
+                </button>
+              ))}
+              {model.insightCards.length === 0 ? <p className="muted">No telemetry insight needs attention.</p> : null}
+            </div>
           </div>
 
           <div className="panel">
@@ -1024,6 +1161,18 @@ function ReplayPanel({
   onClose: () => void;
 }): React.ReactElement {
   const pointerActivationRef = React.useRef(false);
+  const [playing, setPlaying] = React.useState(false);
+  const [speed, setSpeed] = React.useState(1);
+
+  React.useEffect(() => {
+    if (!playing || !replay) return;
+    if (activeStepIndex >= replay.steps.length - 1) {
+      setPlaying(false);
+      return;
+    }
+    const timer = window.setTimeout(onNext, 1200 / speed);
+    return () => window.clearTimeout(timer);
+  }, [activeStepIndex, onNext, playing, replay, speed]);
 
   function activateFromPointer(action: () => void): void {
     pointerActivationRef.current = true;
@@ -1050,6 +1199,19 @@ function ReplayPanel({
 
   const activeStep = replay.steps[activeStepIndex] ?? replay.steps[0];
 
+  async function copyShareReport(): Promise<void> {
+    await navigator.clipboard.writeText(JSON.stringify({
+      title: replay?.title,
+      ruleId: replay?.ruleId,
+      severity: replay?.severity,
+      steps: replay?.steps.map((step) => ({
+        label: step.label,
+        detail: step.detail,
+        sequence: step.atSequence
+      }))
+    }, null, 2));
+  }
+
   return (
     <div className={`panel replay-panel ${replay.severity}`}>
       <div className="panel-heading">
@@ -1058,6 +1220,15 @@ function ReplayPanel({
           <h2>{replay.ruleId.replaceAll('_', ' ')}</h2>
         </div>
         <div className="panel-actions">
+          <button onClick={() => setPlaying((current) => !current)}>
+            {playing ? <Pause size={15} /> : <Play size={15} />}
+            {playing ? 'Pause' : 'Play'}
+          </button>
+          <select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} aria-label="Replay speed">
+            <option value={0.5}>0.5x</option>
+            <option value={1}>1x</option>
+            <option value={2}>2x</option>
+          </select>
           <button
             onPointerDown={() => activateFromPointer(onNext)}
             onClick={() => activateFromClick(onNext)}
@@ -1071,9 +1242,19 @@ function ReplayPanel({
           >
             Close
           </button>
+          <button onClick={() => void copyShareReport()}><Copy size={15} /> Share</button>
         </div>
       </div>
       <p>{activeStep.label}: {activeStep.detail}</p>
+      <input
+        className="replay-timeline"
+        type="range"
+        min={0}
+        max={replay.steps.length - 1}
+        value={activeStepIndex}
+        onChange={(event) => onStepSelect(Number(event.target.value))}
+        aria-label="Replay timeline"
+      />
       <div className="replay-steps" role="list" aria-label="3D event replay steps">
         {replay.steps.map((step, index) => (
           <button
@@ -1105,22 +1286,26 @@ function SelectionPanel({
   room,
   device,
   snapshotDevice,
+  deviceControlCard,
   roomOccupants,
   roomDevices,
   roomRecords,
   activeDeviceCount,
   occupiedRoomCount,
-  onSelectDevice
+  onSelectDevice,
+  onCommand
 }: {
   room: Floorplan3DRoom | null;
   device: Floorplan3DDevice | null;
   snapshotDevice: DeviceState | null;
+  deviceControlCard: ReturnType<typeof createDashboardModel>['deviceControlCards'][number] | null;
   roomOccupants: ReturnType<typeof createDashboardModel>['floorplanRooms'][keyof ReturnType<typeof createDashboardModel>['floorplanRooms']]['people'];
   roomDevices: ReturnType<typeof createDashboardModel>['floorplanRooms'][keyof ReturnType<typeof createDashboardModel>['floorplanRooms']]['devices'];
   roomRecords: ReturnType<typeof createDashboardModel>['controlRecords'];
   activeDeviceCount: number;
   occupiedRoomCount: number;
   onSelectDevice: (deviceId: string) => void;
+  onCommand: (deviceId: string, command: string, value: DeviceCommandValue) => void;
 }): React.ReactElement {
   if (device && snapshotDevice) {
     return (
@@ -1133,7 +1318,11 @@ function SelectionPanel({
           <Detail label="Marker" value={`${device.markerKind} / ${device.animationHint}`} />
           <Detail label="Status" value={device.abnormal ? `Attention needed: ${device.statusLabel}` : device.active ? `Active: ${device.statusLabel}` : device.statusLabel} intent={device.abnormal ? 'alert' : 'normal'} />
           <Detail label="State" value={summarizeState(snapshotDevice.state)} />
+          {deviceControlCard ? <Detail label="Command state" value={deviceControlCard.commandStatus} intent={deviceControlCard.connectivity === 'offline' ? 'alert' : 'normal'} /> : null}
         </div>
+        {deviceControlCard ? (
+          <DeviceControlCardView card={deviceControlCard} onCommand={onCommand} />
+        ) : null}
       </div>
     );
   }
@@ -1176,6 +1365,82 @@ function Detail({ label, value, intent = 'normal' }: { label: string; value: str
     <div className={`detail-row ${intent}`}>
       <span>{label}</span>
       <strong>{value}</strong>
+    </div>
+  );
+}
+
+function DeviceControlCardView({
+  card,
+  onCommand
+}: {
+  card: ReturnType<typeof createDashboardModel>['deviceControlCards'][number];
+  onCommand: (deviceId: string, command: string, value: DeviceCommandValue) => void;
+}): React.ReactElement {
+  const [draftValues, setDraftValues] = React.useState<Record<string, DeviceCommandValue>>({});
+
+  function valueFor(command: ReturnType<typeof createDashboardModel>['deviceControlCards'][number]['controls'][number]): DeviceCommandValue {
+    return draftValues[command.command] ?? command.value ?? command.min ?? null;
+  }
+
+  return (
+    <div className="device-control-card">
+      <div className="device-control-heading">
+        <strong>Controls</strong>
+        <span>{card.connectivity === 'offline' ? card.disabledReason : card.commandStatus}</span>
+      </div>
+      {card.controls.length === 0 ? <p className="muted">This device exposes no commands.</p> : null}
+      {card.controls.map((control) => {
+        const currentValue = valueFor(control);
+        if (control.controlType === 'slider') {
+          return (
+            <label key={control.command} className="command-control slider-command">
+              <span>{control.label}</span>
+              <input
+                type="range"
+                min={control.min}
+                max={control.max}
+                value={Number(currentValue ?? control.min ?? 0)}
+                disabled={control.disabled}
+                onChange={(event) => setDraftValues((current) => ({ ...current, [control.command]: Number(event.target.value) }))}
+              />
+              <button disabled={control.disabled} onClick={() => onCommand(card.deviceId, control.command, currentValue)}>
+                Apply {String(currentValue)}
+              </button>
+            </label>
+          );
+        }
+        if (control.controlType === 'select') {
+          return (
+            <label key={control.command} className="command-control">
+              <span>{control.label}</span>
+              <select
+                value={String(currentValue ?? '')}
+                disabled={control.disabled}
+                onChange={(event) => setDraftValues((current) => ({ ...current, [control.command]: event.target.value }))}
+              >
+                {(control.options ?? []).map((option) => <option key={option} value={option}>{option}</option>)}
+              </select>
+              <button disabled={control.disabled} onClick={() => onCommand(card.deviceId, control.command, currentValue)}>
+                Apply
+              </button>
+            </label>
+          );
+        }
+        return (
+          <button
+            key={control.command}
+            className={`command-button ${control.highRisk ? 'danger-action' : ''}`}
+            disabled={control.disabled}
+            title={control.disabledReason ?? control.label}
+            onClick={() => {
+              if (control.highRisk && !window.confirm(`${control.label} ${card.displayName}?`)) return;
+              onCommand(card.deviceId, control.command, currentValue);
+            }}
+          >
+            {control.label}
+          </button>
+        );
+      })}
     </div>
   );
 }

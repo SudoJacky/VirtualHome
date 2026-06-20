@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { getHomeDefinition } from '../sim/catalog';
 import { createSimulator } from '../sim/engine';
 import { getScenarioIds } from '../sim/scenarios';
-import { getDeviceCapabilityMetadata } from '../shared/deviceRegistry';
+import { getDeviceCapability, getDeviceCapabilityMetadata } from '../shared/deviceRegistry';
 import type { HomeDefinition, StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { createDeviceAccessRecords } from './deviceAccess';
 import { loadHomeDefinitionFromFile } from './homeDefinitionLoader';
@@ -62,7 +62,11 @@ const injectPayloadSchema = idempotencyPayloadSchema.extend({
 });
 const resolvePayloadSchema = injectPayloadSchema;
 const alertStatusPayloadSchema = idempotencyPayloadSchema.extend({
-  status: z.enum(['active', 'acknowledged', 'ignored'])
+  status: z.enum(['active', 'acknowledged', 'resolved', 'ignored'])
+});
+const deviceCommandPayloadSchema = idempotencyPayloadSchema.extend({
+  command: z.string().trim().min(1).max(80),
+  value: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional()
 });
 
 type UpdateResponse = {
@@ -291,6 +295,32 @@ export function createServer(options: ServerOptions): FastifyInstance {
     }
     return runIdempotentCommand(reply, result.data.idempotencyKey, 'POST /api/control/resolve', stripIdempotencyKey(result.data), () => {
       const events = simulator.resolveAbnormality(result.data.kind);
+      const snapshot = recordAndBroadcast(events);
+      return { snapshot, events };
+    });
+  });
+
+  app.post('/api/devices/:deviceId/command', async (request, reply) => {
+    const params = request.params as { deviceId: string };
+    const result = deviceCommandPayloadSchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const device = simulator.getSnapshot().devices[params.deviceId];
+    if (!device) {
+      return sendNotFound(reply, 'Unknown device');
+    }
+    if (!getDeviceCapability(device.type).supportedCommands.includes(result.data.command)) {
+      return reply.status(400).send({
+        error: {
+          code: 'UNSUPPORTED_DEVICE_COMMAND',
+          message: 'Unsupported device command'
+        }
+      });
+    }
+    return runIdempotentCommand(reply, result.data.idempotencyKey, `POST /api/devices/${params.deviceId}/command`, stripIdempotencyKey(result.data), () => {
+      const events = simulator.commandDevice(params.deviceId, result.data.command, result.data.value ?? null);
+      if (!events) throw new Error('Device command failed after validation');
       const snapshot = recordAndBroadcast(events);
       return { snapshot, events };
     });
