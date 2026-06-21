@@ -37,14 +37,6 @@ export interface FixtureLayout {
   rotation?: number;
 }
 
-export interface DevicePoint {
-  deviceId: string;
-  roomId: RoomId;
-  x: number;
-  z: number;
-  y?: number;
-}
-
 export interface WallSegment {
   id: string;
   kind: 'exterior' | 'interior';
@@ -127,39 +119,6 @@ export const fixtureLayouts: FixtureLayout[] = [
   { id: 'garden-patio', roomId: 'garden', kind: 'table', x: -2.8, z: 3.55, width: 1.6, depth: 0.9 },
   { id: 'garden-plant-a', roomId: 'garden', kind: 'plant', x: 3.45, z: 1.65, width: 0.55, depth: 0.55 },
   { id: 'garden-plant-b', roomId: 'garden', kind: 'plant', x: 2.65, z: 3.15, width: 0.55, depth: 0.55 }
-];
-
-export const devicePoints: DevicePoint[] = [
-  { deviceId: 'door_lock_01', roomId: 'entrance', x: -6, z: -3.1 },
-  { deviceId: 'entrance_motion_01', roomId: 'entrance', x: -5, z: -3.85, y: 0.45 },
-  { deviceId: 'doorbell_camera_01', roomId: 'entrance', x: -5.95, z: -2.45, y: 0.5 },
-  { deviceId: 'package_sensor_01', roomId: 'entrance', x: -4.75, z: -2.6 },
-  { deviceId: 'living_light_01', roomId: 'living_room', x: -2, z: -3.25, y: 0.5 },
-  { deviceId: 'tv_01', roomId: 'living_room', x: 0.25, z: -3.9 },
-  { deviceId: 'living_motion_01', roomId: 'living_room', x: -3.65, z: -2.5, y: 0.45 },
-  { deviceId: 'robot_vacuum_01', roomId: 'living_room', x: -0.25, z: -2.55 },
-  { deviceId: 'living_curtain_01', roomId: 'living_room', x: 0.35, z: -3.2, y: 0.55 },
-  { deviceId: 'kitchen_light_01', roomId: 'kitchen', x: 3, z: -3.3, y: 0.5 },
-  { deviceId: 'kitchen_temp_01', roomId: 'kitchen', x: 1.65, z: -3.95, y: 0.45 },
-  { deviceId: 'fridge_01', roomId: 'kitchen', x: 4.05, z: -2.65 },
-  { deviceId: 'stove_01', roomId: 'kitchen', x: 2.3, z: -3.8 },
-  { deviceId: 'range_hood_01', roomId: 'kitchen', x: 2.3, z: -3.95, y: 0.65 },
-  { deviceId: 'pm25_01', roomId: 'kitchen', x: 3.8, z: -3.9, y: 0.45 },
-  { deviceId: 'smoke_01', roomId: 'kitchen', x: 3.15, z: -2.35, y: 0.55 },
-  { deviceId: 'dishwasher_01', roomId: 'kitchen', x: 3.65, z: -3.8 },
-  { deviceId: 'dining_light_01', roomId: 'dining_room', x: -4.4, z: -0.95, y: 0.5 },
-  { deviceId: 'master_sleep_01', roomId: 'master_bedroom', x: -1.05, z: -0.45 },
-  { deviceId: 'master_ac_01', roomId: 'master_bedroom', x: 0.9, z: -0.45, y: 0.5 },
-  { deviceId: 'child_sleep_01', roomId: 'child_bedroom', x: 2.55, z: -0.55 },
-  { deviceId: 'study_co2_01', roomId: 'study', x: 5.1, z: -1.25, y: 0.45 },
-  { deviceId: 'router_01', roomId: 'study', x: 4.25, z: -1.25 },
-  { deviceId: 'bathroom_water_01', roomId: 'bathroom', x: -5.8, z: 2.2 },
-  { deviceId: 'water_leak_01', roomId: 'bathroom', x: -5.25, z: 2.25 },
-  { deviceId: 'water_valve_01', roomId: 'bathroom', x: -4.65, z: 2.25 },
-  { deviceId: 'washer_01', roomId: 'bathroom', x: -4.75, z: 1.1 },
-  { deviceId: 'garden_soil_01', roomId: 'garden', x: 2.1, z: 3.25 },
-  { deviceId: 'garden_camera_01', roomId: 'garden', x: -3.6, z: 1.1, y: 0.5 },
-  { deviceId: 'sprinkler_01', roomId: 'garden', x: 1.5, z: 2.6 }
 ];
 
 export function getRoomLayout(roomId: RoomId): RoomLayout {

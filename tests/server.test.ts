@@ -81,15 +81,31 @@ describe('server API', () => {
     expect(document.components.schemas).toHaveProperty('DeviceCapability');
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('markerKind');
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('animationHint');
+    expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('riskLevel');
+    expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('visualModel');
+    expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('visualScale');
+    expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('commandMetadata');
+    expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('healthSignals');
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('defaultState');
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('stateFields');
     expect(document.components.schemas.DeviceCapability.properties.stateFields.additionalProperties.properties).toHaveProperty('defaultValue');
     expect(document.components.schemas.DeviceCapability.properties.stateFields.additionalProperties.properties).toHaveProperty('unit');
     expect(document.components.schemas.DeviceCapability.properties.stateFields.additionalProperties.properties).toHaveProperty('normalRange');
     expect(document.components.schemas).toHaveProperty('AccessAuditRecord');
-    expect(document.components.schemas.DeviceAccessRecord.required).toEqual(expect.arrayContaining(['stateFields', 'supportedCommands']));
+    expect(document.components.schemas.DeviceAccessRecord.required).toEqual(expect.arrayContaining(['shortLabel', 'instanceGroup', 'privacyLevel', 'riskLevel', 'visualModel', 'visualScale', 'pose', 'stateFields', 'supportedCommands', 'commandMetadata', 'healthStatus']));
+    expect(document.components.schemas.DeviceAccessRecord.properties).toHaveProperty('shortLabel');
+    expect(document.components.schemas.DeviceAccessRecord.properties).toHaveProperty('instanceGroup');
+    expect(document.components.schemas.DeviceAccessRecord.properties).toHaveProperty('privacyLevel');
+    expect(document.components.schemas.DeviceAccessRecord.properties).toHaveProperty('riskLevel');
+    expect(document.components.schemas.DeviceAccessRecord.properties).toHaveProperty('visualModel');
+    expect(document.components.schemas.DeviceAccessRecord.properties).toHaveProperty('visualScale');
+    expect(document.components.schemas.DeviceAccessRecord.properties).toHaveProperty('pose');
     expect(document.components.schemas.DeviceAccessRecord.properties).toHaveProperty('stateFields');
     expect(document.components.schemas.DeviceAccessRecord.properties).toHaveProperty('supportedCommands');
+    expect(document.components.schemas.DeviceAccessRecord.properties).toHaveProperty('commandMetadata');
+    expect(document.components.schemas.DeviceAccessRecord.properties).toHaveProperty('healthStatus');
+    expect(document.components.schemas.DeviceAccessRecord.properties.healthStatus.items.properties.kind.enum)
+      .toContain('command_failure');
     expect(document.components.schemas.DeviceAccessRecord.properties.lastCommand.anyOf[0].properties.status.enum).toEqual([
       'requested',
       'sent',
@@ -117,6 +133,12 @@ describe('server API', () => {
       .toContain('resolved');
     expect(document.paths['/api/devices/{deviceId}/command'].post.requestBody.content['application/json'].schema.required)
       .toContain('command');
+    expect(document.paths['/api/telemetry'].get.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'privacy' })
+    ]));
+    expect(document.paths['/api/device-twins'].get.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'privacy' })
+    ]));
     expect(document.paths['/ws'].get.responses['101'].description).toContain('TwinSocketUpdateMessage');
     expect(document.paths['/ws'].get.responses['101'].description).toContain('TwinSocketHeartbeatMessage');
 
@@ -185,10 +207,22 @@ describe('server API', () => {
       displayName: 'Router',
       shortLabel: 'Router',
       icon: 'router',
-      markerKind: 'appliance',
+      markerKind: 'network',
       animationHint: 'pulse',
+      riskLevel: 'confirmation',
       defaultState: { online: true, latencyMs: 18 },
       supportedCommands: ['restart'],
+      commandMetadata: {
+        restart: expect.objectContaining({
+          label: 'Restart router',
+          controlType: 'button',
+          valueType: 'none',
+          requiresConfirmation: true
+        })
+      },
+      healthSignals: expect.arrayContaining([
+        expect.objectContaining({ kind: 'connectivity', sourceField: 'online' })
+      ]),
       telemetry: {
         online: { unit: 'bool' },
         latencyMs: { unit: 'ms' }
@@ -221,11 +255,28 @@ describe('server API', () => {
     const response = await server.inject({ method: 'GET', url: '/api/device-twins' });
     const records = response.json();
     const router = records.find((record: { deviceId: string }) => record.deviceId === 'router_01');
+    const doorbell = records.find((record: { deviceId: string }) => record.deviceId === 'doorbell_camera_01');
+    const gardenCamera = records.find((record: { deviceId: string }) => record.deviceId === 'garden_camera_01');
 
     expect(response.statusCode).toBe(200);
     expect(records.length).toBeGreaterThan(20);
     expect(router).toMatchObject({
       deviceId: 'router_01',
+      displayName: 'Home Router',
+      shortLabel: 'Router',
+      instanceGroup: 'network_infrastructure',
+      privacyLevel: 'household',
+      riskLevel: 'confirmation',
+      visualModel: 'router_antennas',
+      visualScale: 0.95,
+      pose: {
+        x: 4.25,
+        y: 0.28,
+        z: -1.25,
+        rotation: 0,
+        mount: 'counter',
+        visualVariant: null
+      },
       protocol: 'simulated',
       connectivity: 'offline',
       reportedState: { online: false, latencyMs: 0 },
@@ -235,13 +286,67 @@ describe('server API', () => {
         latencyMs: { type: 'number', required: false, defaultValue: 18, unit: 'ms' }
       },
       supportedCommands: ['restart'],
+      commandMetadata: {
+        restart: expect.objectContaining({
+          label: 'Restart router',
+          requiresConfirmation: true
+        })
+      },
+      healthStatus: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'connectivity',
+          status: 'alert',
+          sourceField: 'online'
+        })
+      ]),
       dataQuality: { source: 'simulator', confidence: 1 },
       lastCommand: {
         status: 'failed',
-        reason: 'abnormality:network_offline'
+        reason: 'abnormality:network_offline',
+        timeline: [
+          expect.objectContaining({ status: 'requested' }),
+          expect.objectContaining({ status: 'sent' }),
+          expect.objectContaining({ status: 'failed', reason: 'abnormality:network_offline' })
+        ]
       }
     });
     expect(typeof router.lastSeenAt).toBe('string');
+    expect(doorbell).toMatchObject({ pose: { visualVariant: 'doorbell_slim' } });
+    expect(gardenCamera).toMatchObject({ pose: { visualVariant: 'outdoor_bullet' } });
+
+    await server.close();
+  });
+
+  it('applies device instance command overrides to adapter projections and command execution', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-device-instance-commands-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+
+    const records = (await server.inject({ method: 'GET', url: '/api/device-twins' })).json();
+    const doorbell = records.find((record: { deviceId: string }) => record.deviceId === 'doorbell_camera_01');
+
+    expect(doorbell).toMatchObject({
+      deviceId: 'doorbell_camera_01',
+      supportedCommands: ['ring'],
+      commandMetadata: {
+        ring: expect.objectContaining({ label: 'Ring' })
+      }
+    });
+    expect(doorbell.commandMetadata).not.toHaveProperty('record');
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/devices/doorbell_camera_01/command',
+      payload: { command: 'record' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('UNSUPPORTED_DEVICE_COMMAND');
 
     await server.close();
   });
@@ -528,6 +633,32 @@ describe('server API', () => {
     expect(publicTelemetry.some((event) => event.deviceId === 'bathroom_water_01')).toBe(false);
 
     await server.close();
+  });
+
+  it('filters sensitive device twins from public adapter projections', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-public-device-twins-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+    try {
+      await server.inject({
+        method: 'POST',
+        url: '/api/scenarios/weekday_normal/start'
+      });
+
+      const publicRecords = (await server.inject({ method: 'GET', url: '/api/device-twins?privacy=public' })).json() as Array<{
+        deviceId: string;
+        privacyLevel: string;
+        riskLevel: string;
+      }>;
+
+      expect(publicRecords.some((record) => record.deviceId === 'router_01')).toBe(true);
+      expect(publicRecords.some((record) => record.deviceId === 'doorbell_camera_01')).toBe(false);
+      expect(publicRecords.some((record) => record.deviceId === 'master_sleep_01')).toBe(false);
+      expect(publicRecords.some((record) => record.deviceId === 'water_valve_01')).toBe(false);
+      expect(publicRecords.every((record) => record.privacyLevel !== 'private' && record.riskLevel !== 'high')).toBe(true);
+    } finally {
+      await server.close();
+    }
   });
 
   it('records access audit entries for privacy-sensitive read APIs', async () => {
@@ -824,10 +955,67 @@ describe('server API', () => {
       brightness: 62
     });
     expect(response.json().events[0]).toMatchObject({
+      type: 'PersonMoved',
+      personId: 'adult_1',
+      to: 'living_room',
+      activity: 'controlling_living_light_01',
+      reason: 'operator:approach_device:living_light_01:set_brightness'
+    });
+    expect(response.json().snapshot.people.adult_1).toMatchObject({
+      location: 'master_bedroom',
+      activity: 'sleeping'
+    });
+    expect(response.json().events[1]).toMatchObject({
       type: 'DeviceStateChanged',
       deviceId: 'living_light_01',
       reason: 'operator:device_command:set_brightness'
     });
+    expect(response.json().events[2]).toMatchObject({
+      type: 'PersonMoved',
+      personId: 'adult_1',
+      from: 'living_room',
+      to: 'master_bedroom',
+      activity: 'sleeping',
+      reason: 'operator:return_from_device:living_light_01:set_brightness'
+    });
+
+    await server.close();
+  });
+
+  it('executes enum and numeric commands from capability metadata', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-device-command-metadata-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    const tvInput = await server.inject({
+      method: 'POST',
+      url: '/api/devices/tv_01/command',
+      payload: { command: 'set_input', value: 'Game' }
+    });
+    const tvVolume = await server.inject({
+      method: 'POST',
+      url: '/api/devices/tv_01/command',
+      payload: { command: 'set_volume', value: 42 }
+    });
+    const acMode = await server.inject({
+      method: 'POST',
+      url: '/api/devices/master_ac_01/command',
+      payload: { command: 'set_mode', value: 'cool' }
+    });
+    const washerMode = await server.inject({
+      method: 'POST',
+      url: '/api/devices/washer_01/command',
+      payload: { command: 'set_mode', value: 'delicate' }
+    });
+
+    expect(tvInput.statusCode).toBe(200);
+    expect(tvInput.json().snapshot.devices.tv_01.state).toMatchObject({ power: 'on', app: 'Game' });
+    expect(tvVolume.statusCode).toBe(200);
+    expect(tvVolume.json().snapshot.devices.tv_01.state).toMatchObject({ power: 'on', volume: 42 });
+    expect(acMode.statusCode).toBe(200);
+    expect(acMode.json().snapshot.devices.master_ac_01.state).toMatchObject({ power: 'on', mode: 'cool' });
+    expect(washerMode.statusCode).toBe(200);
+    expect(washerMode.json().snapshot.devices.washer_01.state).toMatchObject({ mode: 'delicate' });
 
     await server.close();
   });

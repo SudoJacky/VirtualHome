@@ -1,10 +1,14 @@
-import type { PersonKind, RoomId, Severity, TwinEvent, TwinSnapshot } from '../shared/types';
-import { getDeviceCapability, isDeviceTypeAbnormal, isDeviceTypeActive, summarizeDeviceState } from '../shared/deviceRegistry';
-import { devicePoints, getRoomLayout, roomLayouts, type RoomLayout } from './floorplanLayout';
+import type { DeviceState, PersonKind, RoomId, Severity, TwinEvent, TwinSnapshot } from '../shared/types';
+import { evaluateDeviceHealthSignals, getDeviceCapability, isDeviceTypeAbnormal, isDeviceTypeActive, summarizeDeviceState, type DeviceHealthStatus, type DeviceRiskLevel, type DeviceVisualModel } from '../shared/deviceRegistry';
+import { getDeviceSupportedCommands } from '../shared/deviceInstanceCapabilities';
+import { devicePoints, getDeviceInstanceProfile, type DeviceInstanceGroup, type DeviceMount, type DevicePrivacyLevel } from './deviceInstanceLayout';
+import { getRoomLayout, roomLayouts, type RoomLayout } from './floorplanLayout';
 
 export type FloorplanAlertSeverity = 'info' | 'warning' | 'critical';
 export type DeviceMarkerKind = 'sensor' | 'actuator' | 'appliance' | 'security' | 'lighting' | 'climate' | 'media' | 'mobile' | 'network';
-export type DeviceAnimationHint = 'pulse' | 'glow' | 'slide' | 'rotate' | 'patrol' | 'vibrate' | 'airflow' | 'scan' | 'none';
+export type DeviceAnimationHint = 'pulse' | 'glow' | 'open_close' | 'rotate' | 'patrol' | 'vibrate' | 'airflow' | 'scan' | 'waterflow' | 'none';
+export type FloorplanDeviceCommandStatus = 'none' | 'requested' | 'sent' | 'acknowledged' | 'failed' | 'timed-out';
+export type FloorplanDeviceOperability = 'controllable' | 'read_only' | 'offline';
 
 export interface FloorplanPoint {
   x: number;
@@ -38,22 +42,50 @@ export interface Floorplan3DPerson {
   x: number;
   z: number;
   movementPath: FloorplanPoint[];
+  movementSegments: FloorplanMovementSegment[];
   movementTrailVisible: boolean;
   visualStyle: PersonVisualStyle;
+}
+
+export interface FloorplanMovementSegment {
+  fromRoomId: RoomId | 'away';
+  toRoomId: RoomId | 'away';
+  activity: string;
+  startedAt: string;
+  endedAt: string;
+  travelMinutes: number;
+  from: FloorplanPoint;
+  to: FloorplanPoint;
+  progress: number;
 }
 
 export interface Floorplan3DDevice {
   id: string;
   roomId: RoomId;
   label: string;
+  displayName: string;
+  instanceGroup: DeviceInstanceGroup;
+  privacyLevel: DevicePrivacyLevel;
+  riskLevel: DeviceRiskLevel;
   active: boolean;
   abnormal: boolean;
   markerKind: DeviceMarkerKind;
   animationHint: DeviceAnimationHint;
+  visualModel: DeviceVisualModel;
+  visualVariant: string | null;
   statusLabel: string;
   x: number;
   z: number;
   y: number;
+  rotation: number;
+  mount: DeviceMount;
+  scale: number;
+  commandStatus: FloorplanDeviceCommandStatus;
+  commandReason: string | null;
+  recentEventLabel: string | null;
+  healthStatus: DeviceHealthStatus[];
+  operability: FloorplanDeviceOperability;
+  interactionHint: string;
 }
 
 export interface FloorplanAutomationLink {
@@ -67,6 +99,7 @@ export interface FloorplanAutomationLink {
 }
 
 export type ReplayStepKind = 'precondition' | 'sensor' | 'automation' | 'command' | 'result';
+export type ReplayDeviceState = Record<string, string | number | boolean | null>;
 
 export interface FloorplanReplayStep {
   id: string;
@@ -76,6 +109,31 @@ export interface FloorplanReplayStep {
   roomId: RoomId;
   deviceId?: string;
   atSequence: number;
+  stateSnapshot?: ReplayDeviceState;
+  previousState?: ReplayDeviceState;
+  nextState?: ReplayDeviceState;
+  commandStatus?: FloorplanDeviceCommandStatus;
+  commandReason?: string | null;
+}
+
+export type FloorplanReplayDeviceRole = 'source' | 'target' | 'related';
+export type FloorplanReplayTimelinePhase = 'before' | 'after';
+
+export interface FloorplanReplayDeviceTimelineEntry {
+  id: string;
+  atSequence: number;
+  simTime: string;
+  phase: FloorplanReplayTimelinePhase;
+  state: ReplayDeviceState;
+  commandStatus?: FloorplanDeviceCommandStatus;
+  commandReason?: string | null;
+}
+
+export interface FloorplanReplayDeviceTimeline {
+  deviceId: string;
+  displayName: string;
+  role: FloorplanReplayDeviceRole;
+  entries: FloorplanReplayDeviceTimelineEntry[];
 }
 
 export interface FloorplanEventReplay {
@@ -87,6 +145,7 @@ export interface FloorplanEventReplay {
   sourceDeviceId?: string;
   targetDeviceId?: string;
   severity: FloorplanAlertSeverity;
+  deviceTimelines: FloorplanReplayDeviceTimeline[];
   steps: FloorplanReplayStep[];
 }
 
@@ -98,16 +157,18 @@ export interface Floorplan3DModel {
   eventReplays: FloorplanEventReplay[];
 }
 
-export type FloorplanDeviceDisplayMode = 'active' | 'all' | 'abnormal' | 'sensor' | 'actuator' | 'appliance' | 'security' | 'mobile';
+export type FloorplanDeviceDisplayMode = 'active' | 'all' | 'abnormal' | 'sensor' | 'actuator' | 'appliance' | 'security' | 'lighting' | 'climate' | 'media' | 'mobile' | 'network';
 
 export function selectVisibleFloorplanDevices(
   devices: Floorplan3DDevice[],
   mode: FloorplanDeviceDisplayMode,
-  selected: { type: 'device'; id: string } | { type: 'room'; id: RoomId } | null
+  selected: { type: 'device'; id: string } | { type: 'room'; id: RoomId } | null,
+  replayFocusDeviceId: string | null = null
 ): Floorplan3DDevice[] {
   const selectedDeviceId = selected?.type === 'device' ? selected.id : null;
   return devices.filter((device) => (
     device.id === selectedDeviceId ||
+    device.id === replayFocusDeviceId ||
     mode === 'all' ||
     mode === 'active' && (device.active || device.abnormal) ||
     mode === 'abnormal' && device.abnormal ||
@@ -125,9 +186,29 @@ export function createFloorplan3DModel(snapshot: TwinSnapshot, events: TwinEvent
     .filter((event) => event.type === 'PersonMoved')
     .slice(-8)
     .map((event) => event.personId));
+  const moveEventsByPerson = new Map<string, Array<Extract<TwinEvent, { type: 'PersonMoved' }>>>();
+  for (const event of events) {
+    if (event.type !== 'PersonMoved') {
+      continue;
+    }
+    const personEvents = moveEventsByPerson.get(event.personId) ?? [];
+    personEvents.push(event);
+    moveEventsByPerson.set(event.personId, personEvents);
+  }
   const latestMoveByPerson = new Map(events
     .filter((event) => event.type === 'PersonMoved')
     .map((event) => [event.personId, event]));
+  const latestStateChangeByDevice = new Map<string, Extract<TwinEvent, { type: 'DeviceStateChanged' }>>();
+  const latestSeenAtByDevice = new Map<string, string>();
+
+  for (const event of [...events].sort((left, right) => left.sequence - right.sequence)) {
+    if (event.type === 'DeviceStateChanged') {
+      latestStateChangeByDevice.set(event.deviceId, event);
+      latestSeenAtByDevice.set(event.deviceId, event.simTime);
+    } else if (event.type === 'DeviceTelemetry') {
+      latestSeenAtByDevice.set(event.deviceId, event.simTime);
+    }
+  }
 
   const rooms = roomLayouts.map((layout) => {
     const room = snapshot.rooms[layout.id];
@@ -145,18 +226,39 @@ export function createFloorplan3DModel(snapshot: TwinSnapshot, events: TwinEvent
     .filter((person) => person.location !== 'away')
     .map((person, index) => {
       const roomId = person.location as RoomId;
-      const anchor = offsetWithinRoom(roomId, index, 0.26);
+      const latestMove = latestMoveByPerson.get(person.id);
+      const anchor = personAnchor({
+        personId: person.id,
+        roomId,
+        activity: person.activity,
+        index,
+        currentTime: snapshot.simClock.currentTime,
+        latestMove
+      });
+      const wanderPath = createWanderMovementPath({
+        personId: person.id,
+        roomId,
+        activity: person.activity,
+        index,
+        currentTime: snapshot.simClock.currentTime,
+        anchor
+      });
+      const movedRecently = recentlyMovedPeople.has(person.id);
+      const movementSegments = createMovementSegments(person.id, index, moveEventsByPerson.get(person.id) ?? [], snapshot.simClock.currentTime);
       return {
         id: person.id,
         kind: person.kind,
         roomId,
         label: getPersonLabel(person.id),
         activity: person.activity,
-        recent: recentlyMovedPeople.has(person.id),
+        recent: movedRecently || wanderPath.length >= 2,
         x: anchor.x,
         z: anchor.z,
-        movementPath: createMovementPath(person.id, roomId, anchor, index, latestMoveByPerson.get(person.id)),
-        movementTrailVisible: false,
+        movementPath: movedRecently
+          ? createMovementPath(person.id, roomId, anchor, index, latestMove)
+          : wanderPath,
+        movementSegments,
+        movementTrailVisible: movementSegments.some((segment) => segment.travelMinutes > 0),
         visualStyle: getPersonVisualStyle(person.id, person.kind)
       };
     });
@@ -165,18 +267,37 @@ export function createFloorplan3DModel(snapshot: TwinSnapshot, events: TwinEvent
     const point = devicePoints.find((candidate) => candidate.deviceId === device.id);
     const capability = getDeviceCapability(device.type);
     const active = isDeviceTypeActive(device.type, device.state);
+    const latestStateChange = latestStateChangeByDevice.get(device.id);
+    const lastSeenAt = latestSeenAtByDevice.get(device.id) ?? snapshot.simClock.currentTime;
+    const operability = deviceOperability(device, getDeviceSupportedCommands(device.id, device.type));
+    const instanceProfile = getDeviceInstanceProfile(device.id);
     return {
       id: device.id,
       roomId: device.roomId,
-      label: capability.shortLabel,
+      label: instanceProfile?.shortLabel ?? capability.shortLabel,
+      displayName: instanceProfile?.displayName ?? capability.displayName,
+      instanceGroup: instanceProfile?.group ?? 'living_comfort',
+      privacyLevel: instanceProfile?.privacyLevel ?? 'household',
+      riskLevel: instanceProfile?.riskOverride ?? capability.riskLevel,
       active,
       abnormal: active && isDeviceTypeAbnormal(device.type, device.state),
       markerKind: capability.markerKind as DeviceMarkerKind,
       animationHint: capability.animationHint as DeviceAnimationHint,
+      visualModel: capability.visualModel,
+      visualVariant: point?.visualVariant ?? null,
       statusLabel: summarizeDeviceState(device.type, device.state),
       x: point?.x ?? getRoomLayout(device.roomId).x,
       z: point?.z ?? getRoomLayout(device.roomId).z,
-      y: point?.y ?? 0.32
+      y: point?.y ?? defaultDeviceY(point?.mount),
+      rotation: point?.rotation ?? 0,
+      mount: point?.mount ?? 'floor',
+      scale: point?.scale ?? capability.visualScale,
+      commandStatus: latestStateChange ? commandStatusForStateChange(latestStateChange) : 'none',
+      commandReason: latestStateChange?.reason ?? null,
+      recentEventLabel: latestStateChange ? recentEventLabelForStateChange(latestStateChange) : null,
+      healthStatus: evaluateDeviceHealthSignals(capability.healthSignals, device.state, lastSeenAt, snapshot.simClock.currentTime),
+      operability,
+      interactionHint: interactionHintForOperability(operability)
     };
   });
 
@@ -189,6 +310,42 @@ export function createFloorplan3DModel(snapshot: TwinSnapshot, events: TwinEvent
     automationLinks,
     eventReplays: createEventReplays(snapshot, events, automationLinks)
   };
+}
+
+function commandStatusForStateChange(event: Extract<TwinEvent, { type: 'DeviceStateChanged' }>): FloorplanDeviceCommandStatus {
+  if (event.reason?.startsWith('abnormality:')) return 'failed';
+  return 'acknowledged';
+}
+
+function recentEventLabelForStateChange(event: Extract<TwinEvent, { type: 'DeviceStateChanged' }>): string {
+  return (event.reason ?? event.type)
+    .replaceAll(':', ' ')
+    .replaceAll('_', ' ');
+}
+
+function deviceOperability(device: DeviceState, supportedCommands: string[]): FloorplanDeviceOperability {
+  if (device.state.online === false) return 'offline';
+  if (supportedCommands.length === 0) return 'read_only';
+  return 'controllable';
+}
+
+function interactionHintForOperability(operability: FloorplanDeviceOperability): string {
+  if (operability === 'offline') {
+    return 'Device is offline; controls are disabled until connectivity recovers.';
+  }
+  if (operability === 'read_only') {
+    return 'Read-only sensor; inspect readings and health instead of direct controls.';
+  }
+  return 'Ready for device controls.';
+}
+
+function defaultDeviceY(mount: DeviceMount | undefined): number {
+  if (mount === 'ceiling') return 0.62;
+  if (mount === 'wall') return 0.45;
+  if (mount === 'counter') return 0.24;
+  if (mount === 'pipe') return 0.18;
+  if (mount === 'outdoor') return 0.12;
+  return 0.32;
 }
 
 function createMovementPath(
@@ -213,6 +370,156 @@ function createMovementPath(
   ];
 }
 
+function createMovementSegments(
+  personId: string,
+  index: number,
+  moves: Array<Extract<TwinEvent, { type: 'PersonMoved' }>>,
+  currentTime: string
+): FloorplanMovementSegment[] {
+  const nowMs = new Date(currentTime).getTime();
+  return moves
+    .slice(-8)
+    .map((move) => {
+      const travelMinutes = Math.max(0, Number(move.travelMinutes ?? 0));
+      const endedAt = move.simTime;
+      const startedAt = shiftIsoMinutes(endedAt, -travelMinutes);
+      const startMs = new Date(startedAt).getTime();
+      const endMs = new Date(endedAt).getTime();
+      const durationMs = Math.max(1, endMs - startMs);
+      const progress = travelMinutes === 0
+        ? 1
+        : clamp((nowMs - startMs) / durationMs, 0, 1);
+      return {
+        fromRoomId: move.from,
+        toRoomId: move.to,
+        activity: move.activity,
+        startedAt,
+        endedAt,
+        travelMinutes,
+        from: pointForMovementRoom(personId, move.from, index, startedAt),
+        to: pointForMovementRoom(personId, move.to, index, endedAt),
+        progress: round(progress)
+      };
+    });
+}
+
+function pointForMovementRoom(personId: string, roomId: RoomId | 'away', index: number, time: string): FloorplanPoint {
+  if (roomId === 'away') {
+    return roomEntryPoint('entrance');
+  }
+  return roomWanderAnchor(personId, roomId, time, index % 2 === 0 ? 0 : -1);
+}
+
+function shiftIsoMinutes(value: string, minutes: number): string {
+  const date = new Date(value);
+  date.setMinutes(date.getMinutes() + minutes);
+  return formatShanghaiTime(date);
+}
+
+function personAnchor({
+  personId,
+  roomId,
+  activity,
+  index,
+  currentTime,
+  latestMove
+}: {
+  personId: string;
+  roomId: RoomId;
+  activity: string;
+  index: number;
+  currentTime: string;
+  latestMove: Extract<TwinEvent, { type: 'PersonMoved' }> | undefined;
+}): FloorplanPoint {
+  const approachDeviceId = latestMove && latestMove.to === roomId
+    ? approachDeviceIdFromEvent(latestMove)
+    : null;
+  if (approachDeviceId) {
+    return approachPointForDevice(approachDeviceId, roomId, personId);
+  }
+
+  if (activity === 'sleeping') {
+    return offsetWithinRoom(roomId, index, 0.26);
+  }
+
+  return roomWanderAnchor(personId, roomId, currentTime, 0);
+}
+
+function createWanderMovementPath({
+  personId,
+  roomId,
+  activity,
+  index,
+  currentTime,
+  anchor
+}: {
+  personId: string;
+  roomId: RoomId;
+  activity: string;
+  index: number;
+  currentTime: string;
+  anchor: FloorplanPoint;
+}): FloorplanPoint[] {
+  if (activity === 'sleeping' || minutesSinceWanderBucketStart(currentTime) > 1) {
+    return [anchor];
+  }
+
+  const previous = roomWanderAnchor(personId, roomId, currentTime, -1);
+  if (distance(previous, anchor) < 0.04) {
+    return [offsetWithinRoom(roomId, index, 0.26), anchor];
+  }
+  return [previous, midpoint(previous, anchor), anchor];
+}
+
+function approachDeviceIdFromEvent(event: Extract<TwinEvent, { type: 'PersonMoved' }>): string | null {
+  const match = event.reason?.match(/^operator:approach_device:([^:]+):/);
+  return match?.[1] ?? null;
+}
+
+function approachPointForDevice(deviceId: string, roomId: RoomId, personId: string): FloorplanPoint {
+  const point = devicePoints.find((candidate) => candidate.deviceId === deviceId);
+  if (!point) {
+    return roomWanderAnchor(personId, roomId, '2026-06-17T00:00:00+08:00', 0);
+  }
+
+  const layout = getRoomLayout(roomId);
+  const centerDirection = normalize2d(layout.x - point.x, layout.z - point.z);
+  const fallback = angleDirection(hashUnit(`${personId}:${deviceId}:approach`) * Math.PI * 2);
+  const direction = centerDirection ?? fallback;
+  const distanceFromDevice = 0.46;
+  return {
+    x: clamp(point.x + direction.x * distanceFromDevice, layout.x - layout.width / 2 + 0.18, layout.x + layout.width / 2 - 0.18),
+    z: clamp(point.z + direction.z * distanceFromDevice, layout.z - layout.depth / 2 + 0.18, layout.z + layout.depth / 2 - 0.18)
+  };
+}
+
+function roomWanderAnchor(personId: string, roomId: RoomId, currentTime: string, bucketOffset: number): FloorplanPoint {
+  const layout = getRoomLayout(roomId);
+  const bucket = Math.max(0, wanderBucket(currentTime) + bucketOffset);
+  const maxX = Math.max(0.08, layout.width / 2 - 0.36);
+  const maxZ = Math.max(0.08, layout.depth / 2 - 0.36);
+  return {
+    x: layout.x + centeredHash(`${personId}:${roomId}:${bucket}:x`) * maxX,
+    z: layout.z + centeredHash(`${personId}:${roomId}:${bucket}:z`) * maxZ
+  };
+}
+
+function wanderBucket(currentTime: string): number {
+  return Math.floor(minuteOfDay(currentTime) / 20);
+}
+
+function minutesSinceWanderBucketStart(currentTime: string): number {
+  return minuteOfDay(currentTime) % 20;
+}
+
+function minuteOfDay(currentTime: string): number {
+  const match = currentTime.match(/T(\d{2}):(\d{2})/);
+  if (!match) {
+    return 0;
+  }
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
 function roomEntryPoint(roomId: RoomId): FloorplanPoint {
   const layout = getRoomLayout(roomId);
   return {
@@ -226,6 +533,48 @@ function midpoint(from: FloorplanPoint, to: FloorplanPoint): FloorplanPoint {
     x: (from.x + to.x) / 2,
     z: (from.z + to.z) / 2
   };
+}
+
+function distance(from: FloorplanPoint, to: FloorplanPoint): number {
+  return Math.hypot(from.x - to.x, from.z - to.z);
+}
+
+function normalize2d(x: number, z: number): FloorplanPoint | null {
+  const length = Math.hypot(x, z);
+  if (length < 0.001) {
+    return null;
+  }
+  return { x: x / length, z: z / length };
+}
+
+function angleDirection(angle: number): FloorplanPoint {
+  return { x: Math.cos(angle), z: Math.sin(angle) };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function round(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function formatShanghaiTime(date: Date): string {
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}+08:00`;
+}
+
+function centeredHash(input: string): number {
+  return hashUnit(input) * 2 - 1;
+}
+
+function hashUnit(input: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 4294967295;
 }
 
 function createAutomationLinks(
@@ -283,6 +632,48 @@ function automationLinkForRule(ruleId: string): Pick<FloorplanAutomationLink, 'r
       sourceDeviceId: 'router_01',
       targetDeviceId: 'router_01',
       severity: 'warning'
+    },
+    door_left_open: {
+      roomId: 'entrance',
+      sourceDeviceId: 'doorbell_camera_01',
+      targetDeviceId: 'door_lock_01',
+      severity: 'warning'
+    },
+    network_offline: {
+      roomId: 'study',
+      sourceDeviceId: 'router_01',
+      targetDeviceId: 'router_01',
+      severity: 'warning'
+    },
+    senior_no_activity: {
+      roomId: 'master_bedroom',
+      sourceDeviceId: 'master_sleep_01',
+      targetDeviceId: 'master_sleep_01',
+      severity: 'warning'
+    },
+    child_homework_focus: {
+      roomId: 'child_bedroom',
+      sourceDeviceId: 'child_sleep_01',
+      targetDeviceId: 'tv_01',
+      severity: 'info'
+    },
+    remote_work_comfort: {
+      roomId: 'study',
+      sourceDeviceId: 'study_co2_01',
+      targetDeviceId: 'router_01',
+      severity: 'info'
+    },
+    family_dinner_readiness: {
+      roomId: 'dining_room',
+      sourceDeviceId: 'fridge_01',
+      targetDeviceId: 'dining_light_01',
+      severity: 'info'
+    },
+    senior_morning_support: {
+      roomId: 'master_bedroom',
+      sourceDeviceId: 'master_sleep_01',
+      targetDeviceId: 'master_ac_01',
+      severity: 'info'
     }
   };
   return links[ruleId];
@@ -300,6 +691,7 @@ function createEventReplays(
   events: TwinEvent[],
   automationLinks: FloorplanAutomationLink[]
 ): FloorplanEventReplay[] {
+  const deviceEventStates = createDeviceEventStateHistory(snapshot, events);
   const automationEvents = events
     .filter((event): event is Extract<TwinEvent, { type: 'AutomationTriggered' }> => event.type === 'AutomationTriggered')
     .slice(-5)
@@ -309,7 +701,7 @@ function createEventReplays(
     const link = automationLinks.find((candidate) => candidate.id === automation.id);
     const roomId = link?.roomId ?? inferAutomationRoom(snapshot, events, automation.sequence);
     const relatedSensor = findNearbyDeviceEvent(events, automation.sequence, link?.sourceDeviceId, -3, 0);
-    const relatedCommand = findNearbyDeviceEvent(events, automation.sequence, link?.targetDeviceId, 0, 3);
+    const relatedCommand = findNearbyDeviceEvent(events, automation.sequence, link?.targetDeviceId, -3, 3);
     const sourceDeviceId = link?.sourceDeviceId ?? relatedSensor?.deviceId;
     const targetDeviceId = link?.targetDeviceId ?? relatedCommand?.deviceId;
 
@@ -322,6 +714,13 @@ function createEventReplays(
       sourceDeviceId,
       targetDeviceId,
       severity: link?.severity ?? 'info',
+      deviceTimelines: createReplayDeviceTimelines(
+        events,
+        deviceEventStates,
+        automation.sequence,
+        sourceDeviceId,
+        targetDeviceId
+      ),
       steps: [
         {
           id: `${automation.id}:precondition`,
@@ -338,7 +737,8 @@ function createEventReplays(
           detail: relatedSensor ? summarizeDeviceEvent(relatedSensor) : automation.explanation,
           roomId: relatedSensor?.roomId ?? roomId,
           deviceId: sourceDeviceId,
-          atSequence: relatedSensor?.sequence ?? automation.sequence
+          atSequence: relatedSensor?.sequence ?? automation.sequence,
+          ...replayStepState(relatedSensor, deviceEventStates)
         },
         {
           id: `${automation.id}:automation`,
@@ -355,7 +755,8 @@ function createEventReplays(
           detail: automation.actions.join(', '),
           roomId: relatedCommand?.roomId ?? roomId,
           deviceId: targetDeviceId,
-          atSequence: relatedCommand?.sequence ?? automation.sequence
+          atSequence: relatedCommand?.sequence ?? automation.sequence,
+          ...replayStepState(relatedCommand, deviceEventStates)
         },
         {
           id: `${automation.id}:result`,
@@ -364,11 +765,123 @@ function createEventReplays(
           detail: relatedCommand ? summarizeDeviceEvent(relatedCommand) : 'Awaiting resulting device state.',
           roomId: relatedCommand?.roomId ?? roomId,
           deviceId: targetDeviceId,
-          atSequence: (relatedCommand?.sequence ?? automation.sequence) + 1
+          atSequence: (relatedCommand?.sequence ?? automation.sequence) + 1,
+          ...replayStepState(relatedCommand, deviceEventStates)
         }
       ]
     };
   });
+}
+
+interface ReplayDeviceEventState {
+  previousState: ReplayDeviceState;
+  nextState: ReplayDeviceState;
+  stateSnapshot: ReplayDeviceState;
+  commandStatus: FloorplanDeviceCommandStatus;
+  commandReason: string | null;
+}
+
+function createDeviceEventStateHistory(
+  snapshot: TwinSnapshot,
+  events: TwinEvent[]
+): Map<string, ReplayDeviceEventState> {
+  const currentByDevice = new Map<string, ReplayDeviceState>();
+  const statesByEvent = new Map<string, ReplayDeviceEventState>();
+
+  for (const device of Object.values(snapshot.devices)) {
+    currentByDevice.set(device.id, cloneReplayState(getDeviceCapability(device.type).defaultState));
+  }
+
+  for (const event of [...events].sort((left, right) => left.sequence - right.sequence)) {
+    if (event.type !== 'DeviceStateChanged') {
+      continue;
+    }
+    const previousState = cloneReplayState(currentByDevice.get(event.deviceId) ?? {});
+    const nextState = cloneReplayState(event.state);
+    statesByEvent.set(event.id, {
+      previousState,
+      nextState,
+      stateSnapshot: cloneReplayState(nextState),
+      commandStatus: commandStatusForStateChange(event),
+      commandReason: event.reason ?? null
+    });
+    currentByDevice.set(event.deviceId, nextState);
+  }
+
+  return statesByEvent;
+}
+
+function replayStepState(
+  event: Extract<TwinEvent, { type: 'DeviceStateChanged' }> | undefined,
+  deviceEventStates: Map<string, ReplayDeviceEventState>
+): Partial<FloorplanReplayStep> {
+  if (!event) {
+    return {};
+  }
+  return deviceEventStates.get(event.id) ?? {};
+}
+
+function createReplayDeviceTimelines(
+  events: TwinEvent[],
+  deviceEventStates: Map<string, ReplayDeviceEventState>,
+  automationSequence: number,
+  sourceDeviceId: string | undefined,
+  targetDeviceId: string | undefined
+): FloorplanReplayDeviceTimeline[] {
+  const deviceRoles = new Map<string, FloorplanReplayDeviceRole>();
+  if (sourceDeviceId) {
+    deviceRoles.set(sourceDeviceId, 'source');
+  }
+  if (targetDeviceId) {
+    deviceRoles.set(targetDeviceId, targetDeviceId === sourceDeviceId ? 'related' : 'target');
+  }
+
+  return [...deviceRoles.entries()]
+    .map(([deviceId, role]) => {
+      const relatedEvents = events
+        .filter((event): event is Extract<TwinEvent, { type: 'DeviceStateChanged' }> => (
+          event.type === 'DeviceStateChanged' &&
+          event.deviceId === deviceId &&
+          event.sequence >= automationSequence - 3 &&
+          event.sequence <= automationSequence + 3
+        ))
+        .sort((left, right) => left.sequence - right.sequence);
+      const entries = relatedEvents.flatMap((event): FloorplanReplayDeviceTimelineEntry[] => {
+        const state = deviceEventStates.get(event.id);
+        if (!state) {
+          return [];
+        }
+        return [
+          {
+            id: `${event.id}:before`,
+            atSequence: event.sequence,
+            simTime: event.simTime,
+            phase: 'before',
+            state: cloneReplayState(state.previousState)
+          },
+          {
+            id: `${event.id}:after`,
+            atSequence: event.sequence,
+            simTime: event.simTime,
+            phase: 'after',
+            state: cloneReplayState(state.nextState),
+            commandStatus: state.commandStatus,
+            commandReason: state.commandReason
+          }
+        ];
+      });
+      return {
+        deviceId,
+        displayName: getDeviceInstanceProfile(deviceId)?.displayName ?? deviceId,
+        role,
+        entries
+      };
+    })
+    .filter((timeline) => timeline.entries.length > 0);
+}
+
+function cloneReplayState(state: Record<string, string | number | boolean | null>): ReplayDeviceState {
+  return structuredClone(state);
 }
 
 function findNearbyDeviceEvent(
@@ -483,114 +996,3 @@ function getPersonVisualStyle(personId: string, kind: PersonKind): PersonVisualS
   };
 }
 
-function getDeviceLabel(deviceId: string): string {
-  const labels: Record<string, string> = {
-    door_lock_01: 'Lock',
-    entrance_motion_01: 'Motion',
-    doorbell_camera_01: 'Doorbell',
-    package_sensor_01: 'Package',
-    living_light_01: 'Light',
-    tv_01: 'TV',
-    living_motion_01: 'Motion',
-    robot_vacuum_01: 'Vacuum',
-    living_curtain_01: 'Curtain',
-    kitchen_light_01: 'Light',
-    kitchen_temp_01: 'Temp',
-    fridge_01: 'Fridge',
-    stove_01: 'Stove',
-    range_hood_01: 'Hood',
-    pm25_01: 'Air',
-    smoke_01: 'Smoke',
-    dishwasher_01: 'Dish',
-    dining_light_01: 'Light',
-    master_sleep_01: 'Sleep',
-    master_ac_01: 'AC',
-    child_sleep_01: 'Sleep',
-    study_co2_01: 'CO2',
-    router_01: 'Router',
-    bathroom_water_01: 'Water',
-    water_leak_01: 'Leak',
-    water_valve_01: 'Valve',
-    washer_01: 'Washer',
-    garden_soil_01: 'Soil',
-    garden_camera_01: 'Camera',
-    sprinkler_01: 'Sprinkler'
-  };
-  return labels[deviceId] ?? deviceId;
-}
-
-function getMarkerKind(type: string): DeviceMarkerKind {
-  if (type === 'light') return 'lighting';
-  if (type === 'door_lock' || type === 'water_valve' || type === 'range_hood' || type === 'sprinkler' || type === 'curtain') return 'actuator';
-  if (type.includes('sensor')) return 'sensor';
-  if (type === 'doorbell_camera' || type === 'security_camera') return 'security';
-  if (type === 'robot_vacuum') return 'mobile';
-  if (type === 'router') return 'network';
-  if (type === 'air_conditioner') return 'climate';
-  if (type === 'tv') return 'media';
-  return 'appliance';
-}
-
-function getAnimationHint(type: string, state: Record<string, string | number | boolean | null>, active: boolean): DeviceAnimationHint {
-  if (type === 'light') return active ? 'glow' : 'none';
-  if (type === 'curtain') return 'slide';
-  if (type === 'water_valve') return 'rotate';
-  if (type === 'robot_vacuum') return state.status === 'cleaning' ? 'patrol' : active ? 'pulse' : 'none';
-  if (type === 'washer' || type === 'dishwasher') return state.status === 'running' ? 'vibrate' : 'none';
-  if (type === 'air_conditioner' || type === 'range_hood') return active ? 'airflow' : 'none';
-  if (type === 'doorbell_camera' || type === 'security_camera') return active ? 'scan' : 'scan';
-  if (type.includes('sensor')) return active ? 'pulse' : 'pulse';
-  return active ? 'pulse' : 'none';
-}
-
-function getDeviceStatusLabel(type: string, state: Record<string, string | number | boolean | null>): string {
-  if (type === 'light') return state.power === 'on' ? `on ${state.brightness ?? 100}%` : 'off';
-  if (type === 'door_lock') return state.locked === false ? 'unlocked' : 'locked';
-  if (type === 'fridge') return state.doorOpen === true ? 'door open' : 'normal';
-  if (type === 'stove') return Number(state.powerW ?? 0) > 0 ? `${state.powerW}W` : 'off';
-  if (type === 'range_hood') return Number(state.speed ?? 0) > 0 ? `speed ${state.speed}` : 'off';
-  if (type === 'water_valve') return state.valveOpen === false ? 'closed' : 'open';
-  if (type === 'sprinkler') return state.valveOpen === true ? 'watering' : 'off';
-  if (type === 'robot_vacuum' || type === 'washer' || type === 'dishwasher') return String(state.status ?? 'idle');
-  if (type === 'router') return state.online === false ? 'offline' : `${state.latencyMs ?? 0}ms`;
-  if (type === 'package_sensor') return state.packagePresent === true ? `${state.weightKg ?? 0}kg package` : 'clear';
-  if (type === 'doorbell_camera' || type === 'security_camera') return state.motion === true ? 'motion' : 'watching';
-  if (type.includes('sensor')) return Object.entries(state).map(([key, value]) => `${key}=${value}`).slice(0, 1).join(', ') || 'ready';
-  return Object.values(state).some(Boolean) ? 'active' : 'idle';
-}
-
-function isDeviceActive(type: string, state: Record<string, string | number | boolean | null>): boolean {
-  if (type === 'door_lock') return state.locked === false;
-  if (type === 'light') return state.power === 'on';
-  if (type === 'tv') return state.power === 'on';
-  if (type === 'fridge') return state.doorOpen === true || Number(state.powerW ?? 0) > 100;
-  if (type === 'stove') return Number(state.powerW ?? 0) > 0;
-  if (type === 'range_hood') return state.power === 'on' || Number(state.speed ?? 0) > 0;
-  if (type === 'water_flow_sensor') return Number(state.flowLMin ?? 0) > 0;
-  if (type === 'water_leak_sensor') return state.leakDetected === true;
-  if (type === 'water_valve') return state.valveOpen === true;
-  if (type === 'sprinkler') return state.valveOpen === true;
-  if (type === 'sleep_sensor') return state.inBed === true;
-  if (type === 'motion_sensor') return state.motion === true;
-  if (type === 'package_sensor') return state.packagePresent === true;
-  if (type === 'doorbell_camera' || type === 'security_camera') return state.motion === true || state.ringing === true || state.recording === true;
-  if (type === 'robot_vacuum') return state.status === 'cleaning' || state.status === 'stuck';
-  if (type === 'curtain') return Number(state.positionPercent ?? 0) > 0;
-  if (type === 'smoke_sensor') return state.smokeDetected === true;
-  if (type === 'dishwasher' || type === 'washer') return state.status === 'running' || state.status === 'done' || Number(state.powerW ?? 0) > 0;
-  if (type === 'air_conditioner') return state.power === 'on';
-  if (type === 'router') return state.online === false || Number(state.latencyMs ?? 0) > 100;
-  return false;
-}
-
-function isDeviceAbnormal(type: string, state: Record<string, string | number | boolean | null>): boolean {
-  if (type === 'door_lock') return state.locked === false;
-  if (type === 'stove') return Number(state.powerW ?? 0) > 700;
-  if (type === 'fridge') return state.doorOpen === true;
-  if (type === 'water_flow_sensor') return Number(state.flowLMin ?? 0) > 6;
-  if (type === 'water_leak_sensor') return state.leakDetected === true;
-  if (type === 'robot_vacuum') return state.status === 'stuck';
-  if (type === 'smoke_sensor') return state.smokeDetected === true;
-  if (type === 'router') return state.online === false || Number(state.latencyMs ?? 0) > 120;
-  return false;
-}

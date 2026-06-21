@@ -1,6 +1,8 @@
 import { getCatalog } from '../sim/catalog';
-import { getDeviceCapability, isDeviceTypeAbnormal, isDeviceTypeActive, summarizeDeviceState } from '../shared/deviceRegistry';
-import type { AlertLifecycleStatus, AlertState, DeviceState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
+import { createDeviceCommandTimeline, type DeviceCommandTimelineEntry } from '../shared/deviceCommandLifecycle';
+import { evaluateDeviceHealthSignals, getDeviceCapability, isDeviceTypeAbnormal, isDeviceTypeActive, summarizeDeviceState, type DeviceCommandFailureReason, type DeviceCommandValueType, type DeviceHealthImpact, type DeviceHealthSignalKind } from '../shared/deviceRegistry';
+import { getDeviceCommandMetadataForInstance, getDeviceSupportedCommands } from '../shared/deviceInstanceCapabilities';
+import type { AlertLifecycleStatus, AlertState, DeviceState, EventExplanation, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
 
 export interface DashboardEvent {
   id: string;
@@ -27,6 +29,14 @@ export interface DashboardModel {
   scenarioCards: ScenarioCard[];
   demoSpotlight: DemoSpotlight | null;
   recentEvents: DashboardEvent[];
+  deviceHealthCards: DeviceHealthCard[];
+  behaviorCards: BehaviorCard[];
+  deviceLifecycleCards: DeviceLifecycleCard[];
+  causalEvents: CausalEventCard[];
+  behaviorAudit: BehaviorAudit;
+  predictionCards: PredictionCard[];
+  forecastTelemetrySeries: ForecastTelemetrySeries[];
+  forecastCharts: ForecastChart[];
   insightCards: InsightCard[];
   telemetrySeries: Array<{
     id: string;
@@ -50,6 +60,7 @@ export interface DashboardModel {
     devices: Array<{
       id: string;
       label: string;
+      summary: string;
       active: boolean;
       slot: number;
     }>;
@@ -166,7 +177,19 @@ export interface DeviceControlCard {
   connectivity: 'online' | 'offline';
   disabledReason: string | null;
   commandStatus: 'none' | 'requested' | 'sent' | 'acknowledged' | 'failed';
+  commandTimeline: DeviceCommandTimelineEntry[];
+  lastEventAt: string | null;
+  recentEvents: DeviceRecentEvent[];
   controls: DeviceCommandControl[];
+}
+
+export interface DeviceRecentEvent {
+  id: string;
+  type: 'DeviceStateChanged' | 'DeviceTelemetry';
+  time: string;
+  sequence: number;
+  label: string;
+  reason: string | null;
 }
 
 export interface DeviceCommandControl {
@@ -181,6 +204,98 @@ export interface DeviceCommandControl {
   disabled: boolean;
   disabledReason: string | null;
   highRisk: boolean;
+  requiresConfirmation: boolean;
+  valueType: DeviceCommandValueType;
+  failureReasons: DeviceCommandFailureReason[];
+}
+
+export interface DeviceHealthCard {
+  id: string;
+  deviceId: string;
+  displayName: string;
+  roomName: string;
+  signal: string;
+  kind: DeviceHealthSignalKind;
+  status: 'watch' | 'alert';
+  priority: number;
+  sourceField: string | null;
+  reportedValue: string | number | boolean | null;
+  recommendedAction: string;
+  expectedEffect: string;
+  impact: DeviceHealthImpact;
+  maintenanceAction: 'restart' | 'replace_or_recharge' | 'calibrate' | 'inspect' | 'monitor';
+  maintenanceLabel: string;
+  focusDeviceId: string;
+}
+
+export interface BehaviorCard {
+  personId: string;
+  label: string;
+  roomId: RoomId | 'away';
+  roomName: string;
+  activity: string;
+  routinePhase: string;
+  intent: string;
+  attentionTarget: string;
+  energy: number;
+  priority: number;
+}
+
+export interface DeviceLifecycleCard {
+  deviceId: string;
+  displayName: string;
+  roomName: string;
+  status: string;
+  headline: string;
+  nextAction: string;
+  priority: number;
+  relatedAlertId: string | null;
+}
+
+export interface CausalEventCard {
+  eventId: string;
+  time: string;
+  type: string;
+  ruleId: string | null;
+  why: string;
+  actors: string[];
+  affectedDevices: string[];
+  affectedRooms: string[];
+  relatedIntent: string | null;
+  expectedOutcome: string;
+  actions: string[];
+  priority: number;
+}
+
+export interface BehaviorAudit {
+  people: BehaviorAuditPerson[];
+  deviceLifecycles: DeviceLifecycleCard[];
+  recentCausalEvents: CausalEventCard[];
+  unresolvedTasks: BehaviorAuditTask[];
+  consistencyWarnings: string[];
+}
+
+export interface BehaviorAuditPerson {
+  personId: string;
+  label: string;
+  location: string;
+  activity: string;
+  intent: string;
+  routinePhase: string;
+  energy: number;
+  attentionTarget: string;
+  nextPlan: string;
+  triggeredRules: string[];
+  affectedByDevices: string[];
+  affectsDevices: string[];
+}
+
+export interface BehaviorAuditTask {
+  id: string;
+  label: string;
+  owner: string;
+  source: string;
+  status: string;
 }
 
 export interface InsightCard {
@@ -194,6 +309,88 @@ export interface InsightCard {
   roomName: string;
   relatedDeviceId: string;
   status: 'normal' | 'watch' | 'alert';
+}
+
+export interface PredictionCard {
+  id: string;
+  alertId: string;
+  horizon: '15 min';
+  title: string;
+  forecast: string;
+  ifIgnored: string;
+  ifHandledNow: string;
+  impact: DeviceHealthImpact;
+  roomName: string;
+  relatedDeviceId: string;
+  forecastPoints: ForecastPoint[];
+  forecastModel: ForecastModelDetail;
+  chart: ForecastChart;
+  recoveryEstimate: PredictionRecoveryEstimate;
+  priority: number;
+}
+
+export interface ForecastModelDetail {
+  kind: string;
+  season: 'spring' | 'summer' | 'autumn' | 'winter';
+  roomVolumeM3: number | null;
+  currentPowerW: number | null;
+  openMinutes: number | null;
+  currentTemperatureC: number | null;
+}
+
+export interface ForecastPoint {
+  metric: string;
+  unit: string;
+  ignored: number[];
+  handledNow: number[];
+  confidenceInterval: ForecastConfidenceInterval;
+}
+
+export interface ForecastConfidenceInterval {
+  levelPercent: number;
+  spreadPercent: number;
+  ignoredLow: number[];
+  ignoredHigh: number[];
+  handledNowLow: number[];
+  handledNowHigh: number[];
+}
+
+export interface PredictionRecoveryEstimate {
+  operatorId: string;
+  action: string;
+  estimatedRecoveryMinutes: number;
+  impactReductionPercent: number;
+  confidence: 'low' | 'medium' | 'high';
+  basis: string;
+}
+
+export interface ForecastTelemetrySeries {
+  id: string;
+  alertId: string;
+  metric: string;
+  unit: string;
+  horizonMinutes: number[];
+  ignored: number[];
+  handledNow: number[];
+  confidenceInterval: ForecastConfidenceInterval;
+}
+
+export interface ForecastChart {
+  id: string;
+  title: string;
+  alertId: string;
+  horizonMinutes: number[];
+  yAxisLabel: string;
+  series: ForecastChartSeries[];
+}
+
+export interface ForecastChartSeries {
+  metric: string;
+  label: string;
+  unit: string;
+  ignored: number[];
+  handledNow: number[];
+  confidenceInterval: ForecastConfidenceInterval;
 }
 
 export interface ScenarioCard {
@@ -268,10 +465,10 @@ const scenarioCards: ScenarioCard[] = [
     id: 'fridge_left_open',
     title: 'Fridge door left open',
     businessValue: 'Shows appliance anomaly detection and recommended homeowner action.',
-    expectedTimeline: 'Door-open injection creates warning and room focus.',
-    expectedDeviceActions: ['Fridge state remains visible for inspection'],
-    expectedAlerts: ['Fridge door has remained open'],
-    recordsGenerated: 'Manual injection and appliance alert records.'
+    expectedTimeline: 'Door opens, alert appears, an adult goes to the kitchen, closes it, and recovery is recorded.',
+    expectedDeviceActions: ['Fridge closes after an operator approaches the kitchen'],
+    expectedAlerts: ['Fridge door has remained open, then resolves after closure'],
+    recordsGenerated: 'Injection, appliance alert, operator movement, close command, and recovery records.'
   },
   {
     id: 'door_left_open',
@@ -295,10 +492,10 @@ const scenarioCards: ScenarioCard[] = [
     id: 'network_offline',
     title: 'Network outage',
     businessValue: 'Shows operational resilience and degraded-state reporting.',
-    expectedTimeline: 'Network-offline injection creates system warning.',
-    expectedDeviceActions: ['Study and network-related state become the focus'],
-    expectedAlerts: ['Home network is offline'],
-    recordsGenerated: 'Connectivity alert and recovery recommendation records.'
+    expectedTimeline: 'Router goes offline, remote work is affected, adult_2 restarts it, and network recovery is recorded.',
+    expectedDeviceActions: ['Hybrid worker approaches the router and restarts it'],
+    expectedAlerts: ['Home network is offline, then resolves after restart'],
+    recordsGenerated: 'Connectivity alert, operator movement, restart command, and recovery records.'
   },
   {
     id: 'kitchen_air_quality',
@@ -322,8 +519,14 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
   const automationExplanations = createAutomationExplanations(events, controlRecords);
   const alertWorkflows = createAlertWorkflows(snapshot, events);
   const telemetrySeries = createTelemetrySeries(events);
-  const priorityQueue = createPriorityQueue(snapshot, controlRecords, automationExplanations, telemetrySeries);
+  const deviceHealthCards = createDeviceHealthCards(snapshot, events);
+  const behaviorCards = createBehaviorCards(snapshot);
+  const deviceLifecycleCards = createDeviceLifecycleCards(snapshot);
+  const causalEvents = createCausalEvents(snapshot, events);
+  const behaviorAudit = createBehaviorAudit(snapshot, behaviorCards, deviceLifecycleCards, causalEvents);
+  const priorityQueue = createPriorityQueue(snapshot, controlRecords, automationExplanations, telemetrySeries, deviceHealthCards);
   const alertStatusSummary = createAlertStatusSummary(snapshot);
+  const predictionCards = createPredictionCards(snapshot);
   return {
     homeMode: snapshot.homeState.mode,
     simTime: snapshot.simClock.currentTime,
@@ -346,7 +549,15 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
       .slice(-20)
       .reverse()
       .map(formatEvent),
-    insightCards: createInsightCards(snapshot, telemetrySeries),
+    deviceHealthCards,
+    behaviorCards,
+    deviceLifecycleCards,
+    causalEvents,
+    behaviorAudit,
+    predictionCards,
+    forecastTelemetrySeries: createForecastTelemetrySeries(predictionCards),
+    forecastCharts: predictionCards.map((card) => card.chart),
+    insightCards: createInsightCards(snapshot, telemetrySeries, deviceHealthCards),
     telemetrySeries,
     floorplanRooms: createFloorplanRooms(snapshot, events)
   };
@@ -387,7 +598,8 @@ function createPriorityQueue(
   snapshot: TwinSnapshot,
   controlRecords: ControlRecord[],
   automationExplanations: AutomationExplanation[],
-  telemetrySeries: DashboardModel['telemetrySeries']
+  telemetrySeries: DashboardModel['telemetrySeries'],
+  deviceHealthCards: DeviceHealthCard[]
 ): PriorityItem[] {
   const alertItems = activeAlerts(snapshot).map((alert) => ({
     id: `alert:${alert.id}`,
@@ -432,6 +644,17 @@ function createPriorityQueue(
         sourceId: series.id
       };
     });
+  const healthItems = deviceHealthCards.map((card) => ({
+    id: `device-health:${card.id}`,
+    kind: 'device_health' as const,
+    priority: card.priority,
+    headline: `${card.displayName} ${card.signal.toLowerCase()}`,
+    summary: `${card.roomName}: ${card.recommendedAction}`,
+    roomId: devicesById.get(card.deviceId)?.roomId ?? firstOccupiedRoom(snapshot),
+    roomName: card.roomName,
+    action: card.recommendedAction,
+    sourceId: card.deviceId
+  }));
   const activity = createHouseholdActivity(snapshot);
   const activityItem: PriorityItem = {
     id: `activity:${snapshot.scenarioId}`,
@@ -443,8 +666,12 @@ function createPriorityQueue(
     roomName: activity.roomName,
     action: activity.nextAction
   };
-  return [...alertItems, ...telemetryItems, ...automationItems, activityItem]
-    .sort((left, right) => right.priority - left.priority || left.headline.localeCompare(right.headline));
+  return [...alertItems, ...healthItems, ...telemetryItems, ...automationItems, activityItem]
+    .sort((left, right) => prioritySortValue(right) - prioritySortValue(left) || left.headline.localeCompare(right.headline));
+}
+
+function prioritySortValue(item: PriorityItem): number {
+  return item.kind === 'alert' ? item.priority + 100 : item.priority;
 }
 
 function createHomeBriefing(
@@ -604,7 +831,8 @@ function createFloorplanRooms(snapshot: TwinSnapshot, events: TwinEvent[]): Dash
     const active = isDeviceTypeActive(device.type, device.state);
     room.devices.push({
       id: device.id,
-      label: getDeviceLabel(device.id),
+      label: getDeviceCapability(device.type).shortLabel,
+      summary: summarizeDeviceState(device.type, device.state),
       active,
       slot: room.devices.length
     });
@@ -616,25 +844,283 @@ function createFloorplanRooms(snapshot: TwinSnapshot, events: TwinEvent[]): Dash
   return rooms;
 }
 
+function createBehaviorCards(snapshot: TwinSnapshot): BehaviorCard[] {
+  return Object.values(snapshot.people)
+    .map((person) => {
+      const behavior = person.behavior ?? {
+        routinePhase: snapshot.homeState.mode,
+        intent: person.activity,
+        attentionTarget: person.location,
+        energy: 50
+      };
+      return {
+        personId: person.id,
+        label: formatPerson(person.id),
+        roomId: person.location,
+        roomName: formatRoomName(person.location),
+        activity: formatBehaviorText(person.activity),
+        routinePhase: formatBehaviorText(behavior.routinePhase),
+        intent: formatBehaviorText(behavior.intent),
+        attentionTarget: formatBehaviorTarget(behavior.attentionTarget),
+        energy: behavior.energy,
+        priority: behaviorPriority(person.id, behavior.intent, behavior.routinePhase, behavior.energy)
+      };
+    })
+    .sort((left, right) => right.priority - left.priority || left.personId.localeCompare(right.personId));
+}
+
+function createDeviceLifecycleCards(snapshot: TwinSnapshot): DeviceLifecycleCard[] {
+  return Object.values(snapshot.devices)
+    .flatMap((device) => {
+      if (device.state.status !== 'waiting_unload') {
+        return [];
+      }
+      const definition = devicesById.get(device.id);
+      const displayName = definition?.name ?? formatDeviceName(device.id);
+      const relatedAlert = Object.values(snapshot.alerts)
+        .find((alert) => alert.roomId === device.roomId && alert.recommendedAction === lifecycleRecommendedAction(device.type));
+      return [{
+        deviceId: device.id,
+        displayName,
+        roomName: formatRoomName(device.roomId),
+        status: formatBehaviorText(String(device.state.status)),
+        headline: lifecycleHeadline(displayName, device.type),
+        nextAction: formatAction(relatedAlert?.recommendedAction ?? lifecycleRecommendedAction(device.type)),
+        priority: lifecyclePriority(device.type),
+        relatedAlertId: relatedAlert?.id ?? null
+      }];
+    })
+    .sort((left, right) => right.priority - left.priority || left.displayName.localeCompare(right.displayName));
+}
+
+function createCausalEvents(snapshot: TwinSnapshot, events: TwinEvent[]): CausalEventCard[] {
+  return events
+    .flatMap((event) => {
+      const explanation = event.eventExplanation ?? inferEventExplanation(snapshot, event);
+      if (!explanation) {
+        return [];
+      }
+      const ruleId = event.type === 'AutomationTriggered'
+        ? event.ruleId
+        : event.type === 'AlertCreated'
+          ? event.sourceRuleId ?? null
+          : null;
+      const actions = event.type === 'AutomationTriggered'
+        ? event.actions.map(formatAction)
+        : event.type === 'AlertCreated'
+          ? [formatAction(event.recommendedAction)]
+          : [];
+      return [{
+        eventId: event.id,
+        time: event.simTime,
+        type: event.type,
+        ruleId,
+        why: explanation.why,
+        actors: explanation.actorIds.map(formatPerson),
+        affectedDevices: explanation.affectedDeviceIds.map(formatDeviceName),
+        affectedRooms: explanation.affectedRoomIds.map(formatRoomName),
+        relatedIntent: explanation.relatedIntent ? formatBehaviorText(explanation.relatedIntent) : null,
+        expectedOutcome: explanation.expectedOutcome,
+        actions,
+        priority: causalEventPriority(event.type, ruleId, explanation)
+      }];
+    })
+    .sort((left, right) => right.time.localeCompare(left.time) || right.priority - left.priority);
+}
+
+function createBehaviorAudit(
+  snapshot: TwinSnapshot,
+  behaviorCards: BehaviorCard[],
+  deviceLifecycleCards: DeviceLifecycleCard[],
+  causalEvents: CausalEventCard[]
+): BehaviorAudit {
+  const people = behaviorCards.map((card) => {
+    const relatedEvents = causalEvents.filter((event) => event.actors.includes(card.label));
+    return {
+      personId: card.personId,
+      label: card.label,
+      location: card.roomName,
+      activity: card.activity,
+      intent: card.intent,
+      routinePhase: card.routinePhase,
+      energy: card.energy,
+      attentionTarget: card.attentionTarget,
+      nextPlan: createNextPlan(card),
+      triggeredRules: uniqueSorted(relatedEvents.flatMap((event) => event.ruleId ? [formatRuleName(event.ruleId)] : [])),
+      affectedByDevices: uniqueSorted(causalEvents
+        .filter((event) => event.affectedDevices.includes(card.attentionTarget))
+        .flatMap((event) => event.affectedDevices)),
+      affectsDevices: uniqueSorted(relatedEvents.flatMap((event) => event.affectedDevices))
+    };
+  });
+
+  return {
+    people,
+    deviceLifecycles: deviceLifecycleCards,
+    recentCausalEvents: causalEvents.slice(0, 10),
+    unresolvedTasks: createBehaviorAuditTasks(snapshot, deviceLifecycleCards),
+    consistencyWarnings: createBehaviorConsistencyWarnings(snapshot, behaviorCards, deviceLifecycleCards, causalEvents)
+  };
+}
+
+function inferEventExplanation(snapshot: TwinSnapshot, event: TwinEvent): EventExplanation | null {
+  if (event.type === 'AlertCreated') {
+    return {
+      why: event.message,
+      actorIds: [],
+      affectedDeviceIds: event.sourceEntityIds?.filter((entityId) => devicesById.has(entityId)) ?? [],
+      affectedRoomIds: [event.roomId],
+      expectedOutcome: `Prompt review: ${formatAction(event.recommendedAction)}.`
+    };
+  }
+
+  if (event.type !== 'AutomationTriggered') {
+    return null;
+  }
+
+  const actorIds = inferActorIdsFromReason(event.reason ?? '');
+  const affectedDeviceIds = inferAffectedDeviceIds(event.ruleId);
+  const affectedRoomIds = inferAffectedRoomIds(snapshot, event.ruleId, affectedDeviceIds);
+  return {
+    why: event.explanation,
+    actorIds,
+    affectedDeviceIds,
+    affectedRoomIds,
+    relatedIntent: actorIds.map((actorId) => snapshot.people[actorId]?.behavior.intent).find(Boolean),
+    expectedOutcome: event.actions[0] ? `Expected outcome from ${formatAction(event.actions[0])}.` : 'Keep the household state coherent.'
+  };
+}
+
+function inferActorIdsFromReason(reason: string): string[] {
+  const match = /(?:habit|activity|operator):([^:]+)/.exec(reason);
+  return match?.[1] && personLabels[match[1]] ? [match[1]] : [];
+}
+
+function inferAffectedDeviceIds(ruleId: string): string[] {
+  const deviceIds: Record<string, string[]> = {
+    cooking_ventilation: ['stove_01', 'range_hood_01', 'kitchen_light_01'],
+    stove_unattended_safety: ['stove_01'],
+    away_mode: ['door_lock_01', 'living_light_01', 'tv_01'],
+    close_water_valve_on_leak: ['water_leak_01', 'water_valve_01'],
+    fridge_left_open: ['fridge_01'],
+    network_offline: ['router_01'],
+    door_left_open: ['door_lock_01', 'doorbell_camera_01'],
+    senior_no_activity: ['master_sleep_01'],
+    senior_wellness_check: ['master_sleep_01'],
+    child_homework_focus: ['child_sleep_01', 'tv_01', 'living_light_01'],
+    remote_work_comfort: ['study_co2_01', 'router_01'],
+    commuter_arrival_scene: ['living_light_01', 'living_curtain_01'],
+    senior_garden_care: ['sprinkler_01', 'garden_soil_01'],
+    pet_garden_sprinkler_pause: ['sprinkler_01'],
+    dishwasher_waiting_unload: ['dishwasher_01'],
+    washer_waiting_unload: ['washer_01']
+  };
+  return deviceIds[ruleId] ?? [];
+}
+
+function inferAffectedRoomIds(snapshot: TwinSnapshot, ruleId: string, affectedDeviceIds: string[]): RoomId[] {
+  const roomIds = affectedDeviceIds.flatMap((deviceId) => {
+    const device = snapshot.devices[deviceId];
+    return device ? [device.roomId] : [];
+  });
+  const fallbackRoom = inferAutomationRoom(ruleId);
+  return uniqueRoomIds([...roomIds, ...(fallbackRoom ? [fallbackRoom] : [])]);
+}
+
+function causalEventPriority(type: TwinEvent['type'], ruleId: string | null, explanation: EventExplanation): number {
+  const typeScore = type === 'AlertCreated' ? 80 : 55;
+  const ruleScore = ruleId && ['close_water_valve_on_leak', 'network_offline', 'senior_no_activity', 'fridge_left_open'].includes(ruleId) ? 20 : 0;
+  const actorScore = explanation.actorIds.length > 0 ? 8 : 0;
+  return typeScore + ruleScore + actorScore + explanation.affectedDeviceIds.length;
+}
+
+function createNextPlan(card: BehaviorCard): string {
+  if (card.roomId === 'away') {
+    return `Continue ${card.intent} away from home`;
+  }
+  return `Continue ${card.intent} near ${card.attentionTarget}`;
+}
+
+function createBehaviorAuditTasks(snapshot: TwinSnapshot, deviceLifecycleCards: DeviceLifecycleCard[]): BehaviorAuditTask[] {
+  const alertTasks = activeAlerts(snapshot).map((alert) => ({
+    id: `alert:${alert.id}`,
+    label: alert.message,
+    owner: ownerForAction(alert.recommendedAction),
+    source: formatRoomName(alert.roomId),
+    status: getAlertLifecycleStatus(alert)
+  }));
+  const lifecycleTasks = deviceLifecycleCards.map((card) => ({
+    id: `lifecycle:${card.deviceId}`,
+    label: card.headline,
+    owner: ownerForAction(card.nextAction),
+    source: card.roomName,
+    status: card.status
+  }));
+  return [...alertTasks, ...lifecycleTasks];
+}
+
+function createBehaviorConsistencyWarnings(
+  snapshot: TwinSnapshot,
+  behaviorCards: BehaviorCard[],
+  deviceLifecycleCards: DeviceLifecycleCard[],
+  causalEvents: CausalEventCard[]
+): string[] {
+  const warnings: string[] = [];
+  const humanCards = behaviorCards.filter((card) => snapshot.people[card.personId]?.kind === 'human' && card.roomId !== 'away');
+  const minutes = minutesOfDay(snapshot.simClock.currentTime);
+  if (minutes >= 600 && humanCards.length > 0 && humanCards.every((card) => card.intent === 'rest')) {
+    warnings.push('All household members are still sleeping after the morning routine window.');
+  }
+  if (activeAlerts(snapshot).length > 0 && causalEvents.length === 0) {
+    warnings.push('Active alerts exist without causal explanations.');
+  }
+  if (deviceLifecycleCards.some((card) => card.relatedAlertId === null)) {
+    warnings.push('A device lifecycle task is waiting without an alert workflow.');
+  }
+  return warnings;
+}
+
 function createDeviceControlCards(snapshot: TwinSnapshot, events: TwinEvent[]): DeviceControlCard[] {
   const latestStateChangeByDevice = new Map<string, Extract<TwinEvent, { type: 'DeviceStateChanged' }>>();
-  for (const event of events) {
+  const recentEventsByDevice = new Map<string, DeviceRecentEvent[]>();
+  for (const event of [...events].sort((left, right) => left.sequence - right.sequence)) {
     if (event.type === 'DeviceStateChanged') {
       latestStateChangeByDevice.set(event.deviceId, event);
+      appendDeviceRecentEvent(recentEventsByDevice, event.deviceId, {
+        id: event.id,
+        type: event.type,
+        time: event.simTime,
+        sequence: event.sequence,
+        label: summarizeRecord(event.state),
+        reason: event.reason ?? null
+      });
+    } else if (event.type === 'DeviceTelemetry') {
+      appendDeviceRecentEvent(recentEventsByDevice, event.deviceId, {
+        id: event.id,
+        type: event.type,
+        time: event.simTime,
+        sequence: event.sequence,
+        label: summarizeRecord(event.measurements),
+        reason: event.reason ?? null
+      });
     }
   }
   return Object.values(snapshot.devices)
-    .map((device) => createDeviceControlCard(device, latestStateChangeByDevice.get(device.id)))
+    .map((device) => createDeviceControlCard(device, latestStateChangeByDevice.get(device.id), recentEventsByDevice.get(device.id) ?? []))
     .sort((left, right) => left.roomName.localeCompare(right.roomName) || left.displayName.localeCompare(right.displayName));
 }
 
 function createDeviceControlCard(
   device: DeviceState,
-  latestStateChange: Extract<TwinEvent, { type: 'DeviceStateChanged' }> | undefined
+  latestStateChange: Extract<TwinEvent, { type: 'DeviceStateChanged' }> | undefined,
+  recentEvents: DeviceRecentEvent[]
 ): DeviceControlCard {
   const capability = getDeviceCapability(device.type);
+  const supportedCommands = getDeviceSupportedCommands(device.id, device.type);
+  const commandMetadata = getDeviceCommandMetadataForInstance(device.id, device.type);
   const connectivity = device.state.online === false ? 'offline' : 'online';
   const disabledReason = connectivity === 'offline' ? 'Device is offline' : null;
+  const sortedRecentEvents = recentEvents.slice(-4).reverse();
   return {
     deviceId: device.id,
     displayName: formatDeviceName(device.id),
@@ -643,37 +1129,560 @@ function createDeviceControlCard(
     statusLabel: summarizeDeviceState(device.type, device.state),
     connectivity,
     disabledReason,
-    commandStatus: latestStateChange ? 'acknowledged' : 'none',
-    controls: capability.supportedCommands.map((command) => createDeviceCommandControl(command, device, disabledReason))
+    commandStatus: latestStateChange ? commandStatusForDeviceStateChange(latestStateChange) : 'none',
+    commandTimeline: latestStateChange ? createDeviceCommandTimeline({
+      terminalStatus: commandStatusForDeviceStateChange(latestStateChange) === 'failed' ? 'failed' : 'acknowledged',
+      at: latestStateChange.simTime,
+      reason: latestStateChange.reason ?? null
+    }) : [],
+    lastEventAt: sortedRecentEvents[0]?.time ?? null,
+    recentEvents: sortedRecentEvents,
+    controls: supportedCommands.map((command) => createDeviceCommandControl(command, device, disabledReason, commandMetadata[command]))
   };
 }
 
-function createDeviceCommandControl(command: string, device: DeviceState, disabledReason: string | null): DeviceCommandControl {
-  const field = commandField(command, device.type);
-  const highRisk = isHighRiskCommand(command, device.type);
+function commandStatusForDeviceStateChange(event: Extract<TwinEvent, { type: 'DeviceStateChanged' }>): DeviceControlCard['commandStatus'] {
+  if (event.reason === 'abnormality:network_degraded') {
+    return 'acknowledged';
+  }
+  if (event.reason?.startsWith('abnormality:')) {
+    return 'failed';
+  }
+  return 'acknowledged';
+}
+
+function appendDeviceRecentEvent(
+  eventsByDevice: Map<string, DeviceRecentEvent[]>,
+  deviceId: string,
+  event: DeviceRecentEvent
+): void {
+  const events = eventsByDevice.get(deviceId) ?? [];
+  events.push(event);
+  eventsByDevice.set(deviceId, events);
+}
+
+function summarizeRecord(record: Record<string, string | number | boolean | null>): string {
+  return Object.entries(record)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(', ');
+}
+
+function createDeviceCommandControl(
+  command: string,
+  device: DeviceState,
+  disabledReason: string | null,
+  metadata: ReturnType<typeof getDeviceCapability>['commandMetadata'][string]
+): DeviceCommandControl {
+  const field = metadata.field;
   const base = {
     command,
-    label: commandLabel(command),
+    label: metadata.label,
     field,
     value: field ? device.state[field] ?? null : null,
     disabled: Boolean(disabledReason),
     disabledReason,
-    highRisk
+    highRisk: metadata.highRisk,
+    requiresConfirmation: metadata.requiresConfirmation,
+    valueType: metadata.valueType,
+    failureReasons: [...metadata.failureReasons]
   };
-  if (command.startsWith('set_')) {
-    const options = field ? commandOptions(device, field) : [];
-    if (options.length > 0) {
-      return { ...base, controlType: 'select', options };
-    }
-    return { ...base, controlType: 'slider', min: commandMin(field), max: commandMax(field) };
+  if (metadata.controlType === 'select') {
+    return { ...base, controlType: 'select', options: [...(metadata.options ?? [])] };
   }
-  if (['turn_on', 'turn_off', 'open', 'close', 'lock', 'unlock'].includes(command)) {
-    return { ...base, controlType: 'toggle' };
+  if (metadata.controlType === 'slider') {
+    return { ...base, controlType: 'slider', min: metadata.min ?? 0, max: metadata.max ?? 100 };
   }
-  return { ...base, controlType: 'button' };
+  return { ...base, controlType: metadata.controlType };
 }
 
-function createInsightCards(snapshot: TwinSnapshot, telemetrySeries: DashboardModel['telemetrySeries']): InsightCard[] {
+function createDeviceHealthCards(snapshot: TwinSnapshot, events: TwinEvent[]): DeviceHealthCard[] {
+  const latestSeenAtByDevice = new Map<string, string>();
+  const telemetryHistoryByDevice = new Map<string, Map<string, Array<{ value: number; time: string; sequence: number }>>>();
+  const commandFailuresByDevice = new Map<string, number>();
+  for (const event of [...events].sort((left, right) => left.sequence - right.sequence)) {
+    if (event.type === 'DeviceStateChanged' || event.type === 'DeviceTelemetry') {
+      latestSeenAtByDevice.set(event.deviceId, event.simTime);
+    }
+    if (event.type === 'DeviceStateChanged' && commandStatusForDeviceStateChange(event) === 'failed') {
+      commandFailuresByDevice.set(event.deviceId, (commandFailuresByDevice.get(event.deviceId) ?? 0) + 1);
+    }
+    if (event.type === 'DeviceTelemetry') {
+      appendTelemetryHistory(telemetryHistoryByDevice, event);
+    }
+  }
+
+  return Object.values(snapshot.devices)
+    .flatMap((device) => {
+      const capability = getDeviceCapability(device.type);
+      const healthStatuses = evaluateDeviceHealthSignals(
+        capability.healthSignals,
+        device.state,
+        latestSeenAtByDevice.get(device.id) ?? snapshot.simClock.currentTime,
+        snapshot.simClock.currentTime
+      );
+      const healthCards = healthStatuses
+        .filter((health): health is typeof health & { status: DeviceHealthCard['status'] } => health.status !== 'normal')
+        .map((health) => ({
+          id: deviceHealthSignalId(device.id, health.kind, health.sourceField),
+          deviceId: device.id,
+          displayName: formatDeviceName(device.id),
+          roomName: formatRoomName(device.roomId),
+          signal: health.label,
+          kind: health.kind,
+          status: health.status,
+          priority: healthPriority(health.status, health.impact),
+          sourceField: health.sourceField,
+          reportedValue: health.reportedValue,
+          recommendedAction: health.recommendation,
+          expectedEffect: expectedHealthEffect(health.impact),
+          impact: health.impact,
+          maintenanceAction: maintenanceActionForHealth(health.kind),
+          maintenanceLabel: maintenanceLabelForHealth(health.kind),
+          focusDeviceId: device.id
+        }));
+      return [
+        ...healthCards,
+        ...createCommandFailureHealthCards(device, commandFailuresByDevice.get(device.id) ?? 0),
+        ...createTelemetryDriftHealthCards(device, telemetryHistoryByDevice.get(device.id) ?? new Map())
+      ];
+    })
+    .sort((left, right) => right.priority - left.priority || left.displayName.localeCompare(right.displayName))
+    .slice(0, 8);
+}
+
+function createCommandFailureHealthCards(device: DeviceState, failureCount: number): DeviceHealthCard[] {
+  if (failureCount < 3) {
+    return [];
+  }
+  const capability = getDeviceCapability(device.type);
+  const impact = capability.healthSignals.find((signal) => signal.kind === 'connectivity' || signal.kind === 'latency')?.impact ?? 'automation_reliability';
+  return [{
+    id: `device-health:${device.id}:command_failure`,
+    deviceId: device.id,
+    displayName: formatDeviceName(device.id),
+    roomName: formatRoomName(device.roomId),
+    signal: 'Command failure rate',
+    kind: 'command_failure',
+    status: 'alert',
+    priority: healthPriority('alert', impact) + 6,
+    sourceField: 'commandStatus',
+    reportedValue: `${failureCount} failed commands`,
+    recommendedAction: 'Inspect command routing and device availability before relying on automations.',
+    expectedEffect: expectedHealthEffect(impact),
+    impact,
+    maintenanceAction: maintenanceActionForHealth('command_failure'),
+    maintenanceLabel: maintenanceLabelForHealth('command_failure'),
+    focusDeviceId: device.id
+  }];
+}
+
+function deviceHealthSignalId(deviceId: string, kind: DeviceHealthSignalKind, sourceField: string | null): string {
+  return `device-health:${deviceId}:${kind}${sourceField ? `:${sourceField}` : ''}`;
+}
+
+function appendTelemetryHistory(
+  historyByDevice: Map<string, Map<string, Array<{ value: number; time: string; sequence: number }>>>,
+  event: Extract<TwinEvent, { type: 'DeviceTelemetry' }>
+): void {
+  let deviceHistory = historyByDevice.get(event.deviceId);
+  if (!deviceHistory) {
+    deviceHistory = new Map();
+    historyByDevice.set(event.deviceId, deviceHistory);
+  }
+  for (const [field, value] of Object.entries(event.measurements)) {
+    if (typeof value !== 'number') {
+      continue;
+    }
+    const entries = deviceHistory.get(field) ?? [];
+    entries.push({ value, time: event.simTime, sequence: event.sequence });
+    deviceHistory.set(field, entries);
+  }
+}
+
+function createTelemetryDriftHealthCards(
+  device: DeviceState,
+  telemetryHistory: Map<string, Array<{ value: number; time: string; sequence: number }>>
+): DeviceHealthCard[] {
+  return [...telemetryHistory.entries()]
+    .filter(([field]) => isDriftSensitiveTelemetryField(field))
+    .filter(([, entries]) => isFlatTelemetry(entries))
+    .map(([field, entries]) => {
+      const capability = getDeviceCapability(device.type);
+      const impact = capability.healthSignals.find((signal) => (
+        signal.sourceField === field || signal.sourceField === telemetryFieldToStateField(field)
+      ))?.impact ?? 'automation_reliability';
+      const latest = entries.at(-1);
+      return {
+        id: `device-health:${device.id}:drift:${field}`,
+        deviceId: device.id,
+        displayName: formatDeviceName(device.id),
+        roomName: formatRoomName(device.roomId),
+        signal: 'Reading drift',
+        kind: 'drift' as const,
+        status: 'watch' as const,
+        priority: healthPriority('watch', impact) + 14,
+        sourceField: field,
+        reportedValue: latest?.value ?? null,
+        recommendedAction: 'Calibrate the sensor or inspect whether the reading is stuck.',
+        expectedEffect: expectedHealthEffect(impact),
+        impact,
+        maintenanceAction: maintenanceActionForHealth('drift'),
+        maintenanceLabel: maintenanceLabelForHealth('drift'),
+        focusDeviceId: device.id
+      };
+    });
+}
+
+function isDriftSensitiveTelemetryField(field: string): boolean {
+  const lower = field.toLowerCase();
+  return lower.includes('moisture') || lower.includes('humidity') || lower.includes('temperature') || lower.includes('pm25') || lower.includes('co2');
+}
+
+function isFlatTelemetry(entries: Array<{ value: number; time: string; sequence: number }>): boolean {
+  const recent = entries.slice(-4);
+  if (recent.length < 4) {
+    return false;
+  }
+  const first = recent[0].value;
+  return recent.every((entry) => Math.abs(entry.value - first) <= 0.15);
+}
+
+function telemetryFieldToStateField(field: string): string {
+  return field.replace(/_([a-z])/g, (_, char: string) => char.toUpperCase());
+}
+
+function createPredictionCards(snapshot: TwinSnapshot): PredictionCard[] {
+  return activeAlerts(snapshot)
+    .flatMap((alert) => predictionCardForAlert(alert, snapshot))
+    .sort((left, right) => right.priority - left.priority)
+    .slice(0, 4);
+}
+
+function createForecastTelemetrySeries(predictionCards: PredictionCard[]): ForecastTelemetrySeries[] {
+  return predictionCards.flatMap((card) =>
+    card.forecastPoints.map((point) => ({
+      id: `forecast:${card.alertId}:${point.metric}`,
+      alertId: card.alertId,
+      metric: point.metric,
+      unit: point.unit,
+      horizonMinutes: [0, 5, 10, 15],
+      ignored: [...point.ignored],
+      handledNow: [...point.handledNow],
+      confidenceInterval: structuredClone(point.confidenceInterval)
+    }))
+  );
+}
+
+function predictionCardForAlert(alert: AlertState, snapshot: TwinSnapshot): PredictionCard[] {
+  if (alert.id === 'fridge_left_open_001') {
+    const model = createFridgeForecastModel(snapshot);
+    const forecastPoints = createFridgeForecastPoints(model);
+    const title = 'Fridge door left open forecast';
+    return [{
+      id: `prediction:${alert.id}`,
+      alertId: alert.id,
+      horizon: '15 min',
+      title,
+      forecast: 'Kitchen appliance risk will keep rising if the door remains open.',
+      ifIgnored: 'Fridge power draw stays elevated, kitchen temperature may drift upward, and the alert should escalate.',
+      ifHandledNow: 'adult_1 can close fridge_01 now to return power draw to normal and resolve the alert.',
+      impact: 'energy',
+      roomName: formatRoomName(alert.roomId),
+      relatedDeviceId: 'fridge_01',
+      forecastPoints,
+      forecastModel: model,
+      chart: createForecastChart(alert.id, title, forecastPoints),
+      recoveryEstimate: createFridgeRecoveryEstimate(snapshot, forecastPoints),
+      priority: predictionPriority(alert, 8)
+    }];
+  }
+  if (alert.id === 'network_offline_001') {
+    const forecastPoints = [
+      createForecastPoint('router_latency_ms', 'ms', [0, 0, 0, 0], [0, 80, 32, 18], 'high'),
+      createForecastPoint('video_call_quality_score', '%', [35, 25, 18, 12], [35, 62, 84, 92], 'medium'),
+      createForecastPoint('notification_delay_s', 's', [90, 120, 150, 180], [90, 35, 12, 5], 'medium'),
+      createForecastPoint('automation_ack_delay_s', 's', [45, 75, 110, 150], [45, 18, 8, 4], 'medium')
+    ];
+    const title = 'Network outage forecast';
+    return [{
+      id: `prediction:${alert.id}`,
+      alertId: alert.id,
+      horizon: '15 min',
+      title,
+      forecast: 'Connectivity-dependent automation will remain unreliable until the router recovers.',
+      ifIgnored: 'remote work, notifications, and device command acknowledgement can stay degraded.',
+      ifHandledNow: 'adult_2 can restart router_01 now and restore connectivity-sensitive automations.',
+      impact: 'automation_reliability',
+      roomName: formatRoomName(alert.roomId),
+      relatedDeviceId: 'router_01',
+      forecastPoints,
+      forecastModel: createGenericForecastModel('router_reconnect_model', snapshot),
+      chart: createForecastChart(alert.id, title, forecastPoints),
+      recoveryEstimate: createRouterRecoveryEstimate(snapshot, forecastPoints),
+      priority: predictionPriority(alert, 10)
+    }];
+  }
+  if (alert.id === 'senior_no_activity_001') {
+    const forecastPoints = [
+      createForecastPoint('care_uncertainty_score', '%', [45, 58, 72, 84], [45, 22, 8, 4], 'medium'),
+      createForecastPoint('check_in_urgency_score', '%', [52, 66, 78, 88], [52, 28, 12, 6], 'medium')
+    ];
+    const title = 'Senior activity forecast';
+    return [{
+      id: `prediction:${alert.id}`,
+      alertId: alert.id,
+      horizon: '15 min',
+      title,
+      forecast: 'The care signal remains uncertain until someone checks the room or the sleep sensor clears.',
+      ifIgnored: 'A normal late wake-up and a real inactivity concern remain indistinguishable.',
+      ifHandledNow: 'adult_1 or adult_2 can check on senior_1 and either resolve or escalate the care workflow.',
+      impact: 'care',
+      roomName: formatRoomName(alert.roomId),
+      relatedDeviceId: 'master_sleep_01',
+      forecastPoints,
+      forecastModel: createGenericForecastModel('senior_care_risk_model', snapshot),
+      chart: createForecastChart(alert.id, title, forecastPoints),
+      recoveryEstimate: {
+        operatorId: 'adult_1',
+        action: 'check senior_1',
+        estimatedRecoveryMinutes: 6,
+        impactReductionPercent: estimateImpactReductionPercent(forecastPoints, 70),
+        confidence: 'medium',
+        basis: 'care uncertainty can drop once a family member confirms senior_1 is active or safe.'
+      },
+      priority: predictionPriority(alert, 12)
+    }];
+  }
+  if (alert.id === 'door_left_open_001') {
+    const forecastPoints = [
+      createForecastPoint('entry_exposure_score', '%', [35, 50, 66, 80], [35, 12, 4, 2], 'high')
+    ];
+    const title = 'Entry security forecast';
+    return [{
+      id: `prediction:${alert.id}`,
+      alertId: alert.id,
+      horizon: '15 min',
+      title,
+      forecast: 'The entry remains exposed while the lock and doorbell camera report an unsecured state.',
+      ifIgnored: 'Security mode and package monitoring remain less trustworthy.',
+      ifHandledNow: 'Locking door_lock_01 restores the entry state and clears the security workflow.',
+      impact: 'security',
+      roomName: formatRoomName(alert.roomId),
+      relatedDeviceId: 'door_lock_01',
+      forecastPoints,
+      forecastModel: createGenericForecastModel('entry_exposure_model', snapshot),
+      chart: createForecastChart(alert.id, title, forecastPoints),
+      recoveryEstimate: {
+        operatorId: 'adult_1',
+        action: 'lock door_lock_01',
+        estimatedRecoveryMinutes: 2,
+        impactReductionPercent: estimateImpactReductionPercent(forecastPoints, 75),
+        confidence: 'high',
+        basis: 'entry exposure can drop quickly once the door lock reports secured.'
+      },
+      priority: predictionPriority(alert, 9)
+    }];
+  }
+  return [];
+}
+
+function createFridgeForecastModel(snapshot: TwinSnapshot): ForecastModelDetail {
+  return {
+    kind: 'fridge_thermal_load',
+    season: seasonForTime(snapshot.simClock.currentTime),
+    roomVolumeM3: 42,
+    currentPowerW: Math.round(Number(snapshot.devices.fridge_01?.state.powerW ?? 148)),
+    openMinutes: Math.max(0, Number(snapshot.devices.fridge_01?.state.openMinutes ?? 0)),
+    currentTemperatureC: roundForecastValue(Number(snapshot.rooms.kitchen?.temperatureC ?? snapshot.devices.kitchen_temp_01?.state.temperatureC ?? 25))
+  };
+}
+
+function createGenericForecastModel(kind: string, snapshot: TwinSnapshot): ForecastModelDetail {
+  return {
+    kind,
+    season: seasonForTime(snapshot.simClock.currentTime),
+    roomVolumeM3: null,
+    currentPowerW: null,
+    openMinutes: null,
+    currentTemperatureC: null
+  };
+}
+
+function createFridgeForecastPoints(model: ForecastModelDetail): ForecastPoint[] {
+  const currentPower = model.currentPowerW ?? 148;
+  const currentTemp = model.currentTemperatureC ?? 25;
+  const openMinutes = model.openMinutes ?? 0;
+  const seasonalHeatFactor = model.season === 'summer' ? 1 : model.season === 'winter' ? 0.55 : 0.78;
+  const roomVolumeFactor = 42 / (model.roomVolumeM3 ?? 42);
+  const ignoredPower = openMinutes === 0
+    ? [currentPower, currentPower + 16, currentPower + 28, currentPower + 40]
+    : [currentPower, currentPower + 12, currentPower + 22, currentPower + 30];
+  const handledPower = openMinutes === 0
+    ? [currentPower, 112, 94, 90]
+    : [currentPower, Math.max(112, currentPower - 42), Math.max(94, currentPower - 74), 90];
+  const heatStep = openMinutes === 0
+    ? [0, 0.3, 0.8, 1.2]
+    : [0, 0.5, 1, 1.4].map((value) => value * seasonalHeatFactor * roomVolumeFactor);
+  const recoveryStep = openMinutes === 0
+    ? [0, 0, -0.1, -0.1]
+    : [0, -0.5, -1.2, -1.8].map((value) => value * seasonalHeatFactor);
+  return [
+    createForecastPoint('fridge_power_w', 'W', ignoredPower.map(roundForecastValue), handledPower.map(roundForecastValue), 'medium'),
+    createForecastPoint(
+      'kitchen_temperature_c',
+      'C',
+      heatStep.map((value) => roundForecastValue(currentTemp + value)),
+      recoveryStep.map((value) => roundForecastValue(currentTemp + value)),
+      'medium'
+    )
+  ];
+}
+
+function createForecastChart(alertId: string, title: string, forecastPoints: ForecastPoint[]): ForecastChart {
+  const units = uniqueInOrder(forecastPoints.map((point) => point.unit));
+  return {
+    id: `chart:${alertId}`,
+    title,
+    alertId,
+    horizonMinutes: [0, 5, 10, 15],
+    yAxisLabel: units.join(' / '),
+    series: forecastPoints.map((point) => ({
+      metric: point.metric,
+      label: point.metric.replaceAll('_', ' '),
+      unit: point.unit,
+      ignored: [...point.ignored],
+      handledNow: [...point.handledNow],
+      confidenceInterval: structuredClone(point.confidenceInterval)
+    }))
+  };
+}
+
+function uniqueInOrder(values: string[]): string[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    if (seen.has(value)) {
+      return false;
+    }
+    seen.add(value);
+    return true;
+  });
+}
+
+function seasonForTime(isoTime: string): ForecastModelDetail['season'] {
+  const month = new Date(isoTime).getMonth() + 1;
+  if (month >= 3 && month <= 5) return 'spring';
+  if (month >= 6 && month <= 8) return 'summer';
+  if (month >= 9 && month <= 11) return 'autumn';
+  return 'winter';
+}
+
+function createForecastPoint(
+  metric: string,
+  unit: string,
+  ignored: number[],
+  handledNow: number[],
+  confidence: PredictionRecoveryEstimate['confidence']
+): ForecastPoint {
+  return {
+    metric,
+    unit,
+    ignored,
+    handledNow,
+    confidenceInterval: createForecastConfidenceInterval(ignored, handledNow, confidence)
+  };
+}
+
+function createForecastConfidenceInterval(
+  ignored: number[],
+  handledNow: number[],
+  confidence: PredictionRecoveryEstimate['confidence']
+): ForecastConfidenceInterval {
+  const config = confidence === 'high'
+    ? { levelPercent: 90, spreadPercent: 6 }
+    : confidence === 'medium'
+      ? { levelPercent: 80, spreadPercent: 10 }
+      : { levelPercent: 70, spreadPercent: 16 };
+  const spread = config.spreadPercent / 100;
+  return {
+    ...config,
+    ignoredLow: ignored.map((value) => roundForecastValue(value * (1 - spread))),
+    ignoredHigh: ignored.map((value) => roundForecastValue(value * (1 + spread))),
+    handledNowLow: handledNow.map((value) => roundForecastValue(value * (1 - spread))),
+    handledNowHigh: handledNow.map((value) => roundForecastValue(value * (1 + spread)))
+  };
+}
+
+function roundForecastValue(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function createFridgeRecoveryEstimate(
+  snapshot: TwinSnapshot,
+  forecastPoints: PredictionCard['forecastPoints']
+): PredictionRecoveryEstimate {
+  const openMinutes = Math.max(0, Number(snapshot.devices.fridge_01?.state.openMinutes ?? 0));
+  return {
+    operatorId: 'adult_1',
+    action: 'close fridge_01',
+    estimatedRecoveryMinutes: Math.min(8, 3 + Math.ceil(openMinutes / 6)),
+    impactReductionPercent: estimateImpactReductionPercent(forecastPoints, 50),
+    confidence: openMinutes >= 10 ? 'medium' : 'high',
+    basis: `fridge_01 has been open for ${openMinutes} min, so recovery includes walking over, closing the door, and compressor normalization.`
+  };
+}
+
+function createRouterRecoveryEstimate(
+  snapshot: TwinSnapshot,
+  forecastPoints: PredictionCard['forecastPoints']
+): PredictionRecoveryEstimate {
+  const phase = String(snapshot.devices.router_01?.state.lifecyclePhase ?? 'offline');
+  const phaseMinutes: Record<string, number> = {
+    degraded: 3,
+    offline: 4,
+    restarting: 3,
+    reconnecting: 2,
+    recovered: 1,
+    online: 1
+  };
+  return {
+    operatorId: 'adult_2',
+    action: 'restart router_01',
+    estimatedRecoveryMinutes: phaseMinutes[phase] ?? 4,
+    impactReductionPercent: estimateImpactReductionPercent(forecastPoints, 65),
+    confidence: phase === 'offline' || phase === 'restarting' || phase === 'reconnecting' ? 'high' : 'medium',
+    basis: `router_01 is ${phase}, so recovery follows the router restart and reconnect lifecycle.`
+  };
+}
+
+function estimateImpactReductionPercent(
+  forecastPoints: PredictionCard['forecastPoints'],
+  fallback: number
+): number {
+  const reductions = forecastPoints.flatMap((point) => {
+    const ignored = point.ignored.at(-1);
+    const handled = point.handledNow.at(-1);
+    if (ignored === undefined || handled === undefined || ignored <= 0 || handled >= ignored) {
+      return [];
+    }
+    return [Math.round(((ignored - handled) / ignored) * 100)];
+  });
+  if (reductions.length === 0) {
+    return fallback;
+  }
+  return Math.max(...reductions);
+}
+
+function predictionPriority(alert: AlertState, boost: number): number {
+  const severityScore = alert.severity === 'high' ? 80 : alert.severity === 'warning' ? 60 : 40;
+  const statusBoost = alert.status === 'acknowledged' ? -8 : 0;
+  return severityScore + boost + statusBoost;
+}
+
+function createInsightCards(
+  snapshot: TwinSnapshot,
+  telemetrySeries: DashboardModel['telemetrySeries'],
+  deviceHealthCards: DeviceHealthCard[]
+): InsightCard[] {
   const telemetryInsights = telemetrySeries.map((series) => {
     const deviceId = series.id.split(':')[0] ?? '';
     const metric = series.id.split(':')[1] ?? '';
@@ -692,23 +1701,67 @@ function createInsightCards(snapshot: TwinSnapshot, telemetrySeries: DashboardMo
       status: series.thresholdStatus
     };
   });
-  const healthInsights = Object.values(snapshot.devices)
-    .filter((device) => isDeviceTypeAbnormal(device.type, device.state) || device.state.online === false)
-    .map((device) => ({
-      id: `device:${device.id}`,
+  const healthInsights = deviceHealthCards
+    .slice(0, 4)
+    .map((card) => ({
+      id: card.id,
       category: 'device_health' as const,
-      priority: device.state.online === false ? 88 : 70,
-      title: `${formatDeviceName(device.id)} needs attention`,
-      reason: summarizeDeviceState(device.type, device.state),
-      recommendedAction: device.state.online === false ? 'Check connectivity or restart the device' : 'Inspect the device state',
-      expectedEffect: 'Restores reliable automation input and command execution.',
-      roomName: formatRoomName(device.roomId),
-      relatedDeviceId: device.id,
-      status: 'alert' as const
+      priority: card.priority,
+      title: `${card.displayName} ${card.signal.toLowerCase()}`,
+      reason: `${card.signal}: ${String(card.reportedValue)}`,
+      recommendedAction: card.recommendedAction,
+      expectedEffect: card.expectedEffect,
+      roomName: card.roomName,
+      relatedDeviceId: card.focusDeviceId,
+      status: card.status
     }));
   return [...healthInsights, ...telemetryInsights]
     .sort((left, right) => right.priority - left.priority)
     .slice(0, 8);
+}
+
+function healthPriority(status: DeviceHealthCard['status'], impact: DeviceHealthImpact): number {
+  const statusScore = status === 'alert' ? 86 : 58;
+  const impactBoost: Record<DeviceHealthImpact, number> = {
+    automation_reliability: 8,
+    care: 9,
+    comfort: 5,
+    energy: 3,
+    safety: 7,
+    security: 10,
+    water: 8
+  };
+  return statusScore + impactBoost[impact];
+}
+
+function expectedHealthEffect(impact: DeviceHealthImpact): string {
+  if (impact === 'automation_reliability') return 'Automation and command execution should become reliable again.';
+  if (impact === 'security') return 'Security coverage should return to the expected level.';
+  if (impact === 'water') return 'Water safety and irrigation decisions should become reliable again.';
+  if (impact === 'comfort') return 'Comfort automation should have trustworthy readings again.';
+  if (impact === 'care') return 'Care monitoring should regain a reliable signal.';
+  if (impact === 'energy') return 'Energy and appliance behavior should be easier to trust.';
+  return 'The device should provide dependable home state again.';
+}
+
+function maintenanceActionForHealth(kind: DeviceHealthSignalKind): DeviceHealthCard['maintenanceAction'] {
+  if (kind === 'connectivity' || kind === 'latency') return 'restart';
+  if (kind === 'battery') return 'replace_or_recharge';
+  if (kind === 'drift' || kind === 'range') return 'calibrate';
+  if (kind === 'command_failure' || kind === 'staleness') return 'inspect';
+  return 'monitor';
+}
+
+function maintenanceLabelForHealth(kind: DeviceHealthSignalKind): string {
+  if (kind === 'command_failure') return 'Inspect command path';
+  const labels: Record<DeviceHealthCard['maintenanceAction'], string> = {
+    restart: 'Restart or reconnect',
+    replace_or_recharge: 'Replace or recharge',
+    calibrate: 'Calibrate reading',
+    inspect: 'Inspect signal',
+    monitor: 'Monitor trend'
+  };
+  return labels[maintenanceActionForHealth(kind)];
 }
 
 function createHouseholdActivity(snapshot: TwinSnapshot): HouseholdActivity {
@@ -995,44 +2048,6 @@ function getAlertLifecycleStatus(alert: AlertState): AlertLifecycleStatus {
   return alert.status ?? 'active';
 }
 
-function commandField(command: string, deviceType: string): string | null {
-  if (command === 'set_brightness') return 'brightness';
-  if (command === 'set_position') return 'positionPercent';
-  if (command === 'set_target') return 'targetC';
-  if (command === 'set_level') return 'level';
-  if (command === 'set_speed') return 'speed';
-  if (command === 'turn_on' || command === 'turn_off') return 'power';
-  if (command === 'open' || command === 'close') return deviceType === 'curtain' ? 'positionPercent' : 'valveOpen';
-  if (command === 'lock' || command === 'unlock') return 'locked';
-  return null;
-}
-
-function commandLabel(command: string): string {
-  return sentenceCase(command.replaceAll('_', ' '));
-}
-
-function isHighRiskCommand(command: string, deviceType: string): boolean {
-  return deviceType === 'door_lock' || deviceType === 'water_valve' && command === 'open' || deviceType === 'stove' && command !== 'turn_off';
-}
-
-function commandOptions(device: DeviceState, field: string): string[] {
-  if (field === 'mode' && device.type === 'air_conditioner') {
-    return ['auto', 'cool', 'heat', 'fan'];
-  }
-  return [];
-}
-
-function commandMin(field: string | null): number {
-  if (field === 'targetC') return 16;
-  return 0;
-}
-
-function commandMax(field: string | null): number {
-  if (field === 'targetC') return 30;
-  if (field === 'level' || field === 'speed') return 5;
-  return 100;
-}
-
 function insightCategory(metric: string, deviceType: string | undefined): InsightCard['category'] {
   if (metric.includes('flow') || metric.includes('total') || deviceType?.includes('water')) return 'water';
   if (metric.includes('power')) return 'energy';
@@ -1179,70 +2194,57 @@ function enrichTelemetrySeries(
   };
 }
 
-function isDeviceActive(type: string, state: Record<string, string | number | boolean | null>): boolean {
-  if (type === 'door_lock') return state.locked === false;
-  if (type === 'light') return state.power === 'on';
-  if (type === 'tv') return state.power === 'on';
-  if (type === 'fridge') return state.doorOpen === true || Number(state.powerW ?? 0) > 100;
-  if (type === 'stove') return Number(state.powerW ?? 0) > 0;
-  if (type === 'range_hood') return state.power === 'on' || Number(state.speed ?? 0) > 0;
-  if (type === 'doorbell_camera') return state.motion === true || state.ringing === true;
-  if (type === 'package_sensor') return state.packagePresent === true;
-  if (type === 'robot_vacuum') return state.status === 'cleaning' || state.status === 'stuck';
-  if (type === 'curtain') return Number(state.positionPercent ?? 0) > 0;
-  if (type === 'smoke_sensor') return state.smokeDetected === true || Number(state.density ?? 0) > 0;
-  if (type === 'dishwasher') return state.status === 'running' || state.status === 'done' || Number(state.powerW ?? 0) > 0;
-  if (type === 'air_conditioner') return state.power === 'on';
-  if (type === 'router') return state.online !== true || Number(state.latencyMs ?? 0) > 100;
-  if (type === 'washer') return state.status === 'running' || state.status === 'done' || Number(state.powerW ?? 0) > 0;
-  if (type === 'security_camera') return state.motion === true || state.recording === true;
-  if (type === 'water_flow_sensor') return Number(state.flowLMin ?? 0) > 0;
-  if (type === 'water_leak_sensor') return state.leakDetected === true;
-  if (type === 'water_valve') return state.valveOpen === true;
-  if (type === 'sprinkler') return state.valveOpen === true;
-  if (type === 'sleep_sensor') return state.inBed === true;
-  if (type === 'motion_sensor') return state.motion === true;
-  return false;
-}
-
-function getDeviceLabel(deviceId: string): string {
-  const labels: Record<string, string> = {
-    door_lock_01: 'Lock',
-    entrance_motion_01: 'Motion',
-    doorbell_camera_01: 'Doorbell',
-    package_sensor_01: 'Package',
-    living_light_01: 'Light',
-    tv_01: 'TV',
-    living_motion_01: 'Motion',
-    robot_vacuum_01: 'Vacuum',
-    living_curtain_01: 'Curtain',
-    kitchen_light_01: 'Light',
-    kitchen_temp_01: 'Temp',
-    fridge_01: 'Fridge',
-    stove_01: 'Stove',
-    range_hood_01: 'Hood',
-    pm25_01: 'Air',
-    smoke_01: 'Smoke',
-    dishwasher_01: 'Dish',
-    dining_light_01: 'Light',
-    master_sleep_01: 'Sleep',
-    master_ac_01: 'AC',
-    child_sleep_01: 'Sleep',
-    study_co2_01: 'CO2',
-    router_01: 'Router',
-    bathroom_water_01: 'Water',
-    water_leak_01: 'Leak',
-    water_valve_01: 'Valve',
-    washer_01: 'Washer',
-    garden_soil_01: 'Soil',
-    garden_camera_01: 'Camera',
-    sprinkler_01: 'Sprinkler'
-  };
-  return labels[deviceId] ?? deviceId;
-}
-
 function formatPerson(personId: string): string {
   return personLabels[personId] ?? personId.replaceAll('_', ' ');
+}
+
+function formatBehaviorText(value: string): string {
+  return value.replaceAll('_', ' ');
+}
+
+function formatBehaviorTarget(target: string): string {
+  const device = devicesById.get(target);
+  if (device) {
+    return device.name;
+  }
+  if (target === 'away') {
+    return 'Away';
+  }
+  if (roomsById.has(target as RoomId)) {
+    return formatRoomName(target as RoomId);
+  }
+  return formatBehaviorText(target);
+}
+
+function behaviorPriority(personId: string, intent: string, routinePhase: string, energy: number): number {
+  const intentPriority: Record<string, number> = {
+    focused_remote_work: 90,
+    finish_homework: 82,
+    decompress_after_commute: 74,
+    care_for_plants: 68,
+    needs_check_in: 96,
+    explore_home: 45,
+    rest: 20
+  };
+  const phaseBoost = routinePhase === 'wellness_watch' ? 30 : routinePhase === 'workday' ? 12 : routinePhase === 'after_school' ? 10 : routinePhase === 'evening_return' ? 8 : 0;
+  const personBoost = personId === 'pet_1' ? -18 : 0;
+  return (intentPriority[intent] ?? 40) + phaseBoost + personBoost + Math.round(energy / 20);
+}
+
+function lifecycleRecommendedAction(deviceType: string): string {
+  if (deviceType === 'washer') return 'move_laundry_to_dryer';
+  return 'empty_dishwasher';
+}
+
+function lifecycleHeadline(displayName: string, deviceType: string): string {
+  if (deviceType === 'washer') return `${displayName} needs unloading`;
+  return `${displayName} needs unloading`;
+}
+
+function lifecyclePriority(deviceType: string): number {
+  if (deviceType === 'washer') return 64;
+  if (deviceType === 'dishwasher') return 62;
+  return 50;
 }
 
 function formatRoomName(roomId: RoomId | 'away'): string {
@@ -1251,7 +2253,7 @@ function formatRoomName(roomId: RoomId | 'away'): string {
 }
 
 function formatDeviceName(deviceId: string): string {
-  return devicesById.get(deviceId)?.name ?? getDeviceLabel(deviceId);
+  return devicesById.get(deviceId)?.name ?? deviceId;
 }
 
 function formatActivity(value: string): string {
@@ -1451,4 +2453,22 @@ function sentenceCase(value: string): string {
 
 function uniqueSorted(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))].sort((left, right) => left.localeCompare(right));
+}
+
+function uniqueRoomIds(values: RoomId[]): RoomId[] {
+  return [...new Set(values)];
+}
+
+function minutesOfDay(isoTime: string): number {
+  const date = new Date(isoTime);
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+function ownerForAction(action: string): string {
+  const normalized = action.replaceAll(' ', '_');
+  if (normalized.includes('homework')) return 'Student';
+  if (normalized.includes('senior') || normalized.includes('check_in')) return 'Senior family member';
+  if (normalized.includes('router') || normalized.includes('network')) return 'Hybrid work adult';
+  if (normalized.includes('laundry') || normalized.includes('dishwasher') || normalized.includes('fridge')) return 'Commuter adult';
+  return 'Household';
 }

@@ -7,12 +7,38 @@ describe('device adapter boundary', () => {
     deviceId: 'router_01',
     roomId: 'study',
     deviceType: 'router',
-    displayName: 'Router',
+    displayName: 'Home Router',
+    shortLabel: 'Router',
+    instanceGroup: 'network_infrastructure',
+    privacyLevel: 'household',
+    riskLevel: 'confirmation',
+    visualModel: 'router_antennas',
+    visualScale: 0.95,
+    pose: {
+      x: 4.25,
+      y: 0.28,
+      z: -1.25,
+      rotation: 0,
+      mount: 'counter',
+      visualVariant: null
+    },
     protocol: 'simulated',
     desiredState: { online: true, latencyMs: 18 },
     reportedState: { online: false, latencyMs: 0 },
     stateFields: {},
     supportedCommands: ['restart'],
+    commandMetadata: {
+      restart: {
+        label: 'Restart router',
+        controlType: 'button',
+        valueType: 'none',
+        field: null,
+        highRisk: false,
+        requiresConfirmation: true,
+        lifecycle: ['requested', 'sent', 'acknowledged', 'failed', 'rolled_back'],
+        failureReasons: ['offline', 'unsupported', 'invalid_params', 'device_rejected', 'timeout']
+      }
+    },
     connectivity: 'offline',
     lastSeenAt: '2026-06-19T08:00:00+08:00',
     dataQuality: {
@@ -25,8 +51,22 @@ describe('device adapter boundary', () => {
       status: 'failed',
       requestedAt: '2026-06-19T08:00:00+08:00',
       acknowledgedAt: null,
-      reason: 'abnormality:network_offline'
-    }
+      reason: 'abnormality:network_offline',
+      timeline: [
+        { status: 'requested', at: '2026-06-19T08:00:00+08:00', reason: null },
+        { status: 'sent', at: '2026-06-19T08:00:00+08:00', reason: null },
+        { status: 'failed', at: '2026-06-19T08:00:00+08:00', reason: 'abnormality:network_offline' }
+      ]
+    },
+    healthStatus: [{
+      kind: 'connectivity',
+      label: 'Connectivity',
+      sourceField: 'online',
+      status: 'alert',
+      reportedValue: false,
+      recommendation: 'Check connectivity or restart the device before relying on related automation.',
+      impact: 'automation_reliability'
+    }]
   };
 
   it('creates adapter state reports from reported device state', () => {

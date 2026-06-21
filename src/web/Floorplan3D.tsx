@@ -5,6 +5,7 @@ import { Bell, CircuitBoard, RotateCcw, Thermometer, Users } from 'lucide-react'
 import * as THREE from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import type { RoomId } from '../shared/types';
+import { DeviceGeometry, getDeviceVisualColor, type DeviceActivityTreatment } from './deviceVisuals/DeviceGeometry';
 import { fixtureLayouts, roomConnectionOpenings, wallSegments, type FixtureLayout, type RoomConnectionOpening, type WallSegment } from './floorplanLayout';
 import { selectVisibleFloorplanDevices, type Floorplan3DDevice, type Floorplan3DModel, type Floorplan3DPerson, type Floorplan3DRoom, type FloorplanAutomationLink, type FloorplanDeviceDisplayMode, type PersonVisualStyle } from './floorplan3dModel';
 
@@ -57,6 +58,27 @@ export interface RoomVisualTreatment {
   floorAccentOpacity: number;
 }
 
+export function getDeviceActivityTreatment({
+  active,
+  abnormal,
+  selected,
+  replayFocused
+}: {
+  active: boolean;
+  abnormal: boolean;
+  selected: boolean;
+  replayFocused: boolean;
+}): DeviceActivityTreatment {
+  const focusBoost = replayFocused ? 0.24 : selected ? 0.18 : 0;
+  return {
+    scaleMultiplier: 1 + focusBoost,
+    ringOuterRadius: replayFocused ? 0.42 : selected ? 0.34 : 0.28,
+    ringOpacity: replayFocused ? 0.62 : selected ? 0.45 : 0.26,
+    emissiveIntensity: abnormal ? 0.46 : active ? 0.28 : replayFocused ? 0.2 : 0.08,
+    pulseStrength: replayFocused ? 0.07 : abnormal ? 0.045 : 0
+  };
+}
+
 export function getRoomVisualTreatment({
   selected,
   occupied,
@@ -98,16 +120,34 @@ export function getRoomVisualTreatment({
   };
 }
 
+export interface DeviceHoverPreview {
+  title: string;
+  details: string[];
+}
+
+export function formatDeviceHoverPreview(device: Floorplan3DDevice): DeviceHoverPreview {
+  return {
+    title: device.displayName,
+    details: [
+      `Room: ${device.roomId.replaceAll('_', ' ')}`,
+      `Status: ${device.statusLabel}`,
+      device.recentEventLabel ? `Recent: ${device.recentEventLabel}` : 'Recent: no recent device event',
+      device.interactionHint
+    ]
+  };
+}
+
 interface Floorplan3DProps {
   model: Floorplan3DModel;
   layers: FloorplanLayers;
   selected: FloorplanSelection;
   deviceDisplayMode: FloorplanDeviceDisplayMode;
+  replayFocusDeviceId?: string | null;
   onToggleLayer: (layer: keyof FloorplanLayers) => void;
   onSelect: (selection: FloorplanSelection) => void;
 }
 
-export function Floorplan3D({ model, layers, selected, deviceDisplayMode, onToggleLayer, onSelect }: Floorplan3DProps): React.ReactElement {
+export function Floorplan3D({ model, layers, selected, deviceDisplayMode, replayFocusDeviceId = null, onToggleLayer, onSelect }: Floorplan3DProps): React.ReactElement {
   const controlsRef = React.useRef<OrbitControlsImpl | null>(null);
   const cameraAutoFrameRef = React.useRef(createCameraAutoFrameState('overview'));
   const handleManualCameraControl = React.useCallback(() => {
@@ -142,7 +182,7 @@ export function Floorplan3D({ model, layers, selected, deviceDisplayMode, onTogg
       >
         <color attach="background" args={['#edf4f2']} />
         <SceneLighting model={model} />
-        <FloorplanScene model={model} layers={layers} selected={selected} deviceDisplayMode={deviceDisplayMode} onSelect={onSelect} />
+        <FloorplanScene model={model} layers={layers} selected={selected} deviceDisplayMode={deviceDisplayMode} replayFocusDeviceId={replayFocusDeviceId} onSelect={onSelect} />
         <CameraController
           model={model}
           selected={selected}
@@ -171,8 +211,8 @@ export function Floorplan3D({ model, layers, selected, deviceDisplayMode, onTogg
   );
 }
 
-function FloorplanScene({ model, layers, selected, deviceDisplayMode, onSelect }: Omit<Floorplan3DProps, 'onToggleLayer'>): React.ReactElement {
-  const visibleDevices = selectVisibleFloorplanDevices(model.devices, deviceDisplayMode, selected);
+function FloorplanScene({ model, layers, selected, deviceDisplayMode, replayFocusDeviceId, onSelect }: Omit<Floorplan3DProps, 'onToggleLayer'>): React.ReactElement {
+  const visibleDevices = selectVisibleFloorplanDevices(model.devices, deviceDisplayMode, selected, replayFocusDeviceId ?? null);
 
   return (
     <group rotation={[0, -0.18, 0]}>
@@ -214,6 +254,7 @@ function FloorplanScene({ model, layers, selected, deviceDisplayMode, onSelect }
           key={device.id}
           device={device}
           selected={selected?.type === 'device' && selected.id === device.id}
+          replayFocused={replayFocusDeviceId === device.id}
           onSelect={() => onSelect({ type: 'device', id: device.id })}
         />
       )) : null}
@@ -412,8 +453,10 @@ function FixtureMesh({ fixture }: { fixture: FixtureLayout }): React.ReactElemen
 function PersonMarker({ person }: { person: Floorplan3DPerson }): React.ReactElement {
   const groupRef = React.useRef<THREE.Group>(null);
   const movementKey = React.useMemo(
-    () => person.movementPath.map((point) => `${point.x.toFixed(2)},${point.z.toFixed(2)}`).join('|'),
-    [person.movementPath]
+    () => person.movementSegments.length > 0
+      ? person.movementSegments.map((segment) => `${segment.startedAt}:${segment.endedAt}:${segment.from.x.toFixed(2)},${segment.from.z.toFixed(2)}>${segment.to.x.toFixed(2)},${segment.to.z.toFixed(2)}`).join('|')
+      : person.movementPath.map((point) => `${point.x.toFixed(2)},${point.z.toFixed(2)}`).join('|'),
+    [person.movementPath, person.movementSegments]
   );
   const animationRef = React.useRef({ key: '', startedAt: 0 });
 
@@ -424,21 +467,38 @@ function PersonMarker({ person }: { person: Floorplan3DPerson }): React.ReactEle
       animationRef.current = { key: movementKey, startedAt: clock.elapsedTime };
     }
     const baseY = person.visualStyle.form === 'pet' ? 0.12 : 0.08;
-    const bob = Math.sin(clock.elapsedTime * (person.visualStyle.form === 'pet' ? 3.1 : 2.4) + person.id.length) * 0.018;
-    if (person.recent && path.length >= 2) {
+    const activeSegment = person.movementSegments.find((segment) => segment.progress > 0 && segment.progress < 1) ?? person.movementSegments.at(-1);
+    if (person.recent && activeSegment) {
+      const segmentProgress = activeSegment.progress > 0 && activeSegment.progress < 1
+        ? activeSegment.progress
+        : Math.min((clock.elapsedTime - animationRef.current.startedAt) / Math.max(0.6, activeSegment.travelMinutes || 0.6), 1);
+      const eased = easeInOutCubic(segmentProgress);
+      groupRef.current.position.set(lerp(activeSegment.from.x, activeSegment.to.x, eased), baseY, lerp(activeSegment.from.z, activeSegment.to.z, eased));
+    } else if (person.recent && path.length >= 2) {
       const progress = Math.min((clock.elapsedTime - animationRef.current.startedAt) / 1.25, 1);
       const eased = easeInOutCubic(progress);
       const from = path[0];
       const to = path[path.length - 1];
-      groupRef.current.position.set(lerp(from.x, to.x, eased), baseY + bob, lerp(from.z, to.z, eased));
+      groupRef.current.position.set(lerp(from.x, to.x, eased), baseY, lerp(from.z, to.z, eased));
     } else {
-      groupRef.current.position.set(person.x, baseY + bob, person.z);
+      groupRef.current.position.set(person.x, baseY, person.z);
     }
   });
 
   return (
     <group ref={groupRef} position={[person.x, person.visualStyle.form === 'pet' ? 0.12 : 0.08, person.z]}>
-      {person.movementTrailVisible && person.recent && person.movementPath.length >= 2 ? (
+      {person.movementTrailVisible && person.recent && person.movementSegments.length > 0 ? (
+        <Line
+          points={person.movementSegments.flatMap((segment) => [
+            [segment.from.x - person.x, -0.29, segment.from.z - person.z] as [number, number, number],
+            [segment.to.x - person.x, -0.29, segment.to.z - person.z] as [number, number, number]
+          ])}
+          color="#185a89"
+          lineWidth={1.3}
+          transparent
+          opacity={0.36}
+        />
+      ) : person.movementTrailVisible && person.recent && person.movementPath.length >= 2 ? (
         <Line
           points={person.movementPath.map((point) => [point.x - person.x, -0.29, point.z - person.z] as [number, number, number])}
           color="#185a89"
@@ -530,30 +590,44 @@ function PetFigure({ style, recent }: { style: PersonVisualStyle; recent: boolea
   );
 }
 
-function DeviceMarker({ device, selected, onSelect }: { device: Floorplan3DDevice; selected: boolean; onSelect: () => void }): React.ReactElement {
-  const color = getDeviceColor(device);
+function DeviceMarker({ device, selected, replayFocused, onSelect }: { device: Floorplan3DDevice; selected: boolean; replayFocused: boolean; onSelect: () => void }): React.ReactElement {
+  const color = getDeviceVisualColor(device);
   const groupRef = React.useRef<THREE.Group>(null);
+  const [hovered, setHovered] = React.useState(false);
+  const hoverPreview = formatDeviceHoverPreview(device);
+  const treatment = getDeviceActivityTreatment({
+    active: device.active,
+    abnormal: device.abnormal,
+    selected,
+    replayFocused
+  });
 
   useFrame(({ clock }) => {
     if (!groupRef.current) return;
-    const pulse = device.animationHint === 'pulse' || device.abnormal
-      ? Math.sin(clock.elapsedTime * 3.5) * 0.045
-      : 0;
-    const vibe = device.animationHint === 'vibrate'
+    const animated = device.active || device.abnormal || replayFocused;
+    const vibe = device.animationHint === 'vibrate' && animated
       ? Math.sin(clock.elapsedTime * 28) * 0.012
       : 0;
-    const patrol = device.animationHint === 'patrol'
+    const patrol = device.animationHint === 'patrol' && animated
       ? Math.sin(clock.elapsedTime * 1.1) * 0.18
       : 0;
-    groupRef.current.position.set(device.x + patrol + vibe, device.y + pulse, device.z + vibe);
-    if (device.animationHint === 'rotate') {
-      groupRef.current.rotation.y = clock.elapsedTime * 1.6;
-    }
+    groupRef.current.position.set(device.x + patrol + vibe, device.y, device.z + vibe);
+    groupRef.current.rotation.y = device.rotation + (device.animationHint === 'rotate' ? clock.elapsedTime * 1.6 : 0);
   });
 
   function handleClick(event: ThreeEvent<MouseEvent>): void {
     event.stopPropagation();
     onSelect();
+  }
+
+  function handlePointerOver(event: ThreeEvent<PointerEvent>): void {
+    event.stopPropagation();
+    setHovered(true);
+  }
+
+  function handlePointerOut(event: ThreeEvent<PointerEvent>): void {
+    event.stopPropagation();
+    setHovered(false);
   }
 
   function handleDomClick(event: React.MouseEvent<HTMLButtonElement>): void {
@@ -562,76 +636,39 @@ function DeviceMarker({ device, selected, onSelect }: { device: Floorplan3DDevic
   }
 
   return (
-    <group ref={groupRef} position={[device.x, device.y, device.z]}>
-      <DeviceGeometry device={device} color={color} selected={selected} onClick={handleClick} />
+    <group ref={groupRef} position={[device.x, device.y, device.z]} rotation={[0, device.rotation, 0]} onPointerOver={handlePointerOver} onPointerOut={handlePointerOut}>
+      <DeviceGeometry device={device} color={color} treatment={treatment} onClick={handleClick} />
       <mesh position={[0, -0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[0.2, selected ? 0.34 : 0.28, 28]} />
-        <meshBasicMaterial color={color} transparent opacity={selected ? 0.45 : 0.26} />
+        <ringGeometry args={[0.2, treatment.ringOuterRadius, 28]} />
+        <meshBasicMaterial color={color} transparent opacity={treatment.ringOpacity} />
       </mesh>
       {device.animationHint === 'airflow' ? <Airflow color={color} /> : null}
+      {device.animationHint === 'waterflow' ? <Waterflow active={device.active || device.abnormal} /> : null}
+      {device.animationHint === 'open_close' ? <OpenCloseSweep color={color} active={device.active || device.abnormal} /> : null}
       {device.animationHint === 'scan' ? <ScanCone color={color} /> : null}
       {device.animationHint === 'glow' ? <pointLight position={[0, 0.25, 0]} intensity={0.42} distance={1.7} color={color} /> : null}
       <Html center position={[0, 0.34, 0]}>
-        <button className={`device-label kind-${device.markerKind} anim-${device.animationHint} ${device.abnormal ? 'alert' : ''}`} title={`${device.label} in ${device.roomId.replaceAll('_', ' ')} - ${device.statusLabel}`} onClick={handleDomClick}>
+        <button
+          className={`device-label kind-${device.markerKind} anim-${device.animationHint} operability-${device.operability} ${device.abnormal ? 'alert' : ''} ${replayFocused ? 'replay-focus' : ''}`}
+          title={[hoverPreview.title, ...hoverPreview.details].join(' - ')}
+          onClick={handleDomClick}
+          onMouseEnter={() => setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
+          onFocus={() => setHovered(true)}
+          onBlur={() => setHovered(false)}
+        >
           {device.label}
         </button>
       </Html>
+      {hovered ? (
+        <Html center position={[0, 0.68, 0]}>
+          <div className="device-hover-preview" role="tooltip">
+            <strong>{hoverPreview.title}</strong>
+            {hoverPreview.details.map((detail) => <span key={detail}>{detail}</span>)}
+          </div>
+        </Html>
+      ) : null}
     </group>
-  );
-}
-
-function DeviceGeometry({
-  device,
-  color,
-  selected,
-  onClick
-}: {
-  device: Floorplan3DDevice;
-  color: string;
-  selected: boolean;
-  onClick: (event: ThreeEvent<MouseEvent>) => void;
-}): React.ReactElement {
-  const scale = selected ? 1.18 : 1;
-  const material = <meshStandardMaterial color={color} emissive={color} emissiveIntensity={device.active || device.abnormal ? 0.28 : 0.08} roughness={0.46} metalness={0.12} />;
-
-  if (device.markerKind === 'appliance') {
-    return (
-      <mesh scale={scale} onClick={onClick} castShadow>
-        <boxGeometry args={[0.24, 0.22, 0.18]} />
-        {material}
-      </mesh>
-    );
-  }
-  if (device.markerKind === 'mobile') {
-    return (
-      <mesh scale={scale} onClick={onClick} rotation={[Math.PI / 2, 0, 0]} castShadow>
-        <cylinderGeometry args={[0.14, 0.14, 0.08, 32]} />
-        {material}
-      </mesh>
-    );
-  }
-  if (device.markerKind === 'security') {
-    return (
-      <mesh scale={scale} onClick={onClick} rotation={[0, 0, Math.PI / 2]} castShadow>
-        <coneGeometry args={[0.13, 0.26, 24]} />
-        {material}
-      </mesh>
-    );
-  }
-  if (device.markerKind === 'actuator') {
-    return (
-      <mesh scale={scale} onClick={onClick} castShadow>
-        <cylinderGeometry args={[0.11, 0.11, 0.2, 6]} />
-        {material}
-      </mesh>
-    );
-  }
-
-  return (
-    <mesh scale={scale} onClick={onClick} castShadow>
-      <sphereGeometry args={[0.13, 24, 24]} />
-      {material}
-    </mesh>
   );
 }
 
@@ -675,6 +712,57 @@ function Airflow({ color }: { color: string }): React.ReactElement {
           opacity={0.42}
         />
       ))}
+    </group>
+  );
+}
+
+function Waterflow({ active }: { active: boolean }): React.ReactElement {
+  const opacity = active ? 0.68 : 0.32;
+  return (
+    <group position={[0.02, 0.03, 0]}>
+      {[0, 1, 2].map((index) => (
+        <Line
+          key={index}
+          points={[
+            [-0.18, index * 0.025, -0.1],
+            [-0.02, index * 0.025 + 0.035, 0],
+            [0.18, index * 0.025, 0.1]
+          ]}
+          color="#2a7ba8"
+          lineWidth={active ? 1.2 : 0.75}
+          transparent
+          opacity={opacity}
+        />
+      ))}
+      {active ? (
+        <mesh position={[0, -0.01, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+          <ringGeometry args={[0.08, 0.26, 28]} />
+          <meshBasicMaterial color="#2a7ba8" transparent opacity={0.2} />
+        </mesh>
+      ) : null}
+    </group>
+  );
+}
+
+function OpenCloseSweep({ color, active }: { color: string; active: boolean }): React.ReactElement {
+  return (
+    <group position={[0, 0.02, 0]}>
+      <Line
+        points={[
+          [-0.2, 0, -0.16],
+          [-0.08, 0.035, -0.02],
+          [0.06, 0.045, 0.12],
+          [0.2, 0, 0.18]
+        ]}
+        color={color}
+        lineWidth={active ? 1.25 : 0.8}
+        transparent
+        opacity={active ? 0.58 : 0.28}
+      />
+      <mesh position={[0.19, 0, 0.18]}>
+        <sphereGeometry args={[0.025, 10, 10]} />
+        <meshBasicMaterial color={color} transparent opacity={active ? 0.72 : 0.36} />
+      </mesh>
     </group>
   );
 }
@@ -865,19 +953,6 @@ function getRoomMaterial(room: Floorplan3DRoom): { litColor: string; roughness: 
   if (room.materialKind === 'carpet') return { litColor: '#f0d9ba', roughness: 0.96, metalness: 0 };
   if (room.materialKind === 'stone') return { litColor: '#eadbb9', roughness: 0.72, metalness: 0.03 };
   return { litColor: '#f2dfb0', roughness: 0.78, metalness: 0.01 };
-}
-
-function getDeviceColor(device: Floorplan3DDevice): string {
-  if (device.abnormal) return '#bc2f2f';
-  if (device.markerKind === 'sensor') return '#2b7c93';
-  if (device.markerKind === 'actuator') return '#1f8a64';
-  if (device.markerKind === 'appliance') return '#5c6f7d';
-  if (device.markerKind === 'security') return '#7e5aa6';
-  if (device.markerKind === 'lighting') return '#c9962a';
-  if (device.markerKind === 'climate') return '#2a7ba8';
-  if (device.markerKind === 'mobile') return '#386f55';
-  if (device.markerKind === 'network') return '#3763a0';
-  return '#1f8a64';
 }
 
 function getFixtureMaterial(kind: FixtureLayout['kind']): { color: string; roughness: number } {

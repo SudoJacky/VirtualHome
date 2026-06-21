@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { SeededRandom } from './random';
 import { getScenario, type ScenarioAction, type ScenarioDefinition } from './scenarios';
 import { getDeviceCapability, validateDeviceStatePatch } from '../shared/deviceRegistry';
+import { getDeviceSupportedCommands } from '../shared/deviceInstanceCapabilities';
 import type {
   AbnormalityInjectedEvent,
   AlertCreatedEvent,
@@ -88,6 +89,32 @@ const roomLightDevices: Partial<Record<RoomId, string>> = {
 
 const ruleCooldownMinutes = 5;
 
+export const alertEscalationPolicies = {
+  door_left_open: {
+    alertId: 'door_left_open_001',
+    initialSeverity: 'warning',
+    recommendedAction: 'check_front_door'
+  },
+  fridge_left_open: {
+    alertId: 'fridge_left_open_001',
+    initialSeverity: 'warning',
+    recommendedAction: 'close_fridge_door',
+    deviceId: 'fridge_01',
+    highSeverityAfterOpenMinutes: 5,
+    lifecyclePhase: 'alert'
+  },
+  network_offline: {
+    alertId: 'network_offline_001',
+    initialSeverity: 'warning',
+    recommendedAction: 'restart_router'
+  },
+  senior_no_activity: {
+    alertId: 'senior_no_activity_001',
+    initialSeverity: 'info',
+    recommendedAction: 'check_in_with_senior'
+  }
+} as const;
+
 class Simulator implements VirtualHomeSimulator {
   private readonly homeId: string;
   private readonly baseSeed: number;
@@ -152,6 +179,7 @@ class Simulator implements VirtualHomeSimulator {
       ruleStates: restoreRuleStates(restoredEvents, elapsedMinutes, restoredSnapshot.simClock.currentTime),
       random: new SeededRandom(restoredSnapshot.runContext.seed, restoredRngState)
     };
+    this.updateAllPersonBehavior();
     this.rebuildRooms();
     this.updateOccupancy();
   }
@@ -176,6 +204,7 @@ class Simulator implements VirtualHomeSimulator {
     for (const [personId, person] of Object.entries(scenario.initialPeople)) {
       this.state.snapshot.people[personId].location = person.location;
       this.state.snapshot.people[personId].activity = person.activity;
+      this.updatePersonBehavior(personId);
     }
     this.rebuildRooms();
     this.updateOccupancy();
@@ -227,14 +256,31 @@ class Simulator implements VirtualHomeSimulator {
       events.push(this.setDeviceState('door_lock_01', { locked: false }, 'abnormality:door_left_open'));
       events.push(this.setDeviceState('doorbell_camera_01', { motion: true, ringing: false }, 'abnormality:door_left_open'));
     } else if (kind === 'fridge_left_open') {
-      events.push(this.setDeviceState('fridge_01', { doorOpen: true, powerW: 148 }, 'abnormality:fridge_left_open'));
+      events.push(this.setDeviceState('fridge_01', { doorOpen: true, powerW: 148, lifecyclePhase: 'opened', openMinutes: 0 }, 'abnormality:fridge_left_open'));
     } else if (kind === 'network_offline') {
-      events.push(this.setDeviceState('router_01', { online: false, latencyMs: 0 }, 'abnormality:network_offline'));
+      events.push(this.setDeviceState('router_01', { online: true, latencyMs: 260, lifecyclePhase: 'degraded' }, 'abnormality:network_degraded'));
+      events.push(this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'network_degraded',
+        explanation: 'Router latency degraded before the network outage, so the twin records a prewarning phase.',
+        actions: ['mark_router_degraded', 'warn_remote_work_reliability'],
+        reason: 'router_01.lifecyclePhase:degraded',
+        eventExplanation: {
+          why: 'Router latency rose above the remote-work comfort threshold before connectivity dropped.',
+          actorIds: ['adult_2'],
+          affectedDeviceIds: ['router_01'],
+          affectedRoomIds: ['study'],
+          relatedIntent: 'focused_remote_work',
+          expectedOutcome: 'Explain that the outage had a degraded prewarning phase before the router went offline.'
+        }
+      }));
+      events.push(this.setDeviceState('router_01', { online: false, latencyMs: 0, lifecyclePhase: 'offline' }, 'abnormality:network_offline'));
     } else if (kind === 'senior_no_activity') {
       const senior = this.state.snapshot.people.senior_1;
       const event = this.createPersonMovedEvent('senior_1', senior.location, 'master_bedroom', 'no_activity');
       senior.location = 'master_bedroom';
       senior.activity = 'no_activity';
+      this.updatePersonBehavior('senior_1');
       events.push(event);
       events.push(this.setDeviceState('master_sleep_01', { inBed: true, heartRateSimulated: 60 }, 'abnormality:senior_no_activity'));
     }
@@ -261,16 +307,18 @@ class Simulator implements VirtualHomeSimulator {
       events.push(this.setDeviceState('doorbell_camera_01', { motion: false, ringing: false }, 'recovery:door_left_open'));
       events.push(...this.recoverRuleIfActive('door_left_open', ['door_lock_01.locked:true', 'doorbell_camera_01.motion:false']));
     } else if (kind === 'fridge_left_open') {
-      events.push(this.setDeviceState('fridge_01', { doorOpen: false, powerW: 90 }, 'recovery:fridge_left_open'));
+      events.push(this.setDeviceState('fridge_01', { doorOpen: false, powerW: 90, lifecyclePhase: 'recovered', openMinutes: 0 }, 'recovery:fridge_left_open'));
       events.push(...this.recoverRuleIfActive('fridge_left_open', ['fridge_01.doorOpen:false']));
     } else if (kind === 'network_offline') {
-      events.push(this.setDeviceState('router_01', { online: true, latencyMs: 18 }, 'recovery:network_offline'));
+      events.push(this.setDeviceState('router_01', { online: true, latencyMs: 18, lifecyclePhase: 'recovered' }, 'recovery:network_offline'));
       events.push(...this.recoverRuleIfActive('network_offline', ['router_01.online:true']));
     } else if (kind === 'senior_no_activity') {
+      events.push(...this.createSeniorCheckInEvents());
       const senior = this.state.snapshot.people.senior_1;
       const event = this.createPersonMovedEvent('senior_1', senior.location, 'living_room', 'morning_check_in');
       senior.location = 'living_room';
       senior.activity = 'morning_check_in';
+      this.updatePersonBehavior('senior_1');
       events.push(event);
       events.push(this.setDeviceState('master_sleep_01', { inBed: false, heartRateSimulated: 70 }, 'recovery:senior_no_activity'));
       events.push(...this.recoverRuleIfActive('senior_no_activity', ['senior_1.activity:morning_check_in', 'master_sleep_01.inBed:false']));
@@ -309,16 +357,30 @@ class Simulator implements VirtualHomeSimulator {
     if (!device) {
       return null;
     }
-    const capability = getDeviceCapability(device.type);
-    if (!capability.supportedCommands.includes(command)) {
+    if (!getDeviceSupportedCommands(deviceId, device.type).includes(command)) {
       return null;
     }
-    const patch = commandPatch(device.type, command, value, device.state);
-    const event = this.setDeviceState(deviceId, patch, `operator:device_command:${command}`);
+    const approach = this.createOperatorApproachEvents(device, command);
+    const stateEvents = this.createDeviceCommandStateEvents(deviceId, device, command, value);
+    const recoveryEvents = this.recoverRuleForDeviceCommand(deviceId, command);
+    const returnEvents = this.createOperatorReturnEvents(approach.context, device, command);
     this.rebuildRooms();
     this.updateOccupancy();
-    this.state.emittedEvents.push(event);
-    return [event];
+    const events = [...approach.events, ...stateEvents, ...recoveryEvents, ...returnEvents];
+    this.state.emittedEvents.push(...events);
+    return events;
+  }
+
+  private createDeviceCommandStateEvents(deviceId: string, device: DeviceState, command: string, value: string | number | boolean | null): DeviceStateChangedEvent[] {
+    const reason = `operator:device_command:${command}`;
+    if (deviceId === 'router_01' && command === 'restart') {
+      return [
+        this.setDeviceState(deviceId, { online: false, latencyMs: 0, lifecyclePhase: 'restarting' }, reason)
+      ];
+    }
+    return [
+      this.setDeviceState(deviceId, commandPatch(device.type, command, value, device.state), reason)
+    ];
   }
 
   private createInitialSnapshot(catalog: Catalog, scenarioId: ScenarioId, startTime: string, mode: HomeMode, speed: number, runContext: RunContext): TwinSnapshot {
@@ -345,6 +407,7 @@ class Simulator implements VirtualHomeSimulator {
         kind: person.kind,
         location: person.kind === 'pet' ? 'living_room' : 'master_bedroom',
         activity: 'idle',
+        behavior: createBehaviorContext(person.id, 'idle', person.kind === 'pet' ? 'living_room' : 'master_bedroom', mode),
         confidence: 0.9,
         privacyMode: true
       }
@@ -403,6 +466,9 @@ class Simulator implements VirtualHomeSimulator {
     const events: TwinEvent[] = [];
     events.push(...this.movePetAroundHome());
     events.push(...this.advanceApplianceCycles());
+    events.push(...this.advanceRobotVacuumLifecycle());
+    events.push(...this.advanceRouterRestartLifecycle());
+    events.push(...this.advanceFridgeDoorLifecycle());
     this.rebuildRooms();
     events.push(...this.applyBehaviorProfileInteractions());
     this.rebuildRooms();
@@ -414,8 +480,8 @@ class Simulator implements VirtualHomeSimulator {
 
   private advanceApplianceCycles(): TwinEvent[] {
     const events: TwinEvent[] = [];
-    events.push(...this.advanceTimedDevice('dishwasher_01', 'dishwasher_cycle_done', 'Dishwasher cycle completed', 'empty_dishwasher'));
-    events.push(...this.advanceTimedDevice('washer_01', 'washer_cycle_done', 'Washing machine cycle completed', 'move_laundry_to_dryer'));
+    events.push(...this.advanceTimedDevice('dishwasher_01', 'dishwasher_cycle_done', 'Dishwasher is waiting to be unloaded', 'empty_dishwasher'));
+    events.push(...this.advanceTimedDevice('washer_01', 'washer_cycle_done', 'Washing machine is waiting to be unloaded', 'move_laundry_to_dryer'));
     return events;
   }
 
@@ -431,10 +497,153 @@ class Simulator implements VirtualHomeSimulator {
       return event ? [event] : [];
     }
 
+    const waitingRuleId = `${device.type}_waiting_unload`;
     return [
-      this.setDeviceState(deviceId, { status: 'done', remainingMin: 0, powerW: 3 }, `ambient:${device.type}:done`),
-      this.createAlertEvent(alertId, 'info', device.roomId, message, recommendedAction, `device:${deviceId}:done`)
+      this.setDeviceState(deviceId, { status: 'waiting_unload', remainingMin: 0, powerW: 2 }, `ambient:${device.type}:waiting_unload`),
+      this.createAlertEvent(alertId, 'info', device.roomId, message, recommendedAction, `device:${deviceId}:waiting_unload`),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: waitingRuleId,
+        explanation: `${device.type === 'dishwasher' ? 'Dishwasher' : 'Washing machine'} cycle finished and is waiting for a person to unload it.`,
+        actions: [recommendedAction],
+        reason: `device:${deviceId}:waiting_unload`,
+        eventExplanation: {
+          why: `${device.id} completed its running cycle and now needs household handling.`,
+          actorIds: [],
+          affectedDeviceIds: [deviceId],
+          affectedRoomIds: [device.roomId],
+          expectedOutcome: `${device.type === 'washer' ? 'Laundry is moved before it sits wet.' : 'Clean dishes are unloaded and the appliance returns to idle.'}`
+        }
+      })
     ];
+  }
+
+  private advanceFridgeDoorLifecycle(): TwinEvent[] {
+    const fridge = this.state.snapshot.devices.fridge_01;
+    if (!fridge || fridge.state.doorOpen !== true) {
+      return [];
+    }
+    const previousPhase = String(fridge.state.lifecyclePhase ?? 'opened');
+    const openMinutes = Math.max(1, Number(fridge.state.openMinutes ?? 0) + 1);
+    const policy = alertEscalationPolicies.fridge_left_open;
+    const lifecyclePhase = openMinutes >= policy.highSeverityAfterOpenMinutes ? policy.lifecyclePhase : openMinutes >= 1 ? 'still_open' : 'opened';
+    const powerW = Math.max(Number(fridge.state.powerW ?? 148), lifecyclePhase === 'alert' ? 176 : 156);
+    const events: TwinEvent[] = [
+      this.setDeviceState('fridge_01', {
+        lifecyclePhase,
+        openMinutes,
+        powerW
+      }, lifecyclePhase === 'alert' ? 'ambient:fridge:alert' : 'ambient:fridge:still_open')
+    ];
+    const kitchenClimate = this.state.snapshot.devices.kitchen_temp_01;
+    if (kitchenClimate) {
+      const temperatureC = this.round(this.clamp(Number(kitchenClimate.state.temperatureC ?? 25) + (lifecyclePhase === 'alert' ? 0.42 : 0.16), 17, 31));
+      const humidityPercent = Number(kitchenClimate.state.humidityPercent ?? 55);
+      events.push(this.setDeviceState('kitchen_temp_01', { temperatureC, humidityPercent }, 'ambient:fridge:kitchen_temperature_drift'));
+      this.state.snapshot.rooms.kitchen.temperatureC = temperatureC;
+      this.state.snapshot.rooms.kitchen.humidityPercent = humidityPercent;
+    }
+    if (lifecyclePhase === 'alert' && previousPhase !== 'alert') {
+      const alert = this.state.snapshot.alerts.fridge_left_open_001;
+      if (alert && alert.status !== 'resolved') {
+        alert.severity = 'high';
+      }
+      events.push(this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'fridge_left_open_escalated',
+        explanation: 'The fridge door remained open long enough to escalate energy and kitchen temperature impact.',
+        actions: ['escalate_fridge_alert', 'prioritize_close_fridge_door', 'track_kitchen_temperature_drift'],
+        reason: 'fridge_01.lifecyclePhase:alert',
+        eventExplanation: {
+          why: 'The fridge door has stayed open for five simulated minutes, increasing compressor load and kitchen temperature drift.',
+          actorIds: [],
+          affectedDeviceIds: ['fridge_01', 'kitchen_temp_01'],
+          affectedRoomIds: ['kitchen'],
+          relatedIntent: 'close_fridge',
+          expectedOutcome: 'Escalate the alert so a household member closes the fridge before energy and comfort impact grows.'
+        }
+      }));
+    }
+    return events;
+  }
+
+  private advanceRobotVacuumLifecycle(): TwinEvent[] {
+    const vacuum = this.state.snapshot.devices.robot_vacuum_01;
+    if (!vacuum) {
+      return [];
+    }
+    if (vacuum.state.status === 'assisted') {
+      return [
+        this.setDeviceState('robot_vacuum_01', { status: 'cleaning' }, 'ambient:robot_vacuum:resume_after_assist')
+      ];
+    }
+    if (vacuum.state.status !== 'cleaning') {
+      return [];
+    }
+
+    const cycleMinutes = Math.max(1, Number(vacuum.state.cycleMinutes ?? 0) + 1);
+    const batteryPercent = this.clamp(Number(vacuum.state.batteryPercent ?? 92) - 1.5, 20, 100);
+    if (cycleMinutes === 3) {
+      return [
+        this.setDeviceState('robot_vacuum_01', { status: 'stuck', cycleMinutes, batteryPercent: this.round(batteryPercent) }, 'ambient:robot_vacuum:stuck'),
+        this.createAlertEvent('robot_vacuum_stuck_001', 'warning', 'living_room', 'Robot vacuum needs help in the living room', 'clear_robot_path', 'rule:robot_vacuum_stuck'),
+        this.createEvent({
+          type: 'AutomationTriggered',
+          ruleId: 'robot_vacuum_stuck',
+          explanation: 'Robot vacuum cleaning paused because the robot reported a stuck condition.',
+          actions: ['raise_robot_help_alert', 'wait_for_household_assist'],
+          reason: 'robot_vacuum_01.status:stuck',
+          eventExplanation: {
+            why: 'robot_vacuum_01 became stuck during its cleaning lifecycle.',
+            actorIds: [],
+            affectedDeviceIds: ['robot_vacuum_01'],
+            affectedRoomIds: ['living_room'],
+            expectedOutcome: 'Ask a household member to clear the path so cleaning can resume.'
+          }
+        })
+      ];
+    }
+    if (cycleMinutes >= 6) {
+      const events: TwinEvent[] = [
+        this.setDeviceState('robot_vacuum_01', { status: 'docked', cycleMinutes: 0, batteryPercent: this.round(batteryPercent), binFull: false }, 'ambient:robot_vacuum:docked')
+      ];
+      const alert = this.state.snapshot.alerts.robot_vacuum_stuck_001;
+      if (alert && alert.status !== 'resolved') {
+        const previousStatus = alert.status;
+        alert.status = 'resolved';
+        alert.resolvedAt = this.state.snapshot.simClock.currentTime;
+        events.push(this.createEvent({
+          type: 'AlertStatusChanged',
+          alertId: alert.id,
+          previousStatus,
+          status: 'resolved',
+          reason: 'robot_vacuum_01.status:docked'
+        }));
+      }
+      return events;
+    }
+    return [
+      this.setDeviceState('robot_vacuum_01', { cycleMinutes, batteryPercent: this.round(batteryPercent) }, 'ambient:robot_vacuum:cleaning')
+    ];
+  }
+
+  private advanceRouterRestartLifecycle(): TwinEvent[] {
+    const router = this.state.snapshot.devices.router_01;
+    if (!router) {
+      return [];
+    }
+    if (router.state.lifecyclePhase === 'restarting') {
+      return [
+        this.setDeviceState('router_01', { online: true, latencyMs: 80, lifecyclePhase: 'reconnecting' }, 'ambient:router:reconnecting')
+      ];
+    }
+    if (router.state.lifecyclePhase === 'reconnecting') {
+      return [
+        this.setDeviceState('router_01', { online: true, latencyMs: 18, lifecyclePhase: 'recovered' }, 'ambient:router:recovered'),
+        ...this.recoverRuleIfActiveOrAlert('network_offline', ['router_01.online:true'])
+      ];
+    }
+    return [];
   }
 
   private movePetAroundHome(): TwinEvent[] {
@@ -456,15 +665,21 @@ class Simulator implements VirtualHomeSimulator {
     const event = this.createPersonMovedEvent('pet_1', pet.location, to, activity);
     pet.location = to;
     pet.activity = activity;
+    this.updatePersonBehavior('pet_1');
     return [event];
   }
 
   private applyBehaviorProfileInteractions(): TwinEvent[] {
     const events: TwinEvent[] = [];
     events.push(...this.applyHumanActivityLighting());
-    events.push(...this.applyPetGardenSafety());
+    events.push(...this.applyCommuterArrivalScene());
+    events.push(...this.applyChildHomeworkFocus());
     events.push(...this.applyRemoteWorkComfort());
+    events.push(...this.applyFamilyDinnerReadiness());
+    events.push(...this.applySeniorMorningSupport());
     events.push(...this.applySeniorWellnessCheck());
+    events.push(...this.applySeniorGardenCare());
+    events.push(...this.applyPetGardenSafety());
     return events;
   }
 
@@ -527,7 +742,82 @@ class Simulator implements VirtualHomeSimulator {
         ruleId: 'pet_garden_sprinkler_pause',
         explanation: 'Pet movement is detected in the garden, so watering pauses to keep the zone safe.',
         actions: ['pause_garden_sprinkler'],
-        reason: 'habit:pet_1:garden'
+        reason: 'habit:pet_1:garden',
+        eventExplanation: {
+          why: 'pet_1 is in pet_patrol with intent explore_home.',
+          actorIds: ['pet_1'],
+          affectedDeviceIds: ['sprinkler_01'],
+          affectedRoomIds: ['garden'],
+          relatedIntent: 'explore_home',
+          expectedOutcome: 'Pause watering while the pet is inside the sprinkler zone.'
+        }
+      })
+    ];
+  }
+
+  private applyCommuterArrivalScene(): TwinEvent[] {
+    const commuter = this.state.snapshot.people.adult_1;
+    if (
+      !commuter ||
+      commuter.location !== 'living_room' ||
+      commuter.activity !== 'arrived_home' ||
+      this.state.triggeredRules.has('commuter_arrival_scene')
+    ) {
+      return [];
+    }
+
+    this.state.triggeredRules.add('commuter_arrival_scene');
+    return [
+      this.setDeviceState('living_light_01', { power: 'on', brightness: 58 }, 'habit:adult_1:arrived_home:arrival_scene'),
+      this.setDeviceState('living_curtain_01', { positionPercent: 35 }, 'habit:adult_1:arrived_home:privacy'),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'commuter_arrival_scene',
+        explanation: 'Adult 1 has arrived home, so the twin sets a modest living-room arrival scene.',
+        actions: ['set_living_light_arrival_level', 'lower_living_curtain_for_evening_privacy'],
+        reason: 'habit:adult_1:arrived_home',
+        eventExplanation: {
+          why: 'adult_1 is in evening_return with intent decompress_after_commute.',
+          actorIds: ['adult_1'],
+          affectedDeviceIds: ['living_light_01', 'living_curtain_01'],
+          affectedRoomIds: ['living_room'],
+          relatedIntent: 'decompress_after_commute',
+          expectedOutcome: 'Prepare a calm living-room arrival state after the commute.'
+        }
+      })
+    ];
+  }
+
+  private applyChildHomeworkFocus(): TwinEvent[] {
+    const child = this.state.snapshot.people.child_1;
+    if (
+      !child ||
+      child.location !== 'child_bedroom' ||
+      child.activity !== 'homework' ||
+      this.state.triggeredRules.has('child_homework_focus')
+    ) {
+      return [];
+    }
+
+    this.state.triggeredRules.add('child_homework_focus');
+    return [
+      this.setDeviceState('child_sleep_01', { inBed: false, heartRateSimulated: 78 }, 'habit:child_1:homework:desk_time'),
+      this.setDeviceState('tv_01', { power: 'off', app: null, volume: 0 }, 'habit:child_1:homework:quiet_focus'),
+      this.setDeviceState('living_light_01', { power: 'on', brightness: 32 }, 'habit:child_1:homework:reduce_living_room_distraction'),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'child_homework_focus',
+        explanation: 'The student is doing homework, so entertainment is kept quiet and the bedroom sleep pad reflects desk time.',
+        actions: ['mark_child_out_of_bed', 'turn_off_tv_for_homework', 'dim_living_light_for_homework'],
+        reason: 'habit:child_1:homework',
+        eventExplanation: {
+          why: 'child_1 is in after_school with intent finish_homework.',
+          actorIds: ['child_1'],
+          affectedDeviceIds: ['child_sleep_01', 'tv_01', 'living_light_01'],
+          affectedRoomIds: ['child_bedroom', 'living_room'],
+          relatedIntent: 'finish_homework',
+          expectedOutcome: 'Reduce entertainment distraction while the student finishes homework.'
+        }
       })
     ];
   }
@@ -551,8 +841,120 @@ class Simulator implements VirtualHomeSimulator {
         type: 'AutomationTriggered',
         ruleId: 'remote_work_comfort',
         explanation: 'Adult 2 is working from the study, so the twin raises study comfort and network context.',
-        actions: ['mark_study_active', 'track_study_co2', 'track_router_load'],
-        reason: 'habit:adult_2:remote_work'
+        actions: ['mark_study_active', 'track_study_co2', 'track_router_load', 'prioritize_router_for_video_calls', 'enable_focus_notification_policy'],
+        reason: 'habit:adult_2:remote_work',
+        eventExplanation: {
+          why: 'adult_2 is in workday with intent focused_remote_work.',
+          actorIds: ['adult_2'],
+          affectedDeviceIds: ['study_co2_01', 'router_01'],
+          affectedRoomIds: ['study'],
+          relatedIntent: 'focused_remote_work',
+          expectedOutcome: 'Keep the study comfortable and network state visible during remote work.'
+        }
+      })
+    ];
+  }
+
+  private applyFamilyDinnerReadiness(): TwinEvent[] {
+    const adult = this.state.snapshot.people.adult_1;
+    const dinner = this.state.snapshot.activities.family_dinner;
+    if (
+      !adult ||
+      adult.activity !== 'dinner' ||
+      adult.location !== 'dining_room' ||
+      !dinner ||
+      this.state.triggeredRules.has('family_dinner_readiness')
+    ) {
+      return [];
+    }
+
+    this.state.triggeredRules.add('family_dinner_readiness');
+    return [
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'family_dinner_readiness',
+        explanation: 'Adult 1 has joined family dinner, so the twin confirms dining comfort and nearby kitchen appliance safety.',
+        actions: ['confirm_fridge_closed', 'confirm_stove_safe', 'set_dining_light_for_family_dinner'],
+        reason: 'habit:adult_1:dinner',
+        eventExplanation: {
+          why: 'adult_1 is in evening meal with intent family dinner.',
+          actorIds: ['adult_1'],
+          affectedDeviceIds: ['fridge_01', 'stove_01', 'dining_light_01'],
+          affectedRoomIds: ['kitchen', 'dining_room'],
+          relatedIntent: 'family_time',
+          expectedOutcome: 'Keep dinner comfortable while confirming kitchen appliance risk is low.'
+        }
+      })
+    ];
+  }
+
+  private applySeniorMorningSupport(): TwinEvent[] {
+    const senior = this.state.snapshot.people.senior_1;
+    if (
+      !senior ||
+      senior.location !== 'master_bedroom' ||
+      senior.activity !== 'morning_rest' ||
+      this.state.snapshot.homeState.mode === 'sleeping' ||
+      this.state.triggeredRules.has('senior_morning_support')
+    ) {
+      return [];
+    }
+
+    this.state.triggeredRules.add('senior_morning_support');
+    return [
+      this.setDeviceState('master_ac_01', { power: 'on', targetC: 25, mode: 'auto' }, 'habit:senior_1:morning_rest:bedroom_comfort'),
+      this.setDeviceState('master_sleep_01', { inBed: true, heartRateSimulated: 62 }, 'habit:senior_1:morning_rest:activity_watch'),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'senior_morning_support',
+        explanation: 'Senior morning rest continues, so the twin keeps the bedroom comfortable and prepares a family check-in path.',
+        actions: ['set_bedroom_comfort_for_senior', 'watch_sleep_activity_sensor', 'prepare_family_check_in'],
+        reason: 'habit:senior_1:morning_rest',
+        eventExplanation: {
+          why: 'senior_1 is still in morning rest, so the twin prepares a gentle support path before raising an alert.',
+          actorIds: ['senior_1'],
+          affectedDeviceIds: ['master_ac_01', 'master_sleep_01'],
+          affectedRoomIds: ['master_bedroom'],
+          relatedIntent: 'steady_routine',
+          expectedOutcome: 'Keep the bedroom comfortable while making a family check-in easy if activity stays low.'
+        }
+      })
+    ];
+  }
+
+  private applySeniorGardenCare(): TwinEvent[] {
+    const senior = this.state.snapshot.people.senior_1;
+    const sprinkler = this.state.snapshot.devices.sprinkler_01;
+    if (
+      !senior ||
+      senior.location !== 'garden' ||
+      !['gardening', 'plant_care'].includes(senior.activity) ||
+      sprinkler?.state.valveOpen === true ||
+      this.state.triggeredRules.has('senior_garden_care')
+    ) {
+      return [];
+    }
+
+    this.state.triggeredRules.add('senior_garden_care');
+    const soil = this.state.snapshot.devices.garden_soil_01;
+    const moisturePercent = this.round(this.clamp(Number(soil.state.moisturePercent ?? 38) + 2.4, 20, 75));
+    return [
+      this.setDeviceState('sprinkler_01', { valveOpen: true }, `habit:senior_1:${senior.activity}:garden_care`),
+      this.setDeviceState('garden_soil_01', { moisturePercent }, `habit:senior_1:${senior.activity}:soil_check`),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: 'senior_garden_care',
+        explanation: 'Senior garden activity is active, so the twin starts a short watering assist and updates soil context.',
+        actions: ['start_garden_sprinkler', 'update_soil_moisture_context'],
+        reason: `habit:senior_1:${senior.activity}`,
+        eventExplanation: {
+          why: 'senior_1 is in daytime_care with intent care_for_plants.',
+          actorIds: ['senior_1'],
+          affectedDeviceIds: ['sprinkler_01', 'garden_soil_01'],
+          affectedRoomIds: ['garden'],
+          relatedIntent: 'care_for_plants',
+          expectedOutcome: 'Assist plant care while keeping soil context current.'
+        }
       })
     ];
   }
@@ -775,11 +1177,13 @@ class Simulator implements VirtualHomeSimulator {
       const event = this.createPersonMovedEvent(action.personId, person.location, action.to, action.activity);
       person.location = action.to;
       person.activity = action.activity;
+      this.updatePersonBehavior(action.personId);
       return [event];
     }
 
     if (action.kind === 'setHomeMode') {
       this.state.snapshot.homeState.mode = action.mode;
+      this.updateAllPersonBehavior();
       return [];
     }
 
@@ -856,7 +1260,14 @@ class Simulator implements VirtualHomeSimulator {
         ruleId: 'cooking_ventilation',
         explanation: 'Kitchen occupancy and stove power indicate cooking.',
         actions: ['turn_on_range_hood', 'turn_on_kitchen_light'],
-        reason: 'kitchen_occupied_and_stove_power'
+        reason: 'kitchen_occupied_and_stove_power',
+        eventExplanation: {
+          why: 'Kitchen occupancy and stove power indicate active cooking.',
+          actorIds: peopleInRoom(snapshot, 'kitchen'),
+          affectedDeviceIds: ['range_hood_01', 'kitchen_light_01', 'stove_01'],
+          affectedRoomIds: ['kitchen'],
+          expectedOutcome: 'Ventilate cooking byproducts and keep the work area lit.'
+        }
       }));
     }
 
@@ -872,7 +1283,14 @@ class Simulator implements VirtualHomeSimulator {
         ruleId: 'stove_unattended_safety',
         explanation: 'The stove was drawing high power while the kitchen was empty.',
         actions: ['turn_off_stove', 'raise_warning'],
-        reason: 'stove_power_without_kitchen_occupancy'
+        reason: 'stove_power_without_kitchen_occupancy',
+        eventExplanation: {
+          why: 'The stove is drawing high power while no one is in the kitchen.',
+          actorIds: [],
+          affectedDeviceIds: ['stove_01'],
+          affectedRoomIds: ['kitchen'],
+          expectedOutcome: 'Remove unattended cooking risk before it escalates.'
+        }
       }));
     }
 
@@ -887,7 +1305,14 @@ class Simulator implements VirtualHomeSimulator {
         ruleId: 'away_mode',
         explanation: 'All human family members are away and the front door is locked.',
         actions: ['set_home_mode:away', 'arm_security', 'turn_off_lights', 'turn_off_tv'],
-        reason: 'occupancy_count:0'
+        reason: 'occupancy_count:0',
+        eventExplanation: {
+          why: 'All human family members are away and the entrance is secured.',
+          actorIds: ['adult_1', 'adult_2', 'child_1', 'senior_1'],
+          affectedDeviceIds: ['door_lock_01', 'living_light_01', 'tv_01'],
+          affectedRoomIds: ['entrance', 'living_room'],
+          expectedOutcome: 'Reduce unattended energy use and keep security armed.'
+        }
       }));
     }
 
@@ -904,23 +1329,38 @@ class Simulator implements VirtualHomeSimulator {
         ruleId: 'close_water_valve_on_leak',
         explanation: 'Bathroom leak sensor is active while the home is sleeping.',
         actions: ['close_water_valve', 'raise_high_alert'],
-        reason: 'water_leak_sensor:true'
+        reason: 'water_leak_sensor:true',
+        eventExplanation: {
+          why: 'The bathroom leak sensor is active while the household is sleeping.',
+          actorIds: [],
+          affectedDeviceIds: ['water_leak_01', 'water_valve_01'],
+          affectedRoomIds: ['bathroom'],
+          expectedOutcome: 'Stop water flow and raise an urgent leak response workflow.'
+        }
       }));
     }
 
     if (
       snapshot.devices.fridge_01.state.doorOpen === true &&
-      snapshot.devices.fridge_01.lastReason === 'abnormality:fridge_left_open' &&
+      ['opened', 'still_open', 'alert'].includes(String(snapshot.devices.fridge_01.state.lifecyclePhase ?? '')) &&
       this.canTriggerRule('fridge_left_open')
     ) {
       this.activateRule('fridge_left_open');
-      events.push(this.createAlertEvent('fridge_left_open_001', 'warning', 'kitchen', 'Fridge door has remained open', 'close_fridge_door', 'rule:fridge_left_open'));
+      const policy = alertEscalationPolicies.fridge_left_open;
+      events.push(this.createAlertEvent(policy.alertId, policy.initialSeverity, 'kitchen', 'Fridge door has remained open', policy.recommendedAction, 'rule:fridge_left_open'));
       events.push(this.createEvent({
         type: 'AutomationTriggered',
         ruleId: 'fridge_left_open',
         explanation: 'The fridge reported doorOpen=true, so the twin raised a kitchen appliance warning.',
         actions: ['notify_close_fridge_door', 'track_fridge_power'],
-        reason: 'fridge_01.doorOpen:true'
+        reason: 'fridge_01.doorOpen:true',
+        eventExplanation: {
+          why: 'The fridge door remains open and power draw is elevated.',
+          actorIds: peopleInRoom(snapshot, 'kitchen'),
+          affectedDeviceIds: ['fridge_01'],
+          affectedRoomIds: ['kitchen'],
+          expectedOutcome: 'Prompt a household member to close the fridge before energy use and temperature drift escalate.'
+        }
       }));
     }
 
@@ -930,13 +1370,22 @@ class Simulator implements VirtualHomeSimulator {
       this.canTriggerRule('network_offline')
     ) {
       this.activateRule('network_offline');
-      events.push(this.createAlertEvent('network_offline_001', 'warning', 'study', 'Home network is offline', 'restart_router', 'rule:network_offline'));
+      const policy = alertEscalationPolicies.network_offline;
+      events.push(this.createAlertEvent(policy.alertId, policy.initialSeverity, 'study', 'Home network is offline', policy.recommendedAction, 'rule:network_offline'));
       events.push(this.createEvent({
         type: 'AutomationTriggered',
         ruleId: 'network_offline',
         explanation: 'The router reported offline, so the twin prepared a network recovery recommendation.',
         actions: ['notify_network_offline', 'recommend_router_restart'],
-        reason: 'router_01.online:false'
+        reason: 'router_01.online:false',
+        eventExplanation: {
+          why: 'router_01 is offline while household routines depend on connectivity.',
+          actorIds: ['adult_2'],
+          affectedDeviceIds: ['router_01'],
+          affectedRoomIds: ['study'],
+          relatedIntent: 'focused_remote_work',
+          expectedOutcome: 'Route attention to the study and restore network service.'
+        }
       }));
     }
 
@@ -947,13 +1396,21 @@ class Simulator implements VirtualHomeSimulator {
       this.canTriggerRule('door_left_open')
     ) {
       this.activateRule('door_left_open');
-      events.push(this.createAlertEvent('door_left_open_001', 'warning', 'entrance', 'Front door has remained open', 'check_front_door', 'rule:door_left_open'));
+      const policy = alertEscalationPolicies.door_left_open;
+      events.push(this.createAlertEvent(policy.alertId, policy.initialSeverity, 'entrance', 'Front door has remained open', policy.recommendedAction, 'rule:door_left_open'));
       events.push(this.createEvent({
         type: 'AutomationTriggered',
         ruleId: 'door_left_open',
         explanation: 'The front lock is unlocked while entrance camera motion is active.',
         actions: ['notify_front_door', 'focus_entrance_camera'],
-        reason: 'door_lock_01.locked:false'
+        reason: 'door_lock_01.locked:false',
+        eventExplanation: {
+          why: 'The entrance door is unlocked while entrance motion is active.',
+          actorIds: [],
+          affectedDeviceIds: ['door_lock_01', 'doorbell_camera_01'],
+          affectedRoomIds: ['entrance'],
+          expectedOutcome: 'Focus the entrance and prompt someone to secure the door.'
+        }
       }));
     }
 
@@ -963,13 +1420,22 @@ class Simulator implements VirtualHomeSimulator {
       this.canTriggerRule('senior_no_activity')
     ) {
       this.activateRule('senior_no_activity');
-      events.push(this.createAlertEvent('senior_no_activity_001', 'info', 'master_bedroom', 'Senior has no morning activity yet', 'check_in_with_senior', 'rule:senior_no_activity'));
+      const policy = alertEscalationPolicies.senior_no_activity;
+      events.push(this.createAlertEvent(policy.alertId, policy.initialSeverity, 'master_bedroom', 'Senior has no morning activity yet', policy.recommendedAction, 'rule:senior_no_activity'));
       events.push(this.createEvent({
         type: 'AutomationTriggered',
         ruleId: 'senior_no_activity',
         explanation: 'The senior activity fact remains no_activity while the sleep sensor still reports in bed.',
         actions: ['prepare_check_in', 'notify_caregiver'],
-        reason: 'senior_1.activity:no_activity'
+        reason: 'senior_1.activity:no_activity',
+        eventExplanation: {
+          why: 'senior_1 remains in wellness_watch with no morning activity.',
+          actorIds: ['senior_1'],
+          affectedDeviceIds: ['master_sleep_01'],
+          affectedRoomIds: ['master_bedroom'],
+          relatedIntent: 'needs_check_in',
+          expectedOutcome: 'Create a privacy-preserving check-in workflow for the senior family member.'
+        }
       }));
     }
 
@@ -1087,6 +1553,21 @@ class Simulator implements VirtualHomeSimulator {
     if (lifecycle?.status !== 'active') {
       return [];
     }
+    return [this.createRuleRecoveredEvent(ruleId, recoveredFacts)];
+  }
+
+  private recoverRuleIfActiveOrAlert(ruleId: string, recoveredFacts: string[]): RuleRecoveredEvent[] {
+    const activeRecovery = this.recoverRuleIfActive(ruleId, recoveredFacts);
+    if (activeRecovery.length > 0) {
+      return activeRecovery;
+    }
+    if (!this.hasUnresolvedAlertForRule(ruleId)) {
+      return [];
+    }
+    return [this.createRuleRecoveredEvent(ruleId, recoveredFacts)];
+  }
+
+  private createRuleRecoveredEvent(ruleId: string, recoveredFacts: string[]): RuleRecoveredEvent {
     const cooldownUntilMinute = this.state.elapsedMinutes + ruleCooldownMinutes;
     this.state.ruleStates.set(ruleId, {
       status: 'cooldown',
@@ -1095,13 +1576,24 @@ class Simulator implements VirtualHomeSimulator {
     const cooldownUntil = new Date(this.state.snapshot.simClock.currentTime);
     cooldownUntil.setMinutes(cooldownUntil.getMinutes() + ruleCooldownMinutes);
     resolveAlertsForRule(this.state.snapshot, ruleId, this.state.snapshot.simClock.currentTime);
-    return [this.createEvent({
+    return this.createEvent({
       type: 'RuleRecovered',
       ruleId,
       recoveredFacts,
       cooldownUntil: formatShanghaiTime(cooldownUntil),
       reason: `rule:${ruleId}:recovered`
-    })];
+    });
+  }
+
+  private hasUnresolvedAlertForRule(ruleId: string): boolean {
+    const sourceAlertIds = Object.values(this.state.snapshot.alerts)
+      .filter((alert) => alert.sourceRuleId === ruleId)
+      .map((alert) => alert.id);
+    const alertIds = sourceAlertIds.length > 0 ? sourceAlertIds : legacyAlertIdsForRule(ruleId);
+    return alertIds.some((alertId) => {
+      const alert = this.state.snapshot.alerts[alertId];
+      return alert && (alert.status === 'active' || alert.status === 'acknowledged');
+    });
   }
 
   private createAlertEvent(alertId: string, severity: 'info' | 'warning' | 'high', roomId: RoomId, message: string, recommendedAction: string, reason: string): AlertCreatedEvent {
@@ -1131,15 +1623,270 @@ class Simulator implements VirtualHomeSimulator {
     });
   }
 
-  private createPersonMovedEvent(personId: string, from: RoomId | 'away', to: RoomId | 'away', activity: string): PersonMovedEvent {
+  private createPersonMovedEvent(personId: string, from: RoomId | 'away', to: RoomId | 'away', activity: string, reason = `activity:${activity}`, travelMinutes?: number): PersonMovedEvent {
     return this.createEvent({
       type: 'PersonMoved',
       personId,
       from,
       to,
       activity,
-      reason: `activity:${activity}`
+      ...(travelMinutes !== undefined ? { travelMinutes } : {}),
+      reason
     });
+  }
+
+  private createTimedPersonMovedEvent(personId: string, from: RoomId | 'away', to: RoomId | 'away', activity: string, reason: string, travelMinutes: number): PersonMovedEvent {
+    if (travelMinutes > 0) {
+      for (let minute = 0; minute < travelMinutes; minute += 1) {
+        this.advanceClockOneMinute();
+      }
+    }
+    return this.createPersonMovedEvent(personId, from, to, activity, reason, travelMinutes);
+  }
+
+  private createOperatorApproachEvents(device: DeviceState, command: string): {
+    events: PersonMovedEvent[];
+    context: {
+      operatorId: string;
+      originalLocation: RoomId;
+      originalActivity: string;
+    } | null;
+  } {
+    const operator = this.selectDeviceOperator(device.roomId);
+    if (!operator) {
+      return { events: [], context: null };
+    }
+
+    const from = operator.location;
+    const finalActivity = `controlling_${device.id}`;
+    const reason = `operator:approach_device:${device.id}:${command}`;
+    if (from === 'away') {
+      return { events: [], context: null };
+    }
+    const context = {
+      operatorId: operator.id,
+      originalLocation: from,
+      originalActivity: operator.activity
+    };
+    const path = this.roomPath(from, device.roomId);
+    if (path.length <= 1) {
+      operator.location = device.roomId;
+      operator.activity = finalActivity;
+      this.updatePersonBehavior(operator.id);
+      return {
+        events: [this.createPersonMovedEvent(operator.id, from, device.roomId, finalActivity, reason, 0)],
+        context
+      };
+    }
+
+    const events: PersonMovedEvent[] = [];
+    for (let index = 1; index < path.length; index += 1) {
+      const stepFrom = path[index - 1];
+      const stepTo = path[index];
+      const isFinalStep = index === path.length - 1;
+      const activity = isFinalStep ? finalActivity : `walking_to_${device.id}`;
+      operator.location = stepTo;
+      operator.activity = activity;
+      events.push(this.createTimedPersonMovedEvent(operator.id, stepFrom, stepTo, activity, reason, 1));
+    }
+    this.updatePersonBehavior(operator.id);
+    return { events, context };
+  }
+
+  private createOperatorReturnEvents(
+    context: { operatorId: string; originalLocation: RoomId; originalActivity: string } | null,
+    device: DeviceState,
+    command: string
+  ): PersonMovedEvent[] {
+    if (!context) {
+      return [];
+    }
+    const operator = this.state.snapshot.people[context.operatorId];
+    if (!operator || operator.location === 'away') {
+      return [];
+    }
+    const reason = `operator:return_from_device:${device.id}:${command}`;
+    const path = this.roomPath(operator.location, context.originalLocation);
+    if (path.length <= 1) {
+      operator.activity = context.originalActivity;
+      this.updatePersonBehavior(operator.id);
+      return [
+        this.createPersonMovedEvent(operator.id, operator.location, context.originalLocation, context.originalActivity, reason, 0)
+      ];
+    }
+
+    const events: PersonMovedEvent[] = [];
+    for (let index = 1; index < path.length; index += 1) {
+      const stepFrom = path[index - 1];
+      const stepTo = path[index];
+      const isFinalStep = index === path.length - 1;
+      const activity = isFinalStep ? context.originalActivity : `returning_to_${context.originalLocation}`;
+      operator.location = stepTo;
+      operator.activity = activity;
+      events.push(this.createTimedPersonMovedEvent(operator.id, stepFrom, stepTo, activity, reason, 1));
+    }
+    this.updatePersonBehavior(operator.id);
+    return events;
+  }
+
+  private createSeniorCheckInEvents(): TwinEvent[] {
+    const caregiver = this.selectSeniorCaregiver('master_bedroom');
+    if (!caregiver) {
+      return [];
+    }
+
+    const reason = 'operator:senior_check_in:senior_no_activity';
+    const path = caregiver.location === 'away' ? [] : this.roomPath(caregiver.location, 'master_bedroom');
+    const events: TwinEvent[] = [];
+    if (path.length <= 1) {
+      const from = caregiver.location === 'away' ? 'master_bedroom' : caregiver.location;
+      caregiver.location = 'master_bedroom';
+      caregiver.activity = 'checking_senior_1';
+      events.push(this.createPersonMovedEvent(caregiver.id, from, 'master_bedroom', 'checking_senior_1', reason));
+    } else {
+      for (let index = 1; index < path.length; index += 1) {
+        const stepFrom = path[index - 1];
+        const stepTo = path[index];
+        const isFinalStep = index === path.length - 1;
+        const activity = isFinalStep ? 'checking_senior_1' : 'walking_to_senior_1';
+        caregiver.location = stepTo;
+        caregiver.activity = activity;
+        events.push(this.createPersonMovedEvent(caregiver.id, stepFrom, stepTo, activity, reason));
+      }
+    }
+    this.updatePersonBehavior(caregiver.id);
+    events.push(this.createEvent({
+      type: 'AutomationTriggered',
+      ruleId: 'senior_check_in_completed',
+      explanation: 'A family member checked on the senior activity alert and confirmed a normal morning response.',
+      actions: ['visit_senior_room', 'confirm_senior_activity', 'recover_senior_no_activity_alert'],
+      reason,
+      eventExplanation: {
+        why: `${caregiver.id} responded to the senior inactivity workflow before clearing the alert.`,
+        actorIds: [caregiver.id, 'senior_1'],
+        affectedDeviceIds: ['master_sleep_01'],
+        affectedRoomIds: ['master_bedroom'],
+        relatedIntent: 'check_on_senior',
+        expectedOutcome: 'Confirm the senior is responsive and recover the no-activity workflow.'
+      }
+    }));
+    return events;
+  }
+
+  private selectDeviceOperator(roomId: RoomId): TwinSnapshot['people'][string] | null {
+    const humansAtHome = Object.values(this.state.snapshot.people)
+      .filter((person) => person.kind === 'human' && person.location !== 'away');
+    const adultCandidates = humansAtHome.filter((person) => person.id.startsWith('adult_'));
+    const candidates = adultCandidates.length > 0 ? adultCandidates : humansAtHome;
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    return [...candidates].sort((left, right) => (
+      this.operatorScore(left, roomId) - this.operatorScore(right, roomId) ||
+      left.id.localeCompare(right.id)
+    ))[0] ?? null;
+  }
+
+  private selectSeniorCaregiver(roomId: RoomId): TwinSnapshot['people'][string] | null {
+    const candidates = Object.values(this.state.snapshot.people)
+      .filter((person) => person.kind === 'human' && person.id !== 'senior_1' && person.location !== 'away');
+    if (candidates.length === 0) {
+      return null;
+    }
+    return [...candidates].sort((left, right) => (
+      this.operatorScore(left, roomId) - this.operatorScore(right, roomId) ||
+      left.id.localeCompare(right.id)
+    ))[0] ?? null;
+  }
+
+  private operatorScore(person: TwinSnapshot['people'][string], targetRoomId: RoomId): number {
+    const roomDistance = person.location === 'away' ? 100 : this.roomDistance(person.location, targetRoomId);
+    const sleepPenalty = person.activity === 'sleeping' ? 20 : 0;
+    return roomDistance + sleepPenalty;
+  }
+
+  private roomDistance(from: RoomId, to: RoomId): number {
+    if (from === to) {
+      return 0;
+    }
+
+    const visited = new Set<RoomId>([from]);
+    const queue: Array<{ roomId: RoomId; distance: number }> = [{ roomId: from, distance: 0 }];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) {
+        break;
+      }
+      for (const next of this.connectedRooms(current.roomId)) {
+        if (next === to) {
+          return current.distance + 1;
+        }
+        if (!visited.has(next)) {
+          visited.add(next);
+          queue.push({ roomId: next, distance: current.distance + 1 });
+        }
+      }
+    }
+    return 100;
+  }
+
+  private roomPath(from: RoomId, to: RoomId): RoomId[] {
+    if (from === to) {
+      return [from];
+    }
+
+    const visited = new Set<RoomId>([from]);
+    const queue: Array<{ roomId: RoomId; path: RoomId[] }> = [{ roomId: from, path: [from] }];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) {
+        break;
+      }
+      for (const next of this.connectedRooms(current.roomId)) {
+        if (visited.has(next)) {
+          continue;
+        }
+        const path = [...current.path, next];
+        if (next === to) {
+          return path;
+        }
+        visited.add(next);
+        queue.push({ roomId: next, path });
+      }
+    }
+    return [from, to];
+  }
+
+  private connectedRooms(roomId: RoomId): RoomId[] {
+    const room = this.state.catalog.rooms.find((candidate) => candidate.id === roomId);
+    const definitionConnections = this.homeDefinition.topology.connections.flatMap((connection) => {
+      if (connection.from === roomId) return [connection.to];
+      if (connection.to === roomId) return [connection.from];
+      return [];
+    });
+    return [...new Set([...(room?.connectedRooms ?? []), ...definitionConnections])];
+  }
+
+  private recoverRuleForDeviceCommand(deviceId: string, command: string): RuleRecoveredEvent[] {
+    if (deviceId === 'fridge_01' && command === 'close') {
+      return this.recoverRuleIfActiveOrAlert('fridge_left_open', ['fridge_01.doorOpen:false']);
+    }
+    return [];
+  }
+
+  private updatePersonBehavior(personId: string): void {
+    const person = this.state.snapshot.people[personId];
+    if (!person) {
+      return;
+    }
+    person.behavior = createBehaviorContext(personId, person.activity, person.location, this.state.snapshot.homeState.mode);
+  }
+
+  private updateAllPersonBehavior(): void {
+    for (const personId of Object.keys(this.state.snapshot.people)) {
+      this.updatePersonBehavior(personId);
+    }
   }
 
   private createScenarioEvent(command: ScenarioControlEvent['command'], value: string | number | boolean): ScenarioControlEvent {
@@ -1282,6 +2029,7 @@ function replayEventsOntoSnapshot(snapshot: TwinSnapshot, events: TwinEvent[]): 
         if (person) {
           person.location = event.to;
           person.activity = event.activity;
+          person.behavior = createBehaviorContext(event.personId, person.activity, person.location, snapshot.homeState.mode);
         }
         break;
       }
@@ -1377,25 +2125,55 @@ function commandPatch(
   value: string | number | boolean | null,
   currentState: Record<string, string | number | boolean | null>
 ): Record<string, string | number | boolean | null> {
+  if (deviceType === 'tv') {
+    if (command === 'turn_on') return { power: 'on', app: currentState.app ?? 'Broadcast', volume: Math.max(Number(currentState.volume ?? 18), 18), lifecyclePhase: 'on' };
+    if (command === 'turn_off') return { power: 'off', app: null, volume: 0, lifecyclePhase: 'off' };
+    if (command === 'set_volume') return { power: 'on', volume: numericCommandValue(value, 40, 0, 100), lifecyclePhase: currentState.lifecyclePhase === 'paused' ? 'paused' : 'watching' };
+    if (command === 'set_input') return { power: 'on', app: enumCommandValue(value, ['Streaming', 'HDMI 1', 'Game', 'Broadcast'], String(currentState.app ?? 'Streaming')), lifecyclePhase: 'watching' };
+    if (command === 'pause') return { power: 'on', volume: 0, lifecyclePhase: 'paused' };
+  }
+  if (deviceType === 'robot_vacuum') {
+    if (command === 'start') return { status: 'cleaning', batteryPercent: numericCommandValue(currentState.batteryPercent ?? 92, 92, 0, 100), binFull: false, cycleMinutes: 0 };
+    if (command === 'assist') return { status: 'assisted', cycleMinutes: numericCommandValue(currentState.cycleMinutes ?? 0, 0, 0, 120) };
+    if (command === 'dock') return { status: 'docked', cycleMinutes: 0 };
+    if (command === 'pause') return { status: 'stuck', cycleMinutes: numericCommandValue(currentState.cycleMinutes ?? 0, 0, 0, 120) };
+  }
   if (command === 'lock') return { locked: true };
   if (command === 'unlock') return { locked: false };
   if (command === 'turn_on') return { power: 'on', brightness: typeof currentState.brightness === 'number' ? Math.max(currentState.brightness, 60) : currentState.brightness ?? 1 };
   if (command === 'turn_off') return { power: 'off', brightness: typeof currentState.brightness === 'number' ? 0 : currentState.brightness ?? 0 };
   if (command === 'set_brightness') return { power: 'on', brightness: numericCommandValue(value, 60, 0, 100) };
+  if (command === 'set_volume') return { power: 'on', volume: numericCommandValue(value, 40, 0, 100) };
+  if (command === 'set_input') return { power: 'on', app: enumCommandValue(value, ['Streaming', 'HDMI 1', 'Game', 'Broadcast'], String(currentState.app ?? 'Streaming')) };
   if (command === 'open') {
+    if (deviceType === 'fridge') return { doorOpen: true, compressorOn: true, powerW: 148, lifecyclePhase: 'opened' };
     return deviceType === 'curtain' ? { positionPercent: 100 } : { valveOpen: true };
   }
   if (command === 'close') {
+    if (deviceType === 'fridge') return { doorOpen: false, compressorOn: true, powerW: 90, lifecyclePhase: 'recovered', openMinutes: 0 };
     return deviceType === 'curtain' ? { positionPercent: 0 } : { valveOpen: false };
   }
   if (command === 'set_position') return { positionPercent: numericCommandValue(value, 50, 0, 100) };
   if (command === 'set_target') return { power: 'on', targetC: numericCommandValue(value, 26, 16, 30) };
+  if (command === 'set_mode') {
+    const options = deviceType === 'air_conditioner'
+      ? ['auto', 'cool', 'heat', 'fan']
+      : deviceType === 'washer'
+        ? ['normal', 'quick', 'heavy', 'delicate']
+        : [];
+    const mode = enumCommandValue(value, options, String(currentState.mode ?? options[0] ?? 'auto'));
+    return deviceType === 'air_conditioner' ? { power: 'on', mode } : { mode };
+  }
   if (command === 'set_level') return { powerW: numericCommandValue(value, 0, 0, 1400), level: numericCommandValue(value, 0, 0, 9) };
   if (command === 'set_speed') return { power: 'on', speed: numericCommandValue(value, 2, 0, 5) };
-  if (command === 'start') return { status: 'running', powerW: Number(currentState.powerW ?? 450) || 450 };
-  if (command === 'stop' || command === 'pause') return { status: command === 'pause' ? 'paused' : 'idle', powerW: 0 };
+  if (command === 'start') {
+    if (deviceType === 'dishwasher') return { status: 'running', remainingMin: 45, powerW: 620 };
+    if (deviceType === 'washer') return { status: 'running', remainingMin: 55, powerW: 480 };
+    return { status: 'running', powerW: Number(currentState.powerW ?? 450) || 450 };
+  }
+  if (command === 'stop' || command === 'pause') return { status: command === 'pause' ? 'paused' : 'idle', remainingMin: 0, powerW: 0 };
   if (command === 'dock') return { status: 'docked' };
-  if (command === 'restart') return { online: true, latencyMs: 18 };
+  if (command === 'restart') return { online: true, latencyMs: 18, lifecyclePhase: 'recovered' };
   if (command === 'record') return { recording: true };
   if (command === 'ring') return { ringing: true };
   return {};
@@ -1407,6 +2185,125 @@ function numericCommandValue(value: string | number | boolean | null, fallback: 
     return fallback;
   }
   return Math.max(min, Math.min(max, numeric));
+}
+
+function enumCommandValue(value: string | number | boolean | null, options: string[], fallback: string): string {
+  const text = typeof value === 'string' ? value : fallback;
+  return options.includes(text) ? text : fallback;
+}
+
+function createBehaviorContext(
+  personId: string,
+  activity: string,
+  location: RoomId | 'away',
+  homeMode: HomeMode
+): TwinSnapshot['people'][string]['behavior'] {
+  if (activity.startsWith('controlling_')) {
+    const targetDeviceId = activity.slice('controlling_'.length);
+    const intent = targetDeviceId === 'router_01'
+      ? 'restart_router'
+      : targetDeviceId === 'fridge_01'
+        ? 'close_fridge'
+        : 'operate_device';
+    return {
+      routinePhase: 'device_response',
+      intent,
+      attentionTarget: targetDeviceId,
+      energy: personId === 'senior_1' ? 44 : 66
+    };
+  }
+
+  if (activity === 'checking_senior_1') {
+    return {
+      routinePhase: 'care_response',
+      intent: 'check_on_senior',
+      attentionTarget: 'senior_1',
+      energy: 58
+    };
+  }
+
+  if (activity === 'sleeping' || homeMode === 'sleeping' && location !== 'away') {
+    return {
+      routinePhase: 'sleep',
+      intent: 'rest',
+      attentionTarget: location,
+      energy: 18
+    };
+  }
+
+  if (personId === 'adult_1') {
+    if (activity === 'commuting' || location === 'away') {
+      return { routinePhase: 'workday', intent: 'commute', attentionTarget: 'entrance', energy: 48 };
+    }
+    if (activity === 'arrived_home') {
+      return { routinePhase: 'evening_return', intent: 'decompress_after_commute', attentionTarget: 'living_room', energy: 55 };
+    }
+    if (activity === 'breakfast' || activity === 'bathroom' || activity === 'waking_up') {
+      return { routinePhase: 'morning_routine', intent: 'prepare_for_day', attentionTarget: location, energy: 64 };
+    }
+    return { routinePhase: homeMode, intent: 'family_time', attentionTarget: location, energy: 60 };
+  }
+
+  if (personId === 'adult_2') {
+    if (activity === 'remote_work') {
+      return { routinePhase: 'workday', intent: 'focused_remote_work', attentionTarget: 'router_01', energy: 70 };
+    }
+    if (activity === 'cooking_dinner') {
+      return { routinePhase: 'evening_meal', intent: 'prepare_dinner', attentionTarget: 'stove_01', energy: 62 };
+    }
+    if (activity === 'coffee' || activity === 'breakfast') {
+      return { routinePhase: 'morning_routine', intent: 'start_day', attentionTarget: 'kitchen', energy: 58 };
+    }
+    return { routinePhase: homeMode, intent: 'support_household', attentionTarget: location, energy: 60 };
+  }
+
+  if (personId === 'child_1') {
+    if (activity === 'school' || location === 'away') {
+      return { routinePhase: 'school_day', intent: 'attend_school', attentionTarget: 'away', energy: 72 };
+    }
+    if (activity === 'homework') {
+      return { routinePhase: 'after_school', intent: 'finish_homework', attentionTarget: 'child_bedroom', energy: 62 };
+    }
+    if (activity === 'watching_tv' || activity === 'playing' || activity === 'weekend_play') {
+      return { routinePhase: 'free_time', intent: 'play_or_relax', attentionTarget: location, energy: 78 };
+    }
+    return { routinePhase: homeMode, intent: 'follow_family_routine', attentionTarget: location, energy: 68 };
+  }
+
+  if (personId === 'senior_1') {
+    if (activity === 'gardening' || activity === 'plant_care') {
+      return { routinePhase: 'daytime_care', intent: 'care_for_plants', attentionTarget: 'sprinkler_01', energy: 52 };
+    }
+    if (activity === 'no_activity') {
+      return { routinePhase: 'wellness_watch', intent: 'needs_check_in', attentionTarget: 'master_sleep_01', energy: 25 };
+    }
+    if (activity === 'morning_check_in') {
+      return { routinePhase: 'wellness_recovery', intent: 'respond_to_check_in', attentionTarget: 'living_room', energy: 45 };
+    }
+    return { routinePhase: homeMode, intent: 'steady_routine', attentionTarget: location, energy: 50 };
+  }
+
+  if (personId === 'pet_1') {
+    return {
+      routinePhase: homeMode === 'sleeping' ? 'quiet_pet_patrol' : 'pet_patrol',
+      intent: activity === 'resting' || activity === 'sleeping' ? 'rest' : 'explore_home',
+      attentionTarget: location,
+      energy: activity === 'resting' || activity === 'sleeping' ? 35 : 82
+    };
+  }
+
+  return {
+    routinePhase: homeMode,
+    intent: activity,
+    attentionTarget: location,
+    energy: 50
+  };
+}
+
+function peopleInRoom(snapshot: TwinSnapshot, roomId: RoomId): string[] {
+  return Object.values(snapshot.people)
+    .filter((person) => person.location === roomId)
+    .map((person) => person.id);
 }
 
 function resolveAlertsForRule(snapshot: TwinSnapshot, ruleId: string, resolvedAt: string): void {

@@ -88,8 +88,16 @@ export interface PersonState {
   kind: PersonKind;
   location: RoomId | 'away';
   activity: string;
+  behavior: PersonBehaviorContext;
   confidence: number;
   privacyMode: boolean;
+}
+
+export interface PersonBehaviorContext {
+  routinePhase: string;
+  intent: string;
+  attentionTarget: string;
+  energy: number;
 }
 
 export interface RoomState {
@@ -160,6 +168,16 @@ export interface BaseTwinEvent {
   sequence: number;
   rngStateAfter?: number;
   reason?: string;
+  eventExplanation?: EventExplanation;
+}
+
+export interface EventExplanation {
+  why: string;
+  actorIds: string[];
+  affectedDeviceIds: string[];
+  affectedRoomIds: RoomId[];
+  relatedIntent?: string;
+  expectedOutcome: string;
 }
 
 export interface DeviceTelemetryEvent extends BaseTwinEvent {
@@ -184,6 +202,7 @@ export interface PersonMovedEvent extends BaseTwinEvent {
   from: RoomId | 'away';
   to: RoomId | 'away';
   activity: string;
+  travelMinutes?: number;
 }
 
 export interface ActivityStartedEvent extends BaseTwinEvent {
