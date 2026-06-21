@@ -5,6 +5,15 @@ import { SeededRandom } from './random';
 import { getScenario, type ScenarioAction, type ScenarioDefinition } from './scenarios';
 import { getDeviceCapability, validateDeviceStatePatch } from '../shared/deviceRegistry';
 import { getDeviceSupportedCommands } from '../shared/deviceInstanceCapabilities';
+import { getSensorProfile, withSensorProfileOverrides } from './sensors/deviceProfiles';
+import { observeEnvironmentSensor, observeMotionSensor, type SensorObservation } from './sensors/sensorModel';
+import { selectActivity } from './agents/agentPolicy';
+import { advanceNeeds, applyActivityEffectsToNeeds, createInitialNeeds, type NeedState } from './agents/needs';
+import { commitmentPressureAtMinute, createDailyCommitments } from './agents/scheduler';
+import { getPersona } from './personas/defaultFamily';
+import { applyActivityToInventory, createInitialInventory, resourcesFromInventory } from './world/inventory';
+import { createConversationDraft } from './social/conversationEvents';
+import { coordinateHousehold, type HouseholdSocialContext, type SocialDecision } from './social/householdCoordinator';
 import type {
   AbnormalityInjectedEvent,
   AlertCreatedEvent,
@@ -14,6 +23,8 @@ import type {
   DeviceState,
   DeviceStateChangedEvent,
   DeviceTelemetryEvent,
+  EventObservability,
+  EventSourceLayer,
   HomeMode,
   PersonMovedEvent,
   RoomId,
@@ -54,6 +65,13 @@ interface RuleLifecycleState {
   cooldownUntilMinute: number;
 }
 
+type RuntimeEventKey = 'id' | 'runId' | 'ts' | 'simTime' | 'homeId' | 'scenarioId' | 'sequence' | 'sourceLayer' | 'lineage';
+type TwinEventDraft = TwinEvent extends infer Event
+  ? Event extends TwinEvent
+    ? Omit<Event, RuntimeEventKey> & Partial<Pick<TwinEvent, 'sourceLayer' | 'lineage'>>
+    : never
+  : never;
+
 interface RuntimeState {
   catalog: Catalog;
   activeScenario: ScenarioDefinition;
@@ -62,6 +80,8 @@ interface RuntimeState {
   emittedEvents: TwinEvent[];
   executedStepKeys: Set<string>;
   profileLitRooms: Set<RoomId>;
+  sensorObservations: Map<string, Record<string, unknown>>;
+  personNeeds: Map<string, NeedState>;
   triggeredRules: Set<string>;
   ruleStates: Map<string, RuleLifecycleState>;
   random: SeededRandom;
@@ -136,6 +156,8 @@ class Simulator implements VirtualHomeSimulator {
       emittedEvents: [],
       executedStepKeys: new Set(),
       profileLitRooms: new Set(),
+      sensorObservations: new Map(),
+      personNeeds: createRuntimePersonNeeds(this.createInitialSnapshot(catalog, 'weekday_normal', '2026-06-17T00:00:00+08:00', 'morning', 60, runContext)),
       triggeredRules: new Set(),
       ruleStates: new Map(),
       random
@@ -173,6 +195,8 @@ class Simulator implements VirtualHomeSimulator {
       profileLitRooms: new Set(Object.values(restoredSnapshot.rooms)
         .filter((room) => room.lightsOn)
         .map((room) => room.id)),
+      sensorObservations: restoreSensorObservations(restoredEvents, restoredSnapshot.runId, restoredSnapshot.simClock.sequence),
+      personNeeds: restorePersonNeeds(restoredSnapshot, elapsedMinutes),
       triggeredRules: new Set(restoredEvents
         .filter((event) => event.type === 'AutomationTriggered')
         .map((event) => event.ruleId)),
@@ -196,6 +220,8 @@ class Simulator implements VirtualHomeSimulator {
       emittedEvents: [],
       executedStepKeys: new Set(),
       profileLitRooms: new Set(),
+      sensorObservations: new Map(),
+      personNeeds: createRuntimePersonNeeds(this.createInitialSnapshot(catalog, scenario.id, scenario.startTime, scenario.initialMode, scenario.speed, runContext)),
       triggeredRules: new Set(),
       ruleStates: new Map(),
       random
@@ -219,6 +245,7 @@ class Simulator implements VirtualHomeSimulator {
     for (let index = 0; index < minutes; index += 1) {
       this.state.elapsedMinutes += 1;
       this.advanceClockOneMinute();
+      this.advancePersonNeeds(1);
       emitted.push(...this.runDueScenarioSteps());
       this.rebuildRooms();
       this.updateOccupancy();
@@ -433,7 +460,10 @@ class Simulator implements VirtualHomeSimulator {
       people,
       devices,
       activities: {},
-      alerts: {}
+      alerts: {},
+      worldState: {
+        inventory: createInitialInventory()
+      }
     };
   }
 
@@ -469,6 +499,8 @@ class Simulator implements VirtualHomeSimulator {
     events.push(...this.advanceRobotVacuumLifecycle());
     events.push(...this.advanceRouterRestartLifecycle());
     events.push(...this.advanceFridgeDoorLifecycle());
+    this.rebuildRooms();
+    events.push(...this.applyAutonomousAgentPolicy());
     this.rebuildRooms();
     events.push(...this.applyBehaviorProfileInteractions());
     this.rebuildRooms();
@@ -537,8 +569,9 @@ class Simulator implements VirtualHomeSimulator {
     ];
     const kitchenClimate = this.state.snapshot.devices.kitchen_temp_01;
     if (kitchenClimate) {
-      const temperatureC = this.round(this.clamp(Number(kitchenClimate.state.temperatureC ?? 25) + (lifecyclePhase === 'alert' ? 0.42 : 0.16), 17, 31));
-      const humidityPercent = Number(kitchenClimate.state.humidityPercent ?? 55);
+      const kitchenRoom = this.state.snapshot.rooms.kitchen;
+      const temperatureC = this.round(this.clamp(Number(kitchenRoom.temperatureC ?? kitchenClimate.state.temperatureC ?? 25) + (lifecyclePhase === 'alert' ? 0.42 : 0.16), 17, 31));
+      const humidityPercent = Number(kitchenRoom.humidityPercent ?? kitchenClimate.state.humidityPercent ?? 55);
       events.push(this.setDeviceState('kitchen_temp_01', { temperatureC, humidityPercent }, 'ambient:fridge:kitchen_temperature_drift'));
       this.state.snapshot.rooms.kitchen.temperatureC = temperatureC;
       this.state.snapshot.rooms.kitchen.humidityPercent = humidityPercent;
@@ -669,10 +702,105 @@ class Simulator implements VirtualHomeSimulator {
     return [event];
   }
 
+  private applyAutonomousAgentPolicy(): TwinEvent[] {
+    const events: TwinEvent[] = [];
+    const minuteOfDay = minuteOfDayFromTime(this.state.snapshot.simClock.currentTime);
+    if (this.state.snapshot.homeState.mode === 'sleeping') {
+      return events;
+    }
+
+    for (const person of Object.values(this.state.snapshot.people)) {
+      if (person.kind !== 'human' || person.location === 'away') {
+        continue;
+      }
+      const daytimeSleepCandidate = person.activity === 'sleeping' && minuteOfDay >= 8 * 60 && minuteOfDay <= 12 * 60;
+      const morningFoodCandidate = ['idle', 'wake_up', 'waking_up'].includes(person.activity) &&
+        minuteOfDay >= 6 * 60 + 30 &&
+        minuteOfDay <= 9 * 60 + 30;
+      const persona = getPersona(person.id);
+      const needs = this.state.personNeeds.get(person.id) ?? createInitialNeeds(persona);
+      const accumulatedFoodCandidate = ['idle', 'reading', 'resting', 'wake_up', 'waking_up'].includes(person.activity) && needs.hunger >= 75;
+      const lunchtimeFoodCandidate = accumulatedFoodCandidate &&
+        persona.role !== 'student' &&
+        minuteOfDay >= 10 * 60 &&
+        minuteOfDay <= 14 * 60;
+      if (!daytimeSleepCandidate && !morningFoodCandidate && !lunchtimeFoodCandidate) {
+        continue;
+      }
+      const decision = selectActivity({
+        personId: person.id,
+        persona,
+        needs: morningFoodCandidate ? { ...needs, hunger: Math.max(needs.hunger, 86) } : needs,
+        currentActivity: person.activity,
+        currentRoom: person.location,
+        homeMode: this.state.snapshot.homeState.mode,
+        minuteOfDay,
+        availableResources: resourcesFromInventory(this.state.snapshot.worldState.inventory),
+        commitmentPressureByActivity: this.commitmentPressureByActivity(person.id, persona, minuteOfDay)
+      });
+      if (decision.activityId !== 'wake_up') {
+        const canChooseFood = (morningFoodCandidate || lunchtimeFoodCandidate) && ['prepare_breakfast', 'eat_simple_food', 'eat_meal'].includes(decision.activityId);
+        if (!canChooseFood) {
+          continue;
+        }
+      }
+      const event = this.createPersonMovedEvent(person.id, person.location, decision.targetRoom, decision.activityId, `agent_policy:${decision.activityId}`);
+      person.location = decision.targetRoom;
+      person.activity = decision.activityId;
+      this.state.snapshot.worldState.inventory = applyActivityToInventory(this.state.snapshot.worldState.inventory, decision.activityId);
+      this.applyActivityEffectsToPerson(person.id, decision.activityId);
+      this.updatePersonBehavior(person.id);
+      events.push(event);
+    }
+    return events;
+  }
+
+  private advancePersonNeeds(minutes: number): void {
+    for (const person of Object.values(this.state.snapshot.people)) {
+      if (person.kind !== 'human') {
+        continue;
+      }
+      const persona = getPersona(person.id);
+      const currentNeeds = this.state.personNeeds.get(person.id) ?? createInitialNeeds(persona);
+      this.state.personNeeds.set(person.id, advanceNeeds(currentNeeds, persona, {
+        minutes,
+        activity: person.activity,
+        homeMode: this.state.snapshot.homeState.mode
+      }));
+    }
+  }
+
+  private applyActivityEffectsToPerson(personId: string, activityId: string): void {
+    const person = this.state.snapshot.people[personId];
+    if (!person || person.kind !== 'human') {
+      return;
+    }
+    const persona = getPersona(personId);
+    const currentNeeds = this.state.personNeeds.get(personId) ?? createInitialNeeds(persona);
+    this.state.personNeeds.set(personId, applyActivityEffectsToNeeds(currentNeeds, activityId));
+  }
+
+  private commitmentPressureByActivity(personId: string, persona: ReturnType<typeof getPersona>, minuteOfDay: number): Record<string, number> {
+    const commitments = createDailyCommitments({
+      persona,
+      date: this.state.snapshot.runContext.startedAt.slice(0, 10),
+      seed: this.state.snapshot.runContext.seed
+    }).filter((commitment) => commitment.personId === personId);
+    const pressureByActivity: Record<string, number> = {};
+    for (const commitment of commitments) {
+      const pressure = commitmentPressureAtMinute(commitments, minuteOfDay, commitment.activityId);
+      if (pressure > 0) {
+        pressureByActivity[commitment.activityId] = pressure;
+      }
+    }
+    return pressureByActivity;
+  }
+
   private applyBehaviorProfileInteractions(): TwinEvent[] {
     const events: TwinEvent[] = [];
     events.push(...this.applyHumanActivityLighting());
     events.push(...this.applyCommuterArrivalScene());
+    events.push(...this.applySocialCoordination());
     events.push(...this.applyChildHomeworkFocus());
     events.push(...this.applyRemoteWorkComfort());
     events.push(...this.applyFamilyDinnerReadiness());
@@ -681,6 +809,464 @@ class Simulator implements VirtualHomeSimulator {
     events.push(...this.applySeniorGardenCare());
     events.push(...this.applyPetGardenSafety());
     return events;
+  }
+
+  private applySocialCoordination(): TwinEvent[] {
+    const events: TwinEvent[] = [];
+    for (const decision of coordinateHousehold(this.createSocialContext())) {
+      if (decision.ruleId === 'parent_homework_reminder') {
+        events.push(...this.applyParentHomeworkReminder(decision));
+      } else if (decision.ruleId === 'family_meal_invitation') {
+        events.push(...this.applyFamilyMealInvitation(decision));
+      } else if (decision.ruleId === 'senior_medicine_reminder') {
+        events.push(...this.applySeniorMedicineReminder(decision));
+      } else if (decision.ruleId === 'package_pickup_response') {
+        events.push(...this.applyPackagePickupResponse(decision));
+      } else if (decision.ruleId === 'household_chore_assignment') {
+        events.push(...this.applyHouseholdChoreAssignment(decision));
+      } else if (decision.ruleId === 'shared_resource_contention') {
+        events.push(...this.applySharedResourceContention(decision));
+      }
+    }
+    return events;
+  }
+
+  private createSocialContext(): HouseholdSocialContext {
+    const people: HouseholdSocialContext['people'] = {};
+    for (const person of Object.values(this.state.snapshot.people)) {
+      people[person.id] = {
+        location: person.location,
+        activity: person.activity,
+        available: isAvailableForSocialCoordination(person.kind, person.location, person.activity)
+      };
+    }
+
+    const activeAlerts: Record<string, string> = {};
+    for (const alert of Object.values(this.state.snapshot.alerts)) {
+      if (alert.status === 'active' || alert.status === 'acknowledged') {
+        activeAlerts[alert.id] = alert.sourceRuleId ?? alert.id;
+      }
+    }
+
+    const resourceClaims = [];
+    const adultWorker = this.state.snapshot.people.adult_2;
+    const child = this.state.snapshot.people.child_1;
+    if (adultWorker?.location === 'study' && adultWorker.activity === 'remote_work') {
+      resourceClaims.push({ personId: 'adult_2', resourceId: 'quiet_study', priority: 80 });
+    }
+    if (child?.location === 'study' && child.activity === 'homework') {
+      resourceClaims.push({ personId: 'child_1', resourceId: 'quiet_study', priority: 70 });
+    }
+    for (const person of Object.values(this.state.snapshot.people)) {
+      if (person.kind !== 'human' || person.location === 'away' || !['bathroom', 'bathroom_routine'].includes(person.activity)) {
+        continue;
+      }
+      resourceClaims.push({
+        personId: person.id,
+        resourceId: 'bathroom_sink',
+        priority: person.location === 'bathroom' ? 74 : 55
+      });
+    }
+
+    return {
+      currentTime: this.state.snapshot.simClock.currentTime,
+      homeMode: this.state.snapshot.homeState.mode,
+      people,
+      activeAlerts,
+      resourceClaims,
+      availableResources: resourcesFromInventory(this.state.snapshot.worldState.inventory),
+      householdBacklog: {
+        dirtyDishes: this.state.snapshot.worldState.inventory.dirtyDishes,
+        dirtyLaundryKg: this.state.snapshot.worldState.inventory.dirtyLaundryKg,
+        packageCount: this.state.snapshot.worldState.inventory.packageCount,
+        unfinishedChores: this.state.snapshot.worldState.inventory.unfinishedChores,
+        deviceMaintenanceScore: this.state.snapshot.worldState.inventory.deviceMaintenanceScore
+      },
+      taskPressure: {
+        child_1: this.estimateChildTaskPressure()
+      }
+    };
+  }
+
+  private applyParentHomeworkReminder(decision: SocialDecision): TwinEvent[] {
+    if (
+      this.state.triggeredRules.has(decision.ruleId) ||
+      !decision.targetRoom ||
+      !decision.targetActivity ||
+      !decision.conversationTopic
+    ) {
+      return [];
+    }
+    const [parentId, childId] = decision.actorIds;
+    const parent = parentId ? this.state.snapshot.people[parentId] : undefined;
+    const child = childId ? this.state.snapshot.people[childId] : undefined;
+    if (!parent || !child || parent.location === 'away' || child.location === 'away') {
+      return [];
+    }
+
+    this.state.triggeredRules.add(decision.ruleId);
+    const events: TwinEvent[] = [
+      this.createEvent(createConversationDraft({
+        conversationId: `${decision.ruleId}_${this.state.snapshot.simClock.sequence + 1}`,
+        currentTime: this.state.snapshot.simClock.currentTime,
+        speakerId: parent.id,
+        listenerIds: [child.id],
+        topic: decision.conversationTopic,
+        intent: 'finish_homework',
+        roomId: parent.location,
+        summary: `${parent.id} reminds ${child.id} to stop entertainment and start homework.`,
+        reason: decision.reason
+      }))
+    ];
+
+    const from = child.location;
+    child.location = decision.targetRoom;
+    child.activity = decision.targetActivity;
+    this.updatePersonBehavior(child.id);
+    events.push(this.createPersonMovedEvent(child.id, from, decision.targetRoom, decision.targetActivity, decision.reason));
+    events.push(this.createEvent({
+      type: 'AutomationTriggered',
+      ruleId: decision.ruleId,
+      explanation: 'A parent noticed the child watching TV during homework time and redirected the child to homework.',
+      actions: ['remind_child_to_start_homework', 'move_child_to_study_area'],
+      reason: decision.reason,
+      eventExplanation: {
+        why: `${parent.id} has family authority for child_1 and child_1 has high homework pressure.`,
+        actorIds: [parent.id, child.id],
+        affectedDeviceIds: ['tv_01', 'child_sleep_01'],
+        affectedRoomIds: ['living_room', decision.targetRoom],
+        relatedIntent: 'finish_homework',
+        expectedOutcome: 'Shift the child from entertainment to homework before quiet-focus automation applies.'
+      }
+    }));
+    return events;
+  }
+
+  private applyPackagePickupResponse(decision: SocialDecision): TwinEvent[] {
+    if (
+      this.state.triggeredRules.has(decision.ruleId) ||
+      !decision.targetRoom ||
+      !decision.targetActivity ||
+      this.state.snapshot.worldState.inventory.packageCount <= 0
+    ) {
+      return [];
+    }
+    const actorId = decision.actorIds[0];
+    const actor = actorId ? this.state.snapshot.people[actorId] : undefined;
+    if (!actor || actor.location === 'away') {
+      return [];
+    }
+
+    this.state.triggeredRules.add(decision.ruleId);
+    const from = actor.location;
+    actor.location = decision.targetRoom;
+    actor.activity = decision.targetActivity;
+    this.updatePersonBehavior(actor.id);
+    this.state.snapshot.worldState.inventory.packageCount = Math.max(0, this.state.snapshot.worldState.inventory.packageCount - 1);
+    const events: TwinEvent[] = [
+      this.createEvent({
+        type: 'ExternalInteractionOccurred',
+        interactionId: `${decision.ruleId}_${this.state.snapshot.simClock.sequence + 1}`,
+        actorKind: 'courier',
+        purpose: 'package_delivery',
+        roomId: 'entrance',
+        status: 'completed',
+        relatedDeviceIds: ['doorbell_camera_01', 'package_sensor_01'],
+        reason: decision.reason
+      }),
+      this.createPersonMovedEvent(actor.id, from, decision.targetRoom, decision.targetActivity, decision.reason),
+      this.setDeviceState('package_sensor_01', { packagePresent: false, weightKg: 0 }, 'social:package_pickup_response:collected'),
+      this.setDeviceState('doorbell_camera_01', { motion: false, ringing: false }, 'social:package_pickup_response:acknowledged'),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: decision.ruleId,
+        explanation: 'A courier delivery was acknowledged and a household member collected the package from the entrance.',
+        actions: ['acknowledge_courier_delivery', 'move_household_member_to_entrance', 'clear_package_sensor', 'reduce_package_backlog'],
+        reason: decision.reason,
+        eventExplanation: {
+          why: `${actor.id} is available while the entrance package sensor reports a package.`,
+          actorIds: [actor.id],
+          affectedDeviceIds: ['doorbell_camera_01', 'package_sensor_01'],
+          affectedRoomIds: ['entrance'],
+          relatedIntent: 'handle_delivery',
+          expectedOutcome: 'Turn an external courier event into a concrete household response and clear the package backlog.'
+        }
+      })
+    ];
+    return events;
+  }
+
+  private applyHouseholdChoreAssignment(decision: SocialDecision): TwinEvent[] {
+    if (
+      this.state.triggeredRules.has(decision.ruleId) ||
+      !decision.targetRoom ||
+      !decision.targetActivity ||
+      !decision.conversationTopic ||
+      this.state.snapshot.worldState.inventory.dirtyDishes < 4
+    ) {
+      return [];
+    }
+    const [assignerId, assigneeId] = decision.actorIds;
+    const assigner = assignerId ? this.state.snapshot.people[assignerId] : undefined;
+    const assignee = assigneeId ? this.state.snapshot.people[assigneeId] : undefined;
+    if (!assigner || !assignee || assigner.location === 'away' || assignee.location === 'away') {
+      return [];
+    }
+
+    this.state.triggeredRules.add(decision.ruleId);
+    const from = assignee.location;
+    assignee.location = decision.targetRoom;
+    assignee.activity = decision.targetActivity;
+    this.state.snapshot.worldState.inventory = applyActivityToInventory(this.state.snapshot.worldState.inventory, decision.targetActivity);
+    this.updatePersonBehavior(assignee.id);
+    return [
+      this.createEvent(createConversationDraft({
+        conversationId: `${decision.ruleId}_${this.state.snapshot.simClock.sequence + 1}`,
+        currentTime: this.state.snapshot.simClock.currentTime,
+        speakerId: assigner.id,
+        listenerIds: [assignee.id],
+        topic: decision.conversationTopic,
+        intent: 'share_household_work',
+        roomId: assigner.location,
+        summary: `${assigner.id} assigns dish cleanup to ${assignee.id}.`,
+        reason: decision.reason
+      })),
+      this.createPersonMovedEvent(assignee.id, from, decision.targetRoom, decision.targetActivity, decision.reason),
+      this.setDeviceState('dishwasher_01', { status: 'idle', remainingMin: 0, powerW: 0 }, 'social:household_chore_assignment:unloaded'),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: decision.ruleId,
+        explanation: 'A household chore was assigned based on dirty dish backlog and completed by an available family member.',
+        actions: ['assign_dish_cleanup', 'move_assignee_to_kitchen', 'clear_dirty_dish_backlog', 'update_chore_backlog'],
+        reason: decision.reason,
+        eventExplanation: {
+          why: `${assigner.id} is available to coordinate chores and dirty dishes exceed the backlog threshold.`,
+          actorIds: [assigner.id, assignee.id],
+          affectedDeviceIds: ['dishwasher_01'],
+          affectedRoomIds: ['kitchen'],
+          relatedIntent: 'share_household_work',
+          expectedOutcome: 'Represent household chores as social coordination rather than anonymous device state changes.'
+        }
+      })
+    ];
+  }
+
+  private applyFamilyMealInvitation(decision: SocialDecision): TwinEvent[] {
+    if (
+      this.state.triggeredRules.has(decision.ruleId) ||
+      !decision.targetRoom ||
+      !decision.targetActivity ||
+      !decision.conversationTopic ||
+      decision.actorIds.length < 2
+    ) {
+      return [];
+    }
+
+    const host = this.state.snapshot.people[decision.actorIds[0]];
+    if (!host || host.location === 'away') {
+      return [];
+    }
+
+    this.state.triggeredRules.add(decision.ruleId);
+    const participants = ['adult_1', 'adult_2', 'child_1', 'senior_1']
+      .filter((personId) => decision.actorIds.includes(personId))
+      .filter((personId) => this.state.snapshot.people[personId]?.location !== 'away');
+    const events: TwinEvent[] = [
+      this.createEvent(createConversationDraft({
+        conversationId: `${decision.ruleId}_${this.state.snapshot.simClock.sequence + 1}`,
+        currentTime: this.state.snapshot.simClock.currentTime,
+        speakerId: host.id,
+        listenerIds: participants.filter((personId) => personId !== host.id),
+        topic: decision.conversationTopic,
+        intent: 'family_time',
+        roomId: host.location,
+        summary: `${host.id} calls the household to dinner.`,
+        reason: decision.reason
+      }))
+    ];
+
+    for (const personId of participants) {
+      const person = this.state.snapshot.people[personId];
+      if (!person || person.location === 'away') {
+        continue;
+      }
+      const from = person.location;
+      person.location = decision.targetRoom;
+      person.activity = decision.targetActivity;
+      this.updatePersonBehavior(person.id);
+      events.push(this.createPersonMovedEvent(person.id, from, decision.targetRoom, decision.targetActivity, decision.reason));
+    }
+
+    this.state.snapshot.activities.family_dinner = {
+      activityId: 'family_dinner',
+      participants,
+      roomId: 'dining_room',
+      startedAt: this.state.snapshot.simClock.currentTime
+    };
+    events.push(this.createEvent({
+      type: 'ActivityStarted',
+      activityId: 'family_dinner',
+      participants,
+      roomId: 'dining_room',
+      reason: decision.reason
+    }));
+    events.push(this.setDeviceState('dining_light_01', { power: 'on', brightness: 64 }, 'social:family_meal_invitation:dining_light'));
+    events.push(this.setDeviceState('stove_01', { powerW: 0, level: 0 }, 'social:family_meal_invitation:dinner_ready'));
+    events.push(this.setDeviceState('range_hood_01', { power: 'off', speed: 0 }, 'social:family_meal_invitation:dinner_ready'));
+    events.push(this.createEvent({
+      type: 'AutomationTriggered',
+      ruleId: decision.ruleId,
+      explanation: 'Dinner preparation became a household invitation, so available family members gather in the dining room.',
+      actions: ['invite_family_to_dinner', 'move_available_family_to_dining_room', 'set_dining_light', 'mark_dinner_ready'],
+      reason: decision.reason,
+      eventExplanation: {
+        why: `${host.id} is preparing dinner and available family members can join.`,
+        actorIds: participants,
+        affectedDeviceIds: ['dining_light_01', 'stove_01', 'range_hood_01'],
+        affectedRoomIds: ['kitchen', 'dining_room'],
+        relatedIntent: 'family_time',
+        expectedOutcome: 'Represent dinner as a coordinated household activity instead of isolated movements.'
+      }
+    }));
+    return events;
+  }
+
+  private applySeniorMedicineReminder(decision: SocialDecision): TwinEvent[] {
+    if (
+      this.state.triggeredRules.has(decision.ruleId) ||
+      !decision.targetRoom ||
+      !decision.targetActivity ||
+      !decision.conversationTopic ||
+      this.state.snapshot.worldState.inventory.medicineDoses <= 0
+    ) {
+      return [];
+    }
+    const [caregiverId, seniorId] = decision.actorIds;
+    const caregiver = caregiverId ? this.state.snapshot.people[caregiverId] : undefined;
+    const senior = seniorId ? this.state.snapshot.people[seniorId] : undefined;
+    if (!caregiver || !senior || caregiver.location === 'away' || senior.location === 'away') {
+      return [];
+    }
+
+    this.state.triggeredRules.add(decision.ruleId);
+    const events: TwinEvent[] = [
+      this.createEvent(createConversationDraft({
+        conversationId: `${decision.ruleId}_${this.state.snapshot.simClock.sequence + 1}`,
+        currentTime: this.state.snapshot.simClock.currentTime,
+        speakerId: caregiver.id,
+        listenerIds: [senior.id],
+        topic: decision.conversationTopic,
+        intent: 'support_health_routine',
+        roomId: caregiver.location,
+        summary: `${caregiver.id} reminds ${senior.id} to take morning medicine.`,
+        reason: decision.reason
+      }))
+    ];
+
+    const from = senior.location;
+    senior.location = decision.targetRoom;
+    senior.activity = decision.targetActivity;
+    this.state.snapshot.worldState.inventory = applyActivityToInventory(this.state.snapshot.worldState.inventory, decision.targetActivity);
+    this.updatePersonBehavior(senior.id);
+    events.push(this.createPersonMovedEvent(senior.id, from, decision.targetRoom, decision.targetActivity, decision.reason));
+    events.push(this.setDeviceState('master_sleep_01', { inBed: false, heartRateSimulated: 72 }, 'social:senior_medicine_reminder:wellness_signal'));
+    events.push(this.createEvent({
+      type: 'AutomationTriggered',
+      ruleId: decision.ruleId,
+      explanation: 'A family caregiver reminded the senior to take medicine, updating the medication stock and health risk.',
+      actions: ['remind_senior_take_medicine', 'move_senior_to_medicine_box', 'consume_medicine_dose', 'update_wellness_signal'],
+      reason: decision.reason,
+      eventExplanation: {
+        why: `${caregiver.id} has care responsibility and medicine is available during the morning health window.`,
+        actorIds: [caregiver.id, senior.id],
+        affectedDeviceIds: ['master_sleep_01'],
+        affectedRoomIds: [decision.targetRoom],
+        relatedIntent: 'support_health_routine',
+        expectedOutcome: 'Reduce senior health risk while preserving a concrete family interaction trail.'
+      }
+    }));
+    return events;
+  }
+
+  private applySharedResourceContention(decision: SocialDecision): TwinEvent[] {
+    if (this.state.triggeredRules.has(`${decision.ruleId}:${decision.resourceId}`) || !decision.resourceId) {
+      return [];
+    }
+    this.state.triggeredRules.add(`${decision.ruleId}:${decision.resourceId}`);
+    const winnerId = decision.actorIds[0];
+    const waitingIds = decision.actorIds.slice(1);
+    const winner = winnerId ? this.state.snapshot.people[winnerId] : undefined;
+    const events: TwinEvent[] = [];
+    if (winner && waitingIds.length > 0) {
+      events.push(this.createEvent(createConversationDraft({
+        conversationId: `${decision.ruleId}_${decision.resourceId}_${this.state.snapshot.simClock.sequence + 1}`,
+        currentTime: this.state.snapshot.simClock.currentTime,
+        speakerId: winner.id,
+        listenerIds: waitingIds,
+        topic: 'resource_contention',
+        intent: 'coordinate_shared_resource',
+        roomId: winner.location === 'away' ? this.roomForSharedResource(decision.resourceId) : winner.location,
+        summary: `${winner.id} keeps ${decision.resourceId} while ${waitingIds.join(', ')} waits.`,
+        reason: decision.reason
+      })));
+    }
+    for (const personId of waitingIds) {
+      const person = this.state.snapshot.people[personId];
+      if (!person || person.location === 'away' || !decision.targetActivity) {
+        continue;
+      }
+      person.activity = decision.targetActivity;
+      this.updatePersonBehavior(person.id);
+    }
+    events.push(
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: decision.ruleId,
+        explanation: `The household detected contention for ${decision.resourceId} and queued lower-priority use.`,
+        actions: ['prioritize_current_resource_user', 'queue_shared_resource_request'],
+        reason: decision.reason,
+        eventExplanation: {
+          why: `${decision.actorIds.join(', ')} requested ${decision.resourceId} at the same time.`,
+          actorIds: decision.actorIds,
+          affectedDeviceIds: [],
+          affectedRoomIds: [this.roomForSharedResource(decision.resourceId)],
+          relatedIntent: 'coordinate_shared_resource',
+          expectedOutcome: 'Avoid unrealistic simultaneous use of a constrained household resource.'
+        }
+      })
+    );
+    return events;
+  }
+
+  private roomForSharedResource(resourceId: string): RoomId {
+    if (resourceId === 'bathroom_sink') {
+      return 'bathroom';
+    }
+    if (resourceId === 'quiet_study') {
+      return 'study';
+    }
+    if (resourceId === 'tv_01') {
+      return 'living_room';
+    }
+    if (resourceId === 'kitchen_stove') {
+      return 'kitchen';
+    }
+    return 'living_room';
+  }
+
+  private estimateChildTaskPressure(): number {
+    const child = this.state.snapshot.people.child_1;
+    if (!child || child.location === 'away') {
+      return 0;
+    }
+    if (child.activity === 'homework') {
+      return 48;
+    }
+    const minuteOfDay = minuteOfDayFromTime(this.state.snapshot.simClock.currentTime);
+    if (minuteOfDay >= 16 * 60 && minuteOfDay <= 20 * 60 && ['watching_tv', 'playing', 'weekend_play'].includes(child.activity)) {
+      return 86;
+    }
+    return 42;
   }
 
   private applyHumanActivityLighting(): TwinEvent[] {
@@ -1000,13 +1586,35 @@ class Simulator implements VirtualHomeSimulator {
 
     for (const sensor of sensors) {
       const room = this.state.snapshot.rooms[sensor.roomId];
-      const patch = {
-        motion: room.motionDetected,
-        confidence: room.motionDetected ? room.humanOccupancy ? 0.84 : 0.42 : 0
-      };
-      const event = this.setDeviceStateIfChanged(sensor.deviceId, patch, `ambient:motion:${room.humanOccupancy ? 'human' : 'pet_motion'}:${sensor.roomId}`);
-      if (event) {
-        events.push(event);
+      const observation = observeMotionSensor({
+        deviceId: sensor.deviceId,
+        roomId: sensor.roomId,
+        deviceType: 'motion_sensor',
+        worldState: {
+          humanOccupancy: room.humanOccupancy,
+          petOccupancy: room.people.some((personId) => this.state.snapshot.people[personId]?.kind === 'pet'),
+          motionDetected: room.motionDetected
+        },
+        previousObservation: this.state.sensorObservations.get(sensor.deviceId),
+        currentTime: this.state.snapshot.simClock.currentTime,
+        randomSeed: this.state.random.getState()
+      }, getSensorProfile('motion_sensor'));
+      if (!observation) {
+        continue;
+      }
+      this.state.sensorObservations.set(sensor.deviceId, observation.observedState);
+      const telemetryEvent = this.createTelemetryEventFromObservation(observation);
+      events.push(telemetryEvent);
+      for (const additionalEvent of observation.additionalEvents ?? []) {
+        events.push(this.createEvent(additionalEvent));
+      }
+
+      const patch = telemetryMeasurementsToDeviceState(observation.event.measurements);
+      if (Object.keys(patch).length > 0) {
+        const stateEvent = this.setDeviceStateIfChanged(sensor.deviceId, patch, `sensor:motion:${room.humanOccupancy ? 'human' : 'non_human'}:${sensor.roomId}`);
+        if (stateEvent) {
+          events.push(stateEvent);
+        }
       }
     }
 
@@ -1177,6 +1785,7 @@ class Simulator implements VirtualHomeSimulator {
       const event = this.createPersonMovedEvent(action.personId, person.location, action.to, action.activity);
       person.location = action.to;
       person.activity = action.activity;
+      this.applyActivityEffectsToPerson(action.personId, action.activity);
       this.updatePersonBehavior(action.personId);
       return [event];
     }
@@ -1198,6 +1807,9 @@ class Simulator implements VirtualHomeSimulator {
         roomId: action.roomId,
         startedAt: this.state.snapshot.simClock.currentTime
       };
+      for (const participantId of action.participants) {
+        this.applyActivityEffectsToPerson(participantId, action.activityId);
+      }
       return [this.createEvent({
         type: 'ActivityStarted',
         activityId: action.activityId,
@@ -1450,30 +2062,67 @@ class Simulator implements VirtualHomeSimulator {
       }
       const state = this.state.snapshot.devices[device.id].state;
       const measurements: Record<string, number | boolean> = {};
+      let sensorObservation: SensorObservation | null = null;
       if (device.type === 'temperature_humidity_sensor') {
         const room = this.state.snapshot.rooms[device.roomId];
         const roomOccupied = room.humanOccupancy;
         const stoveHeat = device.roomId === 'kitchen' ? Number(this.state.snapshot.devices.stove_01.state.powerW ?? 0) / 9000 : 0;
-        const temperatureC = this.round(this.clamp((Number(state.temperatureC) || 25) + this.state.random.range(-0.12, 0.18) + (roomOccupied ? 0.03 : -0.02) + stoveHeat, 17, 31));
-        const humidityPercent = this.round(this.clamp((Number(state.humidityPercent) || 55) + this.state.random.range(-0.25, 0.35) + (roomOccupied ? 0.04 : -0.03), 35, 78));
-        state.temperatureC = temperatureC;
-        state.humidityPercent = humidityPercent;
-        room.temperatureC = temperatureC;
-        room.humidityPercent = humidityPercent;
-        measurements.temperature_c = temperatureC;
-        measurements.humidity_percent = humidityPercent;
+        const worldTemperatureC = this.round(this.clamp((Number(room.temperatureC) || Number(state.temperatureC) || 25) + this.state.random.range(-0.12, 0.18) + (roomOccupied ? 0.03 : -0.02) + stoveHeat, 17, 31));
+        const worldHumidityPercent = this.round(this.clamp((Number(room.humidityPercent) || Number(state.humidityPercent) || 55) + this.state.random.range(-0.25, 0.35) + (roomOccupied ? 0.04 : -0.03), 35, 78));
+        sensorObservation = observeEnvironmentSensor({
+          deviceId: device.id,
+          roomId: device.roomId,
+          deviceType: device.type,
+          worldState: {
+            temperatureC: worldTemperatureC,
+            humidityPercent: worldHumidityPercent
+          },
+          previousObservation: this.state.sensorObservations.get(device.id),
+          currentTime: this.state.snapshot.simClock.currentTime,
+          randomSeed: this.state.random.getState()
+        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }));
+        if (!sensorObservation) {
+          continue;
+        }
+        Object.assign(measurements, sensorObservation.event.measurements);
+        if (typeof measurements.temperature_c === 'number') {
+          state.temperatureC = measurements.temperature_c;
+        }
+        if (typeof measurements.humidity_percent === 'number') {
+          state.humidityPercent = measurements.humidity_percent;
+        }
+        room.temperatureC = worldTemperatureC;
+        room.humidityPercent = worldHumidityPercent;
       } else if (device.type === 'air_quality_sensor') {
         const cooking = this.state.snapshot.activities.breakfast || this.state.snapshot.activities.cooking_dinner;
         const humanOccupancy = this.state.snapshot.rooms[device.roomId].people
           .filter((personId) => this.state.snapshot.people[personId]?.kind === 'human')
           .length;
         const remoteWorkLoad = device.roomId === 'study' && this.state.snapshot.people.adult_2?.location === 'study' && this.state.snapshot.people.adult_2.activity === 'remote_work' ? 145 : 0;
-        const pm25 = this.round(this.clamp((cooking ? 18 : 8) + this.state.random.range(-1, 1), 2, 60));
-        const co2 = this.round(this.clamp((cooking ? 690 : 530) + humanOccupancy * 42 + remoteWorkLoad + this.state.random.range(-8, 8), 420, 1200));
-        state.pm25 = pm25;
-        state.co2 = co2;
-        measurements.pm25 = pm25;
-        measurements.co2 = co2;
+        const worldPm25 = this.round(this.clamp((cooking ? 18 : 8) + this.state.random.range(-1, 1), 2, 60));
+        const worldCo2 = this.round(this.clamp((cooking ? 690 : 530) + humanOccupancy * 42 + remoteWorkLoad + this.state.random.range(-8, 8), 420, 1200));
+        sensorObservation = observeEnvironmentSensor({
+          deviceId: device.id,
+          roomId: device.roomId,
+          deviceType: device.type,
+          worldState: {
+            pm25: worldPm25,
+            co2: worldCo2
+          },
+          previousObservation: this.state.sensorObservations.get(device.id),
+          currentTime: this.state.snapshot.simClock.currentTime,
+          randomSeed: this.state.random.getState()
+        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }));
+        if (!sensorObservation) {
+          continue;
+        }
+        Object.assign(measurements, sensorObservation.event.measurements);
+        if (typeof measurements.pm25 === 'number') {
+          state.pm25 = measurements.pm25;
+        }
+        if (typeof measurements.co2 === 'number') {
+          state.co2 = measurements.co2;
+        }
       } else if (device.type === 'water_flow_sensor') {
         const roomOccupied = this.state.snapshot.rooms[device.roomId].humanOccupancy;
         const leakActive = this.state.snapshot.devices.water_leak_01.state.leakDetected === true;
@@ -1494,6 +2143,14 @@ class Simulator implements VirtualHomeSimulator {
         state.moisturePercent = moisturePercent;
         measurements.moisture_percent = moisturePercent;
       }
+      if (sensorObservation) {
+        this.state.sensorObservations.set(device.id, sensorObservation.observedState);
+        events.push(this.createTelemetryEventFromObservation(sensorObservation));
+        for (const additionalEvent of sensorObservation.additionalEvents ?? []) {
+          events.push(this.createEvent(additionalEvent));
+        }
+        continue;
+      }
       events.push(this.createEvent({
         type: 'DeviceTelemetry',
         roomId: device.roomId,
@@ -1503,6 +2160,10 @@ class Simulator implements VirtualHomeSimulator {
       }));
     }
     return events;
+  }
+
+  private createTelemetryEventFromObservation(observation: SensorObservation): DeviceTelemetryEvent {
+    return this.createEvent(observation.event);
   }
 
   private setDeviceState(deviceId: string, patch: Record<string, string | number | boolean | null>, reason: string): DeviceStateChangedEvent {
@@ -1898,7 +2559,7 @@ class Simulator implements VirtualHomeSimulator {
     });
   }
 
-  private createEvent<T extends Omit<TwinEvent, 'id' | 'runId' | 'ts' | 'simTime' | 'homeId' | 'scenarioId' | 'sequence'>>(event: T): T & {
+  private createEvent<T extends TwinEventDraft>(event: T): T & {
     id: string;
     runId: string;
     ts: string;
@@ -1906,20 +2567,51 @@ class Simulator implements VirtualHomeSimulator {
     homeId: string;
     scenarioId: string;
     sequence: number;
+    sourceLayer: EventSourceLayer;
+    lineage: TwinEvent['lineage'];
+    rngStateAfter?: number;
   } {
     this.state.snapshot.simClock.sequence += 1;
     const sequence = this.state.snapshot.simClock.sequence;
     this.syncRunContext();
-    return {
+    const sourceLayer = event.sourceLayer ?? inferEventSourceLayer(event);
+    const observability = observabilityForSourceLayer(sourceLayer);
+    const simTime = this.state.snapshot.simClock.currentTime;
+    const lineage = event.lineage ?? {
+      eventTime: simTime,
+      ingestTime: simTime,
+      sourceLayer,
+      causeEventIds: [],
+      episodeId: event.reason ?? event.type,
+      observability,
+      quality: {},
+      schemaVersion: 1,
+      behaviorModelVersion: this.state.snapshot.runContext.engineVersion
+    };
+    const completedEvent = {
       ...event,
       id: `${this.state.snapshot.runId}_evt_${String(sequence).padStart(6, '0')}`,
       runId: this.state.snapshot.runId,
-      ts: this.state.snapshot.simClock.currentTime,
-      simTime: this.state.snapshot.simClock.currentTime,
+      ts: simTime,
+      simTime,
       homeId: this.homeId,
       scenarioId: this.state.snapshot.scenarioId,
       sequence,
+      sourceLayer,
+      lineage,
       rngStateAfter: this.state.random.getState()
+    };
+    return completedEvent as T & {
+      id: string;
+      runId: string;
+      ts: string;
+      simTime: string;
+      homeId: string;
+      scenarioId: string;
+      sequence: number;
+      sourceLayer: EventSourceLayer;
+      lineage: TwinEvent['lineage'];
+      rngStateAfter?: number;
     };
   }
 
@@ -2044,6 +2736,10 @@ function replayEventsOntoSnapshot(snapshot: TwinSnapshot, events: TwinEvent[]): 
       case 'ActivityEnded':
         delete snapshot.activities[event.activityId];
         break;
+      case 'ConversationOccurred':
+        break;
+      case 'ExternalInteractionOccurred':
+        break;
       case 'AlertCreated':
         snapshot.alerts[event.alertId] = {
           id: event.alertId,
@@ -2117,6 +2813,90 @@ function replayTelemetryEvent(snapshot: TwinSnapshot, event: DeviceTelemetryEven
       room.humidityPercent = event.measurements.humidity_percent;
     }
   }
+}
+
+function telemetryMeasurementsToDeviceState(measurements: Record<string, number | boolean>): Record<string, string | number | boolean | null> {
+  const measurementStateKeys: Record<string, string> = {
+    motion: 'motion',
+    confidence: 'confidence',
+    temperature_c: 'temperatureC',
+    humidity_percent: 'humidityPercent',
+    pm25: 'pm25',
+    co2: 'co2',
+    flow_l_min: 'flowLMin',
+    total_l: 'totalL',
+    moisture_percent: 'moisturePercent'
+  };
+  return Object.fromEntries(Object.entries(measurements)
+    .map(([measurement, value]) => [measurementStateKeys[measurement], value] as const)
+    .filter(([stateKey]) => Boolean(stateKey)));
+}
+
+function restoreSensorObservations(events: TwinEvent[], runId: string, sequence: number): Map<string, Record<string, unknown>> {
+  const observations = new Map<string, Record<string, unknown>>();
+  for (const event of events) {
+    if (event.runId !== runId || event.sequence > sequence || event.type !== 'DeviceTelemetry') {
+      continue;
+    }
+    observations.set(event.deviceId, {
+      ...telemetryMeasurementsToObservation(event.measurements),
+      lastObservedAt: event.lineage.eventTime
+    });
+  }
+  return observations;
+}
+
+function createRuntimePersonNeeds(snapshot: TwinSnapshot): Map<string, NeedState> {
+  const needs = new Map<string, NeedState>();
+  for (const person of Object.values(snapshot.people)) {
+    if (person.kind !== 'human') {
+      continue;
+    }
+    needs.set(person.id, createInitialNeeds(getPersona(person.id)));
+  }
+  return needs;
+}
+
+function restorePersonNeeds(snapshot: TwinSnapshot, elapsedMinutes: number): Map<string, NeedState> {
+  const needs = createRuntimePersonNeeds(snapshot);
+  for (const person of Object.values(snapshot.people)) {
+    if (person.kind !== 'human') {
+      continue;
+    }
+    const persona = getPersona(person.id);
+    const current = needs.get(person.id) ?? createInitialNeeds(persona);
+    needs.set(person.id, advanceNeeds(current, persona, {
+      minutes: elapsedMinutes,
+      activity: person.activity,
+      homeMode: snapshot.homeState.mode
+    }));
+  }
+  return needs;
+}
+
+function telemetryMeasurementsToObservation(measurements: Record<string, number | boolean>): Record<string, number | boolean> {
+  const measurementStateKeys: Record<string, string> = {
+    motion: 'motion',
+    confidence: 'confidence',
+    temperature_c: 'temperatureC',
+    humidity_percent: 'humidityPercent',
+    pm25: 'pm25',
+    co2: 'co2',
+    flow_l_min: 'flowLMin',
+    total_l: 'totalL',
+    moisture_percent: 'moisturePercent'
+  };
+  return Object.fromEntries(Object.entries(measurements)
+    .map(([measurement, value]) => [measurementStateKeys[measurement], value] as const)
+    .filter(([stateKey]) => Boolean(stateKey)));
+}
+
+function minuteOfDayFromTime(time: string): number {
+  const match = time.match(/T(\d{2}):(\d{2}):/);
+  if (!match) {
+    return 0;
+  }
+  return Number(match[1]) * 60 + Number(match[2]);
 }
 
 function commandPatch(
@@ -2238,7 +3018,7 @@ function createBehaviorContext(
     if (activity === 'arrived_home') {
       return { routinePhase: 'evening_return', intent: 'decompress_after_commute', attentionTarget: 'living_room', energy: 55 };
     }
-    if (activity === 'breakfast' || activity === 'bathroom' || activity === 'waking_up') {
+    if (activity === 'breakfast' || activity === 'bathroom' || activity === 'waking_up' || activity === 'wake_up') {
       return { routinePhase: 'morning_routine', intent: 'prepare_for_day', attentionTarget: location, energy: 64 };
     }
     return { routinePhase: homeMode, intent: 'family_time', attentionTarget: location, energy: 60 };
@@ -2251,7 +3031,7 @@ function createBehaviorContext(
     if (activity === 'cooking_dinner') {
       return { routinePhase: 'evening_meal', intent: 'prepare_dinner', attentionTarget: 'stove_01', energy: 62 };
     }
-    if (activity === 'coffee' || activity === 'breakfast') {
+    if (activity === 'coffee' || activity === 'breakfast' || activity === 'wake_up' || activity === 'waking_up') {
       return { routinePhase: 'morning_routine', intent: 'start_day', attentionTarget: 'kitchen', energy: 58 };
     }
     return { routinePhase: homeMode, intent: 'support_household', attentionTarget: location, energy: 60 };
@@ -2332,8 +3112,51 @@ function legacyAlertIdsForRule(ruleId: string): string[] {
   return alertIds[ruleId] ?? [];
 }
 
+function isAvailableForSocialCoordination(kind: string, location: RoomId | 'away', activity: string): boolean {
+  if (kind !== 'human' || location === 'away') {
+    return false;
+  }
+  return ![
+    'sleeping',
+    'remote_work',
+    'cooking_dinner',
+    'prepare_breakfast',
+    'take_medicine'
+  ].includes(activity) &&
+    !activity.startsWith('controlling_') &&
+    !activity.startsWith('waiting_for_') &&
+    !activity.startsWith('walking_to_') &&
+    !activity.startsWith('returning_to_');
+}
+
 function sourceRuleIdFromReason(reason: string): string | undefined {
   return reason.startsWith('rule:') ? reason.slice('rule:'.length) : undefined;
+}
+
+function inferEventSourceLayer(event: Omit<TwinEvent, 'id' | 'runId' | 'ts' | 'simTime' | 'homeId' | 'scenarioId' | 'sequence' | 'sourceLayer' | 'lineage'>): EventSourceLayer {
+  if (event.type === 'ScenarioControl' || event.type === 'AbnormalityInjected' || event.type === 'AlertStatusChanged') {
+    return 'control';
+  }
+  if (event.type === 'PersonMoved' || event.type === 'ActivityStarted' || event.type === 'ActivityEnded' || event.type === 'ConversationOccurred' || event.type === 'ExternalInteractionOccurred') {
+    return 'truth';
+  }
+  if (event.type === 'DeviceTelemetry') {
+    return 'sensor';
+  }
+  if (event.type === 'DeviceStateChanged') {
+    return 'world';
+  }
+  return 'inference';
+}
+
+function observabilityForSourceLayer(sourceLayer: EventSourceLayer): EventObservability {
+  if (sourceLayer === 'sensor') {
+    return 'ml_observation';
+  }
+  if (sourceLayer === 'truth') {
+    return 'private';
+  }
+  return 'admin';
 }
 
 function sourceEntityIdsForRule(ruleId: string): string[] {

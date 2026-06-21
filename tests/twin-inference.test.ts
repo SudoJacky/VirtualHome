@@ -1,0 +1,207 @@
+import { describe, expect, it } from 'vitest';
+import { inferTwinState } from '../src/twin/inferenceModel';
+import type { DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent, RoomId, ScenarioControlEvent } from '../src/shared/types';
+
+const baseEvent = {
+  id: 'evt_001',
+  runId: 'run_001',
+  ts: '2026-06-17T18:30:00+08:00',
+  simTime: '2026-06-17T18:30:00+08:00',
+  homeId: 'default_home',
+  scenarioId: 'weekday_normal',
+  sequence: 1,
+  rngStateAfter: 123,
+  lineage: {
+    eventTime: '2026-06-17T18:30:00+08:00',
+    ingestTime: '2026-06-17T18:30:00+08:00',
+    causeEventIds: [],
+    episodeId: 'test',
+    quality: {},
+    schemaVersion: 1,
+    behaviorModelVersion: 'test'
+  }
+};
+
+function motionEvent(roomId: RoomId, confidence: number): DeviceTelemetryEvent {
+  return {
+    ...baseEvent,
+    id: `motion_${roomId}`,
+    type: 'DeviceTelemetry',
+    sourceLayer: 'sensor',
+    lineage: { ...baseEvent.lineage, sourceLayer: 'sensor', observability: 'ml_observation' },
+    roomId,
+    deviceId: `${roomId}_motion_01`,
+    deviceType: 'motion_sensor',
+    measurements: { motion: true, confidence }
+  };
+}
+
+function droppedSampleEvent(roomId: RoomId): DeviceTelemetryEvent {
+  return {
+    ...baseEvent,
+    id: `dropped_${roomId}`,
+    type: 'DeviceTelemetry',
+    sourceLayer: 'sensor',
+    lineage: {
+      ...baseEvent.lineage,
+      sourceLayer: 'sensor',
+      observability: 'ml_observation',
+      quality: { dropped: true }
+    },
+    roomId,
+    deviceId: `${roomId}_motion_01`,
+    deviceType: 'motion_sensor',
+    measurements: { sample_dropped: true }
+  };
+}
+
+function deviceStateEvent(deviceId: string, roomId: RoomId, state: DeviceStateChangedEvent['state']): DeviceStateChangedEvent {
+  return {
+    ...baseEvent,
+    id: `state_${deviceId}`,
+    type: 'DeviceStateChanged',
+    sourceLayer: 'world',
+    lineage: { ...baseEvent.lineage, sourceLayer: 'world', observability: 'admin' },
+    roomId,
+    deviceId,
+    deviceType: deviceId.startsWith('fridge') ? 'fridge' : deviceId.startsWith('stove') ? 'stove' : 'router',
+    state
+  };
+}
+
+describe('twin inference model', () => {
+  it('uses priors and schedule constraints when no observations are available', () => {
+    const result = inferTwinState([], {
+      currentTime: '2026-06-17T23:15:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['master_bedroom', 'living_room', 'kitchen']
+    });
+
+    expect(result.inputSummary.acceptedEventCount).toBe(0);
+    expect(result.homeMode.top).toBe('sleeping');
+    expect(result.people.adult_1.room.top).toBe('master_bedroom');
+    expect(result.people.adult_1.room.confidence).toBeLessThan(0.7);
+  });
+
+  it('rejects truth and control events instead of reading simulator labels', () => {
+    const truthEvent: PersonMovedEvent = {
+      ...baseEvent,
+      id: 'truth_person_move',
+      type: 'PersonMoved',
+      sourceLayer: 'truth',
+      lineage: { ...baseEvent.lineage, sourceLayer: 'truth', observability: 'private' },
+      personId: 'adult_1',
+      from: 'living_room',
+      to: 'kitchen',
+      activity: 'cooking'
+    };
+    const controlEvent: ScenarioControlEvent = {
+      ...baseEvent,
+      id: 'control_inject',
+      type: 'ScenarioControl',
+      sourceLayer: 'control',
+      lineage: { ...baseEvent.lineage, sourceLayer: 'control', observability: 'admin' },
+      command: 'inject',
+      value: 'fridge_left_open'
+    };
+
+    const result = inferTwinState([truthEvent, controlEvent, motionEvent('living_room', 0.82)], {
+      currentTime: '2026-06-17T18:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'kitchen']
+    });
+
+    expect(result.inputSummary.acceptedEventCount).toBe(1);
+    expect(result.inputSummary.rejectedEventTypes).toEqual(expect.arrayContaining(['PersonMoved', 'ScenarioControl']));
+    expect(result.people.adult_1.room.top).toBe('living_room');
+    expect(result.people.adult_1.activity.top).not.toBe('cooking');
+  });
+
+  it('converts motion and public device observations into probabilistic room and activity beliefs', () => {
+    const result = inferTwinState([
+      motionEvent('kitchen', 0.91),
+      deviceStateEvent('fridge_01', 'kitchen', { doorOpen: true, powerW: 148 })
+    ], {
+      currentTime: '2026-06-17T18:30:00+08:00',
+      peopleIds: ['adult_1', 'child_1'],
+      rooms: ['living_room', 'kitchen', 'child_bedroom']
+    });
+
+    expect(result.people.adult_1.room.top).toBe('kitchen');
+    expect(result.people.adult_1.activity.top).toBe('meal_prep_or_kitchen_visit');
+    expect(result.homeMode.top).toBe('dinner');
+    expect(result.homeMode.probabilities.dinner).toBeGreaterThan(0.4);
+  });
+
+  it('forecasts short horizon state and anomaly risk from observation-only input', () => {
+    const result = inferTwinState([
+      deviceStateEvent('fridge_01', 'kitchen', { doorOpen: true, powerW: 148 }),
+      deviceStateEvent('router_01', 'study', { online: false, latencyMs: 0 })
+    ], {
+      currentTime: '2026-06-17T18:30:00+08:00',
+      peopleIds: ['adult_2'],
+      rooms: ['study', 'kitchen', 'living_room']
+    });
+
+    expect(result.forecasts.map((forecast) => forecast.horizonMinutes)).toEqual([15, 30, 60]);
+    expect(result.risks.fridge_left_open.probability).toBeGreaterThan(0.75);
+    expect(result.risks.network_impact.probability).toBeGreaterThan(0.75);
+    expect(result.forecasts[2].risks.fridge_left_open).toBeGreaterThan(result.forecasts[0].risks.fridge_left_open);
+  });
+
+  it('flags unattended stove risk from public device state and missing kitchen motion', () => {
+    const result = inferTwinState([
+      deviceStateEvent('stove_01', 'kitchen', { powerW: 1300, level: 7 })
+    ], {
+      currentTime: '2026-06-17T18:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'kitchen', 'study']
+    });
+
+    expect(result.inputSummary.acceptedEventCount).toBe(1);
+    expect(result.risks.stove_unattended).toMatchObject({
+      probability: expect.any(Number),
+      drivers: expect.arrayContaining(['stove_01.powerW'])
+    });
+    expect(result.risks.stove_unattended.probability).toBeGreaterThan(0.7);
+    expect(result.forecasts[2].risks.stove_unattended).toBeGreaterThan(result.forecasts[0].risks.stove_unattended);
+  });
+
+  it('lowers stove unattended risk when kitchen motion suggests supervision', () => {
+    const unattended = inferTwinState([
+      deviceStateEvent('stove_01', 'kitchen', { powerW: 1300, level: 7 })
+    ], {
+      currentTime: '2026-06-17T18:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'kitchen', 'study']
+    });
+    const supervised = inferTwinState([
+      deviceStateEvent('stove_01', 'kitchen', { powerW: 1300, level: 7 }),
+      motionEvent('kitchen', 0.88)
+    ], {
+      currentTime: '2026-06-17T18:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'kitchen', 'study']
+    });
+
+    expect(supervised.risks.stove_unattended.probability).toBeLessThan(unattended.risks.stove_unattended.probability);
+    expect(supervised.risks.stove_unattended.drivers).toEqual(expect.arrayContaining(['kitchen_motion_observation']));
+  });
+
+  it('reduces belief confidence when sensor observations include dropped samples', () => {
+    const clean = inferTwinState([motionEvent('kitchen', 0.91)], {
+      currentTime: '2026-06-17T18:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'kitchen', 'child_bedroom']
+    });
+    const degraded = inferTwinState([motionEvent('kitchen', 0.91), droppedSampleEvent('kitchen')], {
+      currentTime: '2026-06-17T18:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'kitchen', 'child_bedroom']
+    });
+
+    expect(degraded.inputSummary.droppedObservationEvents).toBe(1);
+    expect(degraded.people.adult_1.room.top).toBe('kitchen');
+    expect(degraded.people.adult_1.room.confidence).toBeLessThan(clean.people.adult_1.room.confidence);
+  });
+});

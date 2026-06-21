@@ -1,7 +1,7 @@
 import type { DeviceTelemetryEvent, DeviceStateChangedEvent, TwinEvent, TwinSnapshot } from '../shared/types';
 import type { DeviceAccessRecord } from './deviceAccess';
 
-export type PrivacyMode = 'admin' | 'public';
+export type PrivacyMode = 'admin' | 'public' | 'ml-observation';
 
 const sensitiveDeviceTypes = new Set([
   'door_lock',
@@ -24,6 +24,7 @@ export function projectSnapshotForPrivacy(snapshot: TwinSnapshot, privacy: Priva
   projected.people = {};
   projected.activities = {};
   projected.alerts = {};
+  delete (projected as Partial<TwinSnapshot>).worldState;
   for (const room of Object.values(projected.rooms)) {
     room.occupancy = false;
     room.humanOccupancy = false;
@@ -42,6 +43,18 @@ export function projectSnapshotForPrivacy(snapshot: TwinSnapshot, privacy: Priva
 export function projectEventsForPrivacy(events: TwinEvent[], privacy: PrivacyMode): TwinEvent[] {
   if (privacy === 'admin') {
     return structuredClone(events);
+  }
+
+  if (privacy === 'ml-observation') {
+    return events
+      .filter((event): event is DeviceTelemetryEvent => event.type === 'DeviceTelemetry' && event.sourceLayer === 'sensor')
+      .filter((event) => !isSensitiveDevice(event.deviceType))
+      .map((event) => {
+        const projected = structuredClone(event);
+        delete projected.reason;
+        delete projected.eventExplanation;
+        return projected;
+      });
   }
 
   return events

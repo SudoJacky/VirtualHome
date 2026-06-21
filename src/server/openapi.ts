@@ -277,7 +277,7 @@ const accessAuditRecordSchema: JsonSchema = {
     ts: isoDateTimeSchema,
     method: stringSchema,
     endpoint: stringSchema,
-    privacy: { type: 'string', enum: ['admin', 'public'] },
+    privacy: { type: 'string', enum: ['admin', 'public', 'ml-observation'] },
     runId: { anyOf: [stringSchema, { type: 'null' }] },
     sequence: { anyOf: [{ type: 'integer', minimum: 0 }, { type: 'null' }] },
     details: { type: 'object', additionalProperties: true }
@@ -1003,7 +1003,7 @@ function privacyParameter(): Record<string, unknown> {
     name: 'privacy',
     in: 'query',
     required: false,
-    schema: { type: 'string', enum: ['admin', 'public'], default: 'admin' }
+    schema: { type: 'string', enum: ['admin', 'public', 'ml-observation'], default: 'admin' }
   };
 }
 

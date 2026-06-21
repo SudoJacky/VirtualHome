@@ -26,6 +26,9 @@ export interface ScenarioDefinition {
     season: 'spring' | 'summer' | 'autumn' | 'winter';
     month: number;
     dayOfWeek: number;
+    holidayName?: string | null;
+    schoolDay?: boolean;
+    workday?: boolean;
   };
   steps: ScenarioStep[];
 }

@@ -1,7 +1,11 @@
 import { getCatalog } from '../sim/catalog';
+import { summarizeAgentMemory } from '../sim/agents/memory';
+import { commitmentPressureAtMinute, createDailyCommitments, type DailyCommitment } from '../sim/agents/scheduler';
+import { getPersona } from '../sim/personas/defaultFamily';
 import { createDeviceCommandTimeline, type DeviceCommandTimelineEntry } from '../shared/deviceCommandLifecycle';
 import { evaluateDeviceHealthSignals, getDeviceCapability, isDeviceTypeAbnormal, isDeviceTypeActive, summarizeDeviceState, type DeviceCommandFailureReason, type DeviceCommandValueType, type DeviceHealthImpact, type DeviceHealthSignalKind } from '../shared/deviceRegistry';
 import { getDeviceCommandMetadataForInstance, getDeviceSupportedCommands } from '../shared/deviceInstanceCapabilities';
+import { inferTwinState } from '../twin/inferenceModel';
 import type { AlertLifecycleStatus, AlertState, DeviceState, EventExplanation, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
 
 export interface DashboardEvent {
@@ -35,6 +39,7 @@ export interface DashboardModel {
   causalEvents: CausalEventCard[];
   behaviorAudit: BehaviorAudit;
   predictionCards: PredictionCard[];
+  twinInference: TwinInferencePanel;
   forecastTelemetrySeries: ForecastTelemetrySeries[];
   forecastCharts: ForecastChart[];
   insightCards: InsightCard[];
@@ -65,6 +70,40 @@ export interface DashboardModel {
       slot: number;
     }>;
     activeDeviceCount: number;
+  }>;
+}
+
+export interface TwinInferencePanel {
+  inputSummary: {
+    observationOnly: true;
+    acceptedEventCount: number;
+    rejectedEventTypes: string[];
+  };
+  homeMode: {
+    truth: string;
+    inferred: string;
+    confidence: number;
+    probabilities: Record<string, number>;
+  };
+  people: Array<{
+    personId: string;
+    label: string;
+    truthRoom: string;
+    inferredRoom: string;
+    roomConfidence: number;
+    truthActivity: string;
+    inferredActivity: string;
+    activityConfidence: number;
+  }>;
+  risks: Array<{
+    id: string;
+    probability: number;
+    drivers: string[];
+  }>;
+  forecasts: Array<{
+    horizonMinutes: number;
+    inferredHomeMode: string;
+    risks: Record<string, number>;
   }>;
 }
 
@@ -285,9 +324,19 @@ export interface BehaviorAuditPerson {
   energy: number;
   attentionTarget: string;
   nextPlan: string;
+  memorySummary: string;
+  nextCommitment: BehaviorAuditCommitment | null;
   triggeredRules: string[];
   affectedByDevices: string[];
   affectsDevices: string[];
+}
+
+export interface BehaviorAuditCommitment {
+  activity: string;
+  roomName: string;
+  window: string;
+  pressure: number;
+  source: DailyCommitment['source'];
 }
 
 export interface BehaviorAuditTask {
@@ -523,10 +572,11 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
   const behaviorCards = createBehaviorCards(snapshot);
   const deviceLifecycleCards = createDeviceLifecycleCards(snapshot);
   const causalEvents = createCausalEvents(snapshot, events);
-  const behaviorAudit = createBehaviorAudit(snapshot, behaviorCards, deviceLifecycleCards, causalEvents);
+  const behaviorAudit = createBehaviorAudit(snapshot, events, behaviorCards, deviceLifecycleCards, causalEvents);
   const priorityQueue = createPriorityQueue(snapshot, controlRecords, automationExplanations, telemetrySeries, deviceHealthCards);
   const alertStatusSummary = createAlertStatusSummary(snapshot);
   const predictionCards = createPredictionCards(snapshot);
+  const twinInference = createTwinInferencePanel(snapshot, events);
   return {
     homeMode: snapshot.homeState.mode,
     simTime: snapshot.simClock.currentTime,
@@ -555,11 +605,60 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
     causalEvents,
     behaviorAudit,
     predictionCards,
+    twinInference,
     forecastTelemetrySeries: createForecastTelemetrySeries(predictionCards),
     forecastCharts: predictionCards.map((card) => card.chart),
     insightCards: createInsightCards(snapshot, telemetrySeries, deviceHealthCards),
     telemetrySeries,
     floorplanRooms: createFloorplanRooms(snapshot, events)
+  };
+}
+
+function createTwinInferencePanel(snapshot: TwinSnapshot, events: TwinEvent[]): TwinInferencePanel {
+  const peopleIds = Object.values(snapshot.people)
+    .filter((person) => person.kind === 'human')
+    .map((person) => person.id);
+  const roomIds = Object.keys(snapshot.rooms) as RoomId[];
+  const inference = inferTwinState(events, {
+    currentTime: snapshot.simClock.currentTime,
+    peopleIds,
+    rooms: roomIds
+  });
+
+  return {
+    inputSummary: inference.inputSummary,
+    homeMode: {
+      truth: snapshot.homeState.mode,
+      inferred: formatBehaviorText(inference.homeMode.top),
+      confidence: roundPercent(inference.homeMode.confidence),
+      probabilities: roundDistribution(inference.homeMode.probabilities)
+    },
+    people: peopleIds.map((personId) => {
+      const truth = snapshot.people[personId];
+      const inferred = inference.people[personId];
+      return {
+        personId,
+        label: formatPerson(personId),
+        truthRoom: formatRoomName(truth?.location ?? 'away'),
+        inferredRoom: inferred ? formatRoomName(inferred.room.top) : 'Unknown',
+        roomConfidence: inferred ? roundPercent(inferred.room.confidence) : 0,
+        truthActivity: formatActivity(truth?.activity ?? 'unknown'),
+        inferredActivity: inferred ? formatActivity(inferred.activity.top) : 'Unknown',
+        activityConfidence: inferred ? roundPercent(inferred.activity.confidence) : 0
+      };
+    }),
+    risks: Object.entries(inference.risks)
+      .map(([id, risk]) => ({
+        id,
+        probability: roundPercent(risk.probability),
+        drivers: [...risk.drivers]
+      }))
+      .sort((left, right) => right.probability - left.probability || left.id.localeCompare(right.id)),
+    forecasts: inference.forecasts.map((forecast) => ({
+      horizonMinutes: forecast.horizonMinutes,
+      inferredHomeMode: formatBehaviorText(forecast.homeMode.top),
+      risks: roundDistribution(forecast.risks)
+    }))
   };
 }
 
@@ -930,12 +1029,14 @@ function createCausalEvents(snapshot: TwinSnapshot, events: TwinEvent[]): Causal
 
 function createBehaviorAudit(
   snapshot: TwinSnapshot,
+  events: TwinEvent[],
   behaviorCards: BehaviorCard[],
   deviceLifecycleCards: DeviceLifecycleCard[],
   causalEvents: CausalEventCard[]
 ): BehaviorAudit {
   const people = behaviorCards.map((card) => {
     const relatedEvents = causalEvents.filter((event) => event.actors.includes(card.label));
+    const memory = summarizeAgentMemory(card.personId, events);
     return {
       personId: card.personId,
       label: card.label,
@@ -946,6 +1047,8 @@ function createBehaviorAudit(
       energy: card.energy,
       attentionTarget: card.attentionTarget,
       nextPlan: createNextPlan(card),
+      memorySummary: memory.summary,
+      nextCommitment: createBehaviorAuditCommitment(snapshot, card.personId),
       triggeredRules: uniqueSorted(relatedEvents.flatMap((event) => event.ruleId ? [formatRuleName(event.ruleId)] : [])),
       affectedByDevices: uniqueSorted(causalEvents
         .filter((event) => event.affectedDevices.includes(card.attentionTarget))
@@ -960,6 +1063,37 @@ function createBehaviorAudit(
     recentCausalEvents: causalEvents.slice(0, 10),
     unresolvedTasks: createBehaviorAuditTasks(snapshot, deviceLifecycleCards),
     consistencyWarnings: createBehaviorConsistencyWarnings(snapshot, behaviorCards, deviceLifecycleCards, causalEvents)
+  };
+}
+
+function createBehaviorAuditCommitment(snapshot: TwinSnapshot, personId: string): BehaviorAuditCommitment | null {
+  const minute = minutesOfDay(snapshot.simClock.currentTime);
+  let commitments: DailyCommitment[];
+  try {
+    commitments = createDailyCommitments({
+      persona: getPersona(personId),
+      date: snapshot.runContext.startedAt.slice(0, 10),
+      seed: snapshot.runContext.seed
+    }).filter((commitment) => commitment.personId === personId);
+  } catch {
+    return null;
+  }
+  const ranked = commitments
+    .map((commitment) => ({
+      commitment,
+      pressure: commitmentPressureAtMinute(commitments, minute, commitment.activityId)
+    }))
+    .filter(({ commitment, pressure }) => pressure > 0 || commitment.window.endMinute >= minute)
+    .sort((left, right) => right.pressure - left.pressure || left.commitment.window.startMinute - right.commitment.window.startMinute)[0];
+  if (!ranked) {
+    return null;
+  }
+  return {
+    activity: formatActivity(ranked.commitment.activityId).toLowerCase(),
+    roomName: formatRoomName(ranked.commitment.roomId),
+    window: `${formatMinute(ranked.commitment.window.startMinute)}-${formatMinute(ranked.commitment.window.endMinute)}`,
+    pressure: Math.round(ranked.pressure),
+    source: ranked.commitment.source
   };
 }
 
@@ -1614,6 +1748,14 @@ function createForecastConfidenceInterval(
 
 function roundForecastValue(value: number): number {
   return Math.round(value * 10) / 10;
+}
+
+function roundPercent(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function roundDistribution<T extends string>(distribution: Record<T, number>): Record<T, number> {
+  return Object.fromEntries(Object.entries(distribution).map(([key, value]) => [key, roundPercent(Number(value))])) as Record<T, number>;
 }
 
 function createFridgeRecoveryEstimate(
@@ -2462,6 +2604,12 @@ function uniqueRoomIds(values: RoomId[]): RoomId[] {
 function minutesOfDay(isoTime: string): number {
   const date = new Date(isoTime);
   return date.getHours() * 60 + date.getMinutes();
+}
+
+function formatMinute(minute: number): string {
+  const hour = Math.floor(minute / 60);
+  const minutes = minute % 60;
+  return `${String(hour).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
 }
 
 function ownerForAction(action: string): string {

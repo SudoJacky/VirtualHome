@@ -14,7 +14,7 @@ export interface IdempotencyRecord<T = unknown> {
 export interface AccessAuditInput {
   method: string;
   endpoint: string;
-  privacy: 'admin' | 'public';
+  privacy: 'admin' | 'public' | 'ml-observation';
   runId: string | null;
   sequence: number | null;
   details?: Record<string, unknown>;
@@ -220,7 +220,7 @@ export class TwinDatabase {
       ts: string;
       method: string;
       endpoint: string;
-      privacy_mode: 'admin' | 'public';
+      privacy_mode: 'admin' | 'public' | 'ml-observation';
       run_id: string | null;
       sequence: number | null;
       details_json: string;

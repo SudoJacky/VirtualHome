@@ -700,7 +700,7 @@ function createEventReplays(
   return automationEvents.map((automation) => {
     const link = automationLinks.find((candidate) => candidate.id === automation.id);
     const roomId = link?.roomId ?? inferAutomationRoom(snapshot, events, automation.sequence);
-    const relatedSensor = findNearbyDeviceEvent(events, automation.sequence, link?.sourceDeviceId, -3, 0);
+    const relatedSensor = findNearbyDeviceEvent(events, automation.sequence, link?.sourceDeviceId, -8, 0);
     const relatedCommand = findNearbyDeviceEvent(events, automation.sequence, link?.targetDeviceId, -3, 3);
     const sourceDeviceId = link?.sourceDeviceId ?? relatedSensor?.deviceId;
     const targetDeviceId = link?.targetDeviceId ?? relatedCommand?.deviceId;
@@ -842,7 +842,7 @@ function createReplayDeviceTimelines(
         .filter((event): event is Extract<TwinEvent, { type: 'DeviceStateChanged' }> => (
           event.type === 'DeviceStateChanged' &&
           event.deviceId === deviceId &&
-          event.sequence >= automationSequence - 3 &&
+          event.sequence >= automationSequence - 8 &&
           event.sequence <= automationSequence + 3
         ))
         .sort((left, right) => left.sequence - right.sequence);

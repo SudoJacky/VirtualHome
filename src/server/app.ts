@@ -31,7 +31,7 @@ export interface ServerOptions {
 const limitQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(100),
   runId: z.string().min(1).optional(),
-  privacy: z.enum(['admin', 'public']).default('admin')
+  privacy: z.enum(['admin', 'public', 'ml-observation']).default('admin')
 });
 const telemetrySummaryQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(1000).default(500),
@@ -41,10 +41,10 @@ const auditQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(100)
 });
 const privacyQuerySchema = z.object({
-  privacy: z.enum(['admin', 'public']).default('admin')
+  privacy: z.enum(['admin', 'public', 'ml-observation']).default('admin')
 });
 const websocketQuerySchema = z.object({
-  privacy: z.enum(['admin', 'public']).default('admin'),
+  privacy: z.enum(['admin', 'public', 'ml-observation']).default('admin'),
   runId: z.string().min(1).optional(),
   afterSequence: z.coerce.number().int().min(0).optional()
 });

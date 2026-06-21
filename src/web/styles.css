@@ -2390,10 +2390,38 @@ button:hover {
   background: #1b7974;
 }
 
-.behavior-audit-panel {
+.behavior-audit-panel,
+.twin-inference-panel {
   align-content: start;
   display: grid;
   gap: 12px;
+}
+
+.inference-mode-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.inference-mode-row div {
+  background: #f7faf9;
+  border: 1px solid #dbe8e4;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px;
+}
+
+.inference-mode-row span {
+  color: #5f7278;
+  font-size: 11px;
+}
+
+.inference-mode-row strong {
+  color: #1b3034;
+  font-size: 14px;
+  overflow-wrap: anywhere;
 }
 
 .audit-summary {

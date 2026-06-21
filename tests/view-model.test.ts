@@ -306,6 +306,36 @@ describe('dashboard view model', () => {
     ]));
   });
 
+  it('surfaces observation-only twin inference beside simulator truth', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(90);
+    simulator.setPaused(true);
+    simulator.setPaused(false);
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+
+    expect(model.twinInference.inputSummary.observationOnly).toBe(true);
+    expect(model.twinInference.inputSummary.acceptedEventCount).toBeGreaterThan(0);
+    expect(model.twinInference.inputSummary.rejectedEventTypes).toEqual(expect.arrayContaining(['PersonMoved', 'ActivityStarted', 'ScenarioControl']));
+    expect(model.twinInference.homeMode).toMatchObject({
+      truth: model.homeMode,
+      inferred: expect.any(String),
+      confidence: expect.any(Number)
+    });
+    expect(model.twinInference.people.length).toBeGreaterThan(0);
+    expect(model.twinInference.people[0]).toMatchObject({
+      personId: expect.any(String),
+      truthRoom: expect.any(String),
+      inferredRoom: expect.any(String),
+      roomConfidence: expect.any(Number),
+      inferredActivity: expect.any(String),
+      activityConfidence: expect.any(Number)
+    });
+    expect(model.twinInference.forecasts.map((forecast) => forecast.horizonMinutes)).toEqual([15, 30, 60]);
+    expect(model.twinInference.risks.length).toBeGreaterThan(0);
+  });
+
   it('adds numeric telemetry forecast points to prediction cards', () => {
     const simulator = createSimulator({ seed: 42 });
     simulator.injectAbnormality('fridge_left_open');
@@ -691,9 +721,17 @@ describe('dashboard view model', () => {
       intent: 'finish homework',
       routinePhase: 'after school',
       nextPlan: 'Continue finish homework near Child Bedroom',
+      memorySummary: expect.stringContaining('child_1 memory summary'),
+      nextCommitment: expect.objectContaining({
+        activity: 'study homework',
+        roomName: 'Child Bedroom',
+        pressure: expect.any(Number),
+        source: 'role'
+      }),
       triggeredRules: ['Child homework focus'],
       affectsDevices: expect.arrayContaining(['Child Sleep Sensor', 'Living Room Light', 'Living Room TV'])
     });
+    expect(childAudit?.nextCommitment?.pressure ?? 0).toBeGreaterThan(0);
     expect(model.behaviorAudit.recentCausalEvents[0]).toMatchObject({ ruleId: expect.any(String) });
     expect(model.behaviorAudit.consistencyWarnings).not.toContain('All household members are still sleeping after the morning routine window.');
   });

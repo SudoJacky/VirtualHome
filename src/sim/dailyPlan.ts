@@ -1,4 +1,5 @@
 import type { HomeMode, RoomId, ScenarioId } from '../shared/types';
+import { createExternalContext, type ExternalContext } from './externalContext';
 import { SeededRandom } from './random';
 import type { ScenarioAction, ScenarioDefinition, ScenarioStep } from './scenarios';
 
@@ -16,14 +17,19 @@ interface CalendarProfile {
   season: Season;
   month: number;
   dayOfWeek: number;
+  holidayName: string | null;
+  schoolDay: boolean;
+  workday: boolean;
 }
 
 export function generateDailyScenario(options: DailyScenarioOptions): ScenarioDefinition {
-  const calendar = createCalendarProfile(options.date);
+  const externalContext = createExternalContext({ date: options.date, seed: options.seed ?? seedFromDate(options.date) });
+  const calendar = createCalendarProfile(externalContext);
   const random = new SeededRandom(options.seed ?? seedFromDate(options.date));
-  const wakeMinute = calendar.dayType === 'weekday' ? jitter(random, 380, 18) : jitter(random, 455, 28);
+  const routineKind = calendar.workday && calendar.schoolDay ? 'weekday' : 'non_workday';
+  const wakeMinute = routineKind === 'weekday' ? jitter(random, 380, 18) : jitter(random, 455, 28);
   const startMinute = Math.max(0, wakeMinute - 60);
-  const steps = calendar.dayType === 'weekday'
+  const steps = routineKind === 'weekday'
     ? createWeekdaySteps(calendar, random, wakeMinute)
     : createWeekendSteps(calendar, random, wakeMinute);
 
@@ -234,29 +240,18 @@ function createNightSteps(calendar: CalendarProfile, random: SeededRandom): Scen
   ];
 }
 
-function createCalendarProfile(date: string): CalendarProfile {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
-  if (!match) {
-    throw new Error('Daily scenario date must use YYYY-MM-DD');
-  }
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const dayOfWeek = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+function createCalendarProfile(externalContext: ExternalContext): CalendarProfile {
+  const { calendar } = externalContext;
   return {
-    date,
-    dayType: dayOfWeek === 0 || dayOfWeek === 6 ? 'weekend' : 'weekday',
-    season: getSeason(month),
-    month,
-    dayOfWeek
+    date: calendar.date,
+    dayType: calendar.dayType,
+    season: calendar.season,
+    month: calendar.month,
+    dayOfWeek: calendar.dayOfWeek,
+    holidayName: calendar.holidayName,
+    schoolDay: calendar.schoolDay,
+    workday: calendar.workday
   };
-}
-
-function getSeason(month: number): Season {
-  if (month >= 3 && month <= 5) return 'spring';
-  if (month >= 6 && month <= 8) return 'summer';
-  if (month >= 9 && month <= 11) return 'autumn';
-  return 'winter';
 }
 
 function seasonClimate(season: Season): Record<string, number> {

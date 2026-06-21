@@ -134,6 +134,22 @@ export interface AlertState {
   sourceEntityIds?: string[];
 }
 
+export interface HouseholdInventoryState {
+  breakfastFoodServings: number;
+  simpleFoodServings: number;
+  preparedMeals: number;
+  dirtyLaundryKg: number;
+  dirtyDishes: number;
+  trashBags: number;
+  medicineDoses: number;
+  packageCount: number;
+  unfinishedChores: number;
+  sleepDebtHours: number;
+  deviceMaintenanceScore: number;
+  healthRiskScore: number;
+  pendingChores: string[];
+}
+
 export interface TwinSnapshot {
   homeId: string;
   runId: string;
@@ -155,6 +171,31 @@ export interface TwinSnapshot {
     startedAt: string;
   }>;
   alerts: Record<string, AlertState>;
+  worldState: {
+    inventory: HouseholdInventoryState;
+  };
+}
+
+export type EventSourceLayer = 'truth' | 'world' | 'sensor' | 'inference' | 'control';
+export type EventObservability = 'private' | 'admin' | 'ml_observation' | 'public';
+
+export interface EventLineage {
+  eventTime: string;
+  ingestTime: string;
+  sourceLayer: EventSourceLayer;
+  causeEventIds: string[];
+  episodeId: string;
+  parentEpisodeId?: string;
+  observability: EventObservability;
+  quality: {
+    delayedMs?: number;
+    dropped?: boolean;
+    duplicated?: boolean;
+    noisy?: boolean;
+    confidence?: number;
+  };
+  schemaVersion: number;
+  behaviorModelVersion: string;
 }
 
 export interface BaseTwinEvent {
@@ -167,6 +208,8 @@ export interface BaseTwinEvent {
   scenarioId: string;
   sequence: number;
   rngStateAfter?: number;
+  sourceLayer: EventSourceLayer;
+  lineage: EventLineage;
   reason?: string;
   eventExplanation?: EventExplanation;
 }
@@ -219,6 +262,27 @@ export interface ActivityEndedEvent extends BaseTwinEvent {
   roomId: RoomId;
 }
 
+export interface ConversationOccurredEvent extends BaseTwinEvent {
+  type: 'ConversationOccurred';
+  conversationId: string;
+  speakerId: string;
+  listenerIds: string[];
+  topic: string;
+  intent: string;
+  roomId: RoomId;
+  summary: string;
+}
+
+export interface ExternalInteractionOccurredEvent extends BaseTwinEvent {
+  type: 'ExternalInteractionOccurred';
+  interactionId: string;
+  actorKind: 'courier' | 'visitor' | 'repair';
+  purpose: string;
+  roomId: RoomId;
+  status: 'detected' | 'acknowledged' | 'completed' | 'scheduled';
+  relatedDeviceIds: string[];
+}
+
 export interface AutomationTriggeredEvent extends BaseTwinEvent {
   type: 'AutomationTriggered';
   ruleId: string;
@@ -269,6 +333,8 @@ export type TwinEvent =
   | PersonMovedEvent
   | ActivityStartedEvent
   | ActivityEndedEvent
+  | ConversationOccurredEvent
+  | ExternalInteractionOccurredEvent
   | AutomationTriggeredEvent
   | RuleRecoveredEvent
   | AbnormalityInjectedEvent

@@ -635,6 +635,51 @@ describe('server API', () => {
     await server.close();
   });
 
+  it('projects ml-observation streams without truth activities, control injections, or explanations', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-ml-observation-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 12 }
+    });
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/inject',
+      payload: { kind: 'fridge_left_open' }
+    });
+
+    const observationState = (await server.inject({ method: 'GET', url: '/api/state?privacy=ml-observation' })).json();
+    const observationEvents = (await server.inject({ method: 'GET', url: '/api/events?limit=100&privacy=ml-observation' })).json() as Array<{
+      type: string;
+      sourceLayer?: string;
+      reason?: string;
+      eventExplanation?: unknown;
+    }>;
+    const serialized = JSON.stringify({ observationState, observationEvents });
+
+    expect(observationState.people).toEqual({});
+    expect(observationState.activities).toEqual({});
+    expect(observationState.alerts).toEqual({});
+    expect(observationEvents.length).toBeGreaterThan(0);
+    expect(observationEvents.every((event) => event.type === 'DeviceTelemetry')).toBe(true);
+    expect(observationEvents.every((event) => event.sourceLayer === 'sensor')).toBe(true);
+    expect(observationEvents.every((event) => event.reason === undefined)).toBe(true);
+    expect(observationEvents.every((event) => event.eventExplanation === undefined)).toBe(true);
+    expect(serialized).not.toContain('adult_1');
+    expect(serialized).not.toContain('breakfast');
+    expect(serialized).not.toContain('fridge_left_open');
+    expect(serialized).not.toContain('AbnormalityInjected');
+
+    await server.close();
+  });
+
   it('filters sensitive device twins from public adapter projections', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-public-device-twins-'));
     dirs.push(dir);

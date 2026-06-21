@@ -3,7 +3,7 @@ import { alertEscalationPolicies, createSimulator } from '../src/sim/engine';
 import { getCatalog, getHomeDefinition } from '../src/sim/catalog';
 import { getScenarioIds } from '../src/sim/scenarios';
 import { getDeviceCapability } from '../src/shared/deviceRegistry';
-import type { AbnormalityInjectedEvent, AlertCreatedEvent, AutomationTriggeredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent, RoomId, RuleRecoveredEvent, TwinSnapshot } from '../src/shared/types';
+import type { AbnormalityInjectedEvent, AlertCreatedEvent, AutomationTriggeredEvent, ConversationOccurredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, ExternalInteractionOccurredEvent, PersonMovedEvent, RoomId, RuleRecoveredEvent, TwinSnapshot } from '../src/shared/types';
 
 describe('virtual home simulator MVP', () => {
   it('defines the MVP home shape from MVP.md', () => {
@@ -50,6 +50,51 @@ describe('virtual home simulator MVP', () => {
     expect(snapshot.devices.kitchen_light_01.state.power).toBe('on');
     expect(events.some((event) => event.type === 'ActivityStarted' && event.activityId === 'breakfast')).toBe(true);
     expect(events.some((event) => event.type === 'DeviceTelemetry' && event.deviceId === 'kitchen_temp_01')).toBe(true);
+  });
+
+  it('classifies simulator events into truth world sensor inference and control layers with lineage', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    const scenarioEvents = simulator.startScenario('weekday_normal');
+    const activityEvents = simulator.advanceMinutes(12);
+    const abnormalityEvents = simulator.injectAbnormality('fridge_left_open');
+    const events = [...scenarioEvents, ...activityEvents, ...abnormalityEvents];
+
+    expect(events.every((event) => event.sourceLayer && event.lineage)).toBe(true);
+    expect(events.find((event) => event.type === 'ScenarioControl')).toMatchObject({
+      sourceLayer: 'control',
+      lineage: expect.objectContaining({
+        sourceLayer: 'control',
+        observability: 'admin',
+        causeEventIds: [],
+        schemaVersion: 1,
+        behaviorModelVersion: 'engine-v1'
+      })
+    });
+    expect(events.find((event) => event.type === 'ActivityStarted' && event.activityId === 'breakfast')).toMatchObject({
+      sourceLayer: 'truth',
+      lineage: expect.objectContaining({ sourceLayer: 'truth', observability: 'private' })
+    });
+    expect(events.find((event) => event.type === 'PersonMoved' && event.personId === 'adult_1')).toMatchObject({
+      sourceLayer: 'truth',
+      lineage: expect.objectContaining({ sourceLayer: 'truth', observability: 'private' })
+    });
+    expect(events.find((event) => event.type === 'DeviceStateChanged' && event.deviceId === 'fridge_01')).toMatchObject({
+      sourceLayer: 'world',
+      lineage: expect.objectContaining({ sourceLayer: 'world', observability: 'admin' })
+    });
+    expect(events.find((event) => event.type === 'DeviceTelemetry')).toMatchObject({
+      sourceLayer: 'sensor',
+      lineage: expect.objectContaining({ sourceLayer: 'sensor', observability: 'ml_observation' })
+    });
+    expect(events.find((event) => event.type === 'AutomationTriggered')).toMatchObject({
+      sourceLayer: 'inference',
+      lineage: expect.objectContaining({ sourceLayer: 'inference', observability: 'admin' })
+    });
+    expect(events.find((event) => event.type === 'AbnormalityInjected')).toMatchObject({
+      sourceLayer: 'control',
+      lineage: expect.objectContaining({ sourceLayer: 'control', observability: 'admin' })
+    });
   });
 
   it('enters away mode when the last person leaves home', () => {
@@ -453,7 +498,7 @@ describe('virtual home simulator MVP', () => {
     expect(events.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'sleep_mode')).toBe(true);
   });
 
-  it('persists telemetry drift back into room and device state', () => {
+  it('persists sensor telemetry while keeping room climate as world state', () => {
     const simulator = createSimulator({ seed: 222 });
 
     simulator.startScenario('weekday_normal');
@@ -464,7 +509,324 @@ describe('virtual home simulator MVP', () => {
       .map((event) => event.measurements.temperature_c);
 
     expect(new Set(values).size).toBeGreaterThan(1);
-    expect(snapshot.devices.kitchen_temp_01.state.temperatureC).toBe(snapshot.rooms.kitchen.temperatureC);
+    expect(snapshot.devices.kitchen_temp_01.state.temperatureC).toBe(values.at(-1));
+    expect(Math.abs(Number(snapshot.devices.kitchen_temp_01.state.temperatureC) - snapshot.rooms.kitchen.temperatureC)).toBeLessThanOrEqual(0.5);
+  });
+
+  it('reports motion through sampled sensor telemetry instead of direct room truth', () => {
+    const simulator = createSimulator({ seed: 333 });
+
+    simulator.startScenario('weekday_normal');
+    const events = simulator.advanceMinutes(3);
+    const motionTelemetry = events
+      .filter((event): event is DeviceTelemetryEvent => event.type === 'DeviceTelemetry' && event.deviceId === 'living_motion_01');
+
+    expect(motionTelemetry.length).toBeGreaterThan(0);
+    expect(motionTelemetry.length).toBeLessThan(3);
+    expect(motionTelemetry[0].sourceLayer).toBe('sensor');
+    expect(motionTelemetry[0].measurements).toEqual(expect.objectContaining({
+      motion: expect.any(Boolean),
+      confidence: expect.any(Number)
+    }));
+    expect(motionTelemetry[0].lineage.eventTime).toBe('2026-06-17T06:21:00+08:00');
+    expect(motionTelemetry[0].lineage.ingestTime).not.toBe(motionTelemetry[0].lineage.eventTime);
+  });
+
+  it('uses autonomous agent policy to prevent unreasonable daytime sleep persistence', () => {
+    const simulator = createSimulator({ seed: 515 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T11:00:00+08:00';
+    snapshot.homeState.mode = 'morning';
+    snapshot.people.adult_2.location = 'master_bedroom';
+    snapshot.people.adult_2.activity = 'sleeping';
+    simulator.restore(snapshot, simulator.getEvents());
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.people.adult_2.activity).toBe('wake_up');
+    expect(updated.people.adult_2.behavior.intent).toBe('start_day');
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'PersonMoved',
+        personId: 'adult_2',
+        activity: 'wake_up',
+        reason: 'agent_policy:wake_up'
+      })
+    ]));
+  });
+
+  it('uses persistent inventory resources when autonomous policy chooses food activities', () => {
+    const simulator = createSimulator({ seed: 616 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T08:30:00+08:00';
+    snapshot.homeState.mode = 'morning';
+    snapshot.people.adult_1.location = 'living_room';
+    snapshot.people.adult_1.activity = 'idle';
+    snapshot.worldState.inventory.breakfastFoodServings = 0;
+    snapshot.worldState.inventory.preparedMeals = 0;
+    snapshot.worldState.inventory.simpleFoodServings = 2;
+    simulator.restore(snapshot, simulator.getEvents());
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.people.adult_1.activity).toBe('eat_simple_food');
+    expect(updated.people.adult_1.location).toBe('kitchen');
+    expect(updated.worldState.inventory.breakfastFoodServings).toBe(0);
+    expect(updated.worldState.inventory.simpleFoodServings).toBe(1);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'PersonMoved',
+        personId: 'adult_1',
+        to: 'kitchen',
+        activity: 'eat_simple_food',
+        reason: 'agent_policy:eat_simple_food'
+      })
+    ]));
+  });
+
+  it('uses accumulated dynamic needs to trigger autonomous food activity outside fixed script windows', () => {
+    const simulator = createSimulator({ seed: 617 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T12:30:00+08:00';
+    snapshot.homeState.mode = 'morning';
+    snapshot.people.adult_1.location = 'living_room';
+    snapshot.people.adult_1.activity = 'idle';
+    snapshot.worldState.inventory.breakfastFoodServings = 0;
+    snapshot.worldState.inventory.preparedMeals = 0;
+    snapshot.worldState.inventory.simpleFoodServings = 2;
+    simulator.restore(snapshot, simulator.getEvents());
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.people.adult_1.activity).toBe('eat_simple_food');
+    expect(updated.people.adult_1.location).toBe('kitchen');
+    expect(updated.worldState.inventory.simpleFoodServings).toBe(1);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'PersonMoved',
+        personId: 'adult_1',
+        activity: 'eat_simple_food',
+        reason: 'agent_policy:eat_simple_food'
+      })
+    ]));
+  });
+
+  it('uses family conversation to move the child from TV to homework before focus automation', () => {
+    const simulator = createSimulator({ seed: 717 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T17:30:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_1.location = 'living_room';
+    snapshot.people.adult_1.activity = 'reading';
+    snapshot.people.child_1.location = 'living_room';
+    snapshot.people.child_1.activity = 'watching_tv';
+    snapshot.devices.tv_01.state = { ...snapshot.devices.tv_01.state, power: 'on', app: 'cartoons', volume: 22 };
+    simulator.restore(snapshot, simulator.getEvents());
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.people.child_1.location).toBe('child_bedroom');
+    expect(updated.people.child_1.activity).toBe('homework');
+    expect(updated.devices.tv_01.state).toMatchObject({ power: 'off', volume: 0 });
+    expect(events.some((event): event is ConversationOccurredEvent => (
+      event.type === 'ConversationOccurred' &&
+      event.speakerId === 'adult_1' &&
+      event.listenerIds.includes('child_1') &&
+      event.topic === 'homework_reminder' &&
+      event.sourceLayer === 'truth' &&
+      event.lineage.observability === 'private'
+    ))).toBe(true);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'AutomationTriggered',
+        ruleId: 'parent_homework_reminder'
+      }),
+      expect.objectContaining({
+        type: 'AutomationTriggered',
+        ruleId: 'child_homework_focus'
+      })
+    ]));
+  });
+
+  it('invites available household members to shared dinner from a cooking activity', () => {
+    const simulator = createSimulator({ seed: 818 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T18:45:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_1.location = 'living_room';
+    snapshot.people.adult_1.activity = 'reading';
+    snapshot.people.adult_2.location = 'kitchen';
+    snapshot.people.adult_2.activity = 'cooking_dinner';
+    snapshot.people.child_1.location = 'child_bedroom';
+    snapshot.people.child_1.activity = 'homework';
+    snapshot.people.senior_1.location = 'living_room';
+    snapshot.people.senior_1.activity = 'idle';
+    delete snapshot.activities.family_dinner;
+    simulator.restore(snapshot, simulator.getEvents());
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.activities.family_dinner).toMatchObject({
+      participants: ['adult_1', 'adult_2', 'child_1', 'senior_1'],
+      roomId: 'dining_room'
+    });
+    expect(updated.people.adult_1).toMatchObject({ location: 'dining_room', activity: 'dinner' });
+    expect(updated.people.child_1).toMatchObject({ location: 'dining_room', activity: 'dinner' });
+    expect(updated.people.senior_1).toMatchObject({ location: 'dining_room', activity: 'dinner' });
+    expect(updated.devices.dining_light_01.state).toMatchObject({ power: 'on' });
+    expect(events.some((event): event is ConversationOccurredEvent => (
+      event.type === 'ConversationOccurred' &&
+      event.topic === 'family_dinner_invitation' &&
+      event.listenerIds.includes('child_1') &&
+      event.listenerIds.includes('senior_1')
+    ))).toBe(true);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'AutomationTriggered',
+        ruleId: 'family_meal_invitation'
+      })
+    ]));
+  });
+
+  it('uses a family reminder to help the senior take medicine and updates inventory risk', () => {
+    const simulator = createSimulator({ seed: 919 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T08:30:00+08:00';
+    snapshot.homeState.mode = 'morning';
+    snapshot.people.adult_1.location = 'kitchen';
+    snapshot.people.adult_1.activity = 'breakfast';
+    snapshot.people.senior_1.location = 'living_room';
+    snapshot.people.senior_1.activity = 'idle';
+    snapshot.worldState.inventory.medicineDoses = 3;
+    snapshot.worldState.inventory.healthRiskScore = 54;
+    simulator.restore(snapshot, simulator.getEvents());
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.people.senior_1).toMatchObject({ location: 'master_bedroom', activity: 'take_medicine' });
+    expect(updated.worldState.inventory.medicineDoses).toBe(2);
+    expect(updated.worldState.inventory.healthRiskScore).toBeLessThan(54);
+    expect(events.some((event): event is ConversationOccurredEvent => (
+      event.type === 'ConversationOccurred' &&
+      event.topic === 'medicine_reminder' &&
+      event.speakerId === 'adult_1' &&
+      event.listenerIds.includes('senior_1')
+    ))).toBe(true);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'AutomationTriggered',
+        ruleId: 'senior_medicine_reminder'
+      })
+    ]));
+  });
+
+  it('queues the lower priority person when bathroom use conflicts', () => {
+    const simulator = createSimulator({ seed: 1020 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T07:10:00+08:00';
+    snapshot.homeState.mode = 'morning';
+    snapshot.people.adult_1.location = 'bathroom';
+    snapshot.people.adult_1.activity = 'bathroom';
+    snapshot.people.child_1.location = 'living_room';
+    snapshot.people.child_1.activity = 'bathroom';
+    simulator.restore(snapshot, simulator.getEvents());
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.people.adult_1).toMatchObject({ location: 'bathroom', activity: 'bathroom' });
+    expect(updated.people.child_1).toMatchObject({ location: 'living_room', activity: 'waiting_for_bathroom_sink' });
+    expect(events.some((event): event is ConversationOccurredEvent => (
+      event.type === 'ConversationOccurred' &&
+      event.topic === 'resource_contention' &&
+      event.listenerIds.includes('child_1')
+    ))).toBe(true);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'AutomationTriggered',
+        ruleId: 'shared_resource_contention'
+      })
+    ]));
+  });
+
+  it('responds to courier delivery by collecting the package and clearing the entrance sensor', () => {
+    const simulator = createSimulator({ seed: 1121 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T15:30:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_1.location = 'living_room';
+    snapshot.people.adult_1.activity = 'idle';
+    snapshot.devices.package_sensor_01.state = { ...snapshot.devices.package_sensor_01.state, packagePresent: true, weightKg: 1.8 };
+    snapshot.devices.doorbell_camera_01.state = { ...snapshot.devices.doorbell_camera_01.state, motion: true, ringing: true };
+    snapshot.worldState.inventory.packageCount = 1;
+    simulator.restore(snapshot, simulator.getEvents());
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.people.adult_1).toMatchObject({ location: 'entrance', activity: 'collect_package' });
+    expect(updated.devices.package_sensor_01.state).toMatchObject({ packagePresent: false, weightKg: 0 });
+    expect(updated.worldState.inventory.packageCount).toBe(0);
+    expect(events.some((event): event is ExternalInteractionOccurredEvent => (
+      event.type === 'ExternalInteractionOccurred' &&
+      event.actorKind === 'courier' &&
+      event.purpose === 'package_delivery' &&
+      event.roomId === 'entrance'
+    ))).toBe(true);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'AutomationTriggered',
+        ruleId: 'package_pickup_response'
+      })
+    ]));
+  });
+
+  it('assigns dirty dish cleanup as a household chore and reduces backlog', () => {
+    const simulator = createSimulator({ seed: 1222 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T16:15:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_1.location = 'living_room';
+    snapshot.people.adult_1.activity = 'idle';
+    snapshot.people.child_1.location = 'living_room';
+    snapshot.people.child_1.activity = 'idle';
+    snapshot.worldState.inventory.dirtyDishes = 8;
+    snapshot.worldState.inventory.unfinishedChores = 3;
+    simulator.restore(snapshot, simulator.getEvents());
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.people.child_1).toMatchObject({ location: 'kitchen', activity: 'unload_dishwasher' });
+    expect(updated.worldState.inventory.dirtyDishes).toBe(0);
+    expect(updated.worldState.inventory.unfinishedChores).toBeLessThan(3);
+    expect(events.some((event): event is ConversationOccurredEvent => (
+      event.type === 'ConversationOccurred' &&
+      event.topic === 'chore_assignment' &&
+      event.speakerId === 'adult_1' &&
+      event.listenerIds.includes('child_1')
+    ))).toBe(true);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'AutomationTriggered',
+        ruleId: 'household_chore_assignment'
+      })
+    ]));
   });
 
   it('keeps room occupants and whole-home occupancy count consistent across scenarios', () => {

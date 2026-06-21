@@ -909,6 +909,7 @@ function App(): React.ReactElement {
             </div>
           </div>
 
+          {sidebarMode !== 'home' ? <TwinInferencePanel inference={model.twinInference} /> : null}
           {sidebarMode !== 'home' ? <BehaviorAuditPanel audit={model.behaviorAudit} /> : null}
 
           <div className="panel">
@@ -976,6 +977,53 @@ function App(): React.ReactElement {
   );
 }
 
+function TwinInferencePanel({ inference }: { inference: ReturnType<typeof createDashboardModel>['twinInference'] }): React.ReactElement {
+  return (
+    <div className="panel twin-inference-panel">
+      <h2>Twin Inference</h2>
+      <div className="audit-summary">
+        <span>{inference.inputSummary.acceptedEventCount} observations</span>
+        <span>{inference.inputSummary.rejectedEventTypes.length} rejected labels</span>
+        <span>{Math.round(inference.homeMode.confidence * 100)}% mode</span>
+      </div>
+      <div className="inference-mode-row">
+        <div>
+          <span>Truth</span>
+          <strong>{inference.homeMode.truth}</strong>
+        </div>
+        <div>
+          <span>Inferred</span>
+          <strong>{inference.homeMode.inferred}</strong>
+        </div>
+      </div>
+      <div className="audit-person-list">
+        {inference.people.slice(0, 4).map((person) => (
+          <div key={person.personId} className="audit-person-row">
+            <div>
+              <strong>{person.label}</strong>
+              <span>{person.inferredRoom} / {person.inferredActivity}</span>
+              <small>Truth: {person.truthRoom} / {person.truthActivity}</small>
+            </div>
+            <em>{Math.round(person.roomConfidence * 100)}%</em>
+          </div>
+        ))}
+      </div>
+      <div className="causal-list">
+        {inference.risks.slice(0, 3).map((risk) => (
+          <div key={risk.id} className="causal-row">
+            <strong>{risk.id.replaceAll('_', ' ')}</strong>
+            <span>{Math.round(risk.probability * 100)}% risk</span>
+            <small>{risk.drivers.join(', ')}</small>
+          </div>
+        ))}
+      </div>
+      {inference.inputSummary.rejectedEventTypes.length > 0 ? (
+        <small className="muted">Ignored truth/control labels: {inference.inputSummary.rejectedEventTypes.join(', ')}</small>
+      ) : null}
+    </div>
+  );
+}
+
 function BehaviorAuditPanel({ audit }: { audit: ReturnType<typeof createDashboardModel>['behaviorAudit'] }): React.ReactElement {
   return (
     <div className="panel behavior-audit-panel">
@@ -994,6 +1042,10 @@ function BehaviorAuditPanel({ audit }: { audit: ReturnType<typeof createDashboar
               <small>{person.nextPlan}</small>
             </div>
             <em>{person.energy}</em>
+            {person.nextCommitment ? (
+              <small>Commitment: {person.nextCommitment.activity} / {person.nextCommitment.window} / {person.nextCommitment.pressure}</small>
+            ) : null}
+            <small>{person.memorySummary}</small>
             {person.triggeredRules.length > 0 ? <small>Rules: {person.triggeredRules.join(', ')}</small> : null}
             {person.affectsDevices.length > 0 ? <small>Devices: {person.affectsDevices.join(', ')}</small> : null}
           </div>

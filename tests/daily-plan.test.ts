@@ -33,6 +33,23 @@ describe('calendar-driven daily plan generation', () => {
     expect(moveActivities).toContain('weekend_cleaning');
   });
 
+  it('treats deterministic holidays as non-school non-work daily routines', () => {
+    const plan = generateDailyScenario({ date: '2026-10-01', seed: 42 });
+    const moveActivities = plan.steps.flatMap((step) => step.actions)
+      .filter((action) => action.kind === 'movePerson')
+      .map((action) => action.activity);
+
+    expect(plan.calendar).toMatchObject({
+      date: '2026-10-01',
+      holidayName: 'National Day',
+      schoolDay: false,
+      workday: false
+    });
+    expect(moveActivities).not.toContain('school');
+    expect(moveActivities).not.toContain('commuting');
+    expect(moveActivities).toContain('family_outing');
+  });
+
   it('uses month and season to produce meaningful seasonal device behavior', () => {
     const summer = generateDailyScenario({ date: '2026-07-14', seed: 7 });
     const winter = generateDailyScenario({ date: '2026-01-14', seed: 7 });
