@@ -18,7 +18,10 @@ import {
 import type { DeviceState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { Floorplan3D, type FloorplanLayers, type FloorplanSelection } from './Floorplan3D';
 import { ApiClientError, createIdempotencyKey, getJson, postAlertStatus, postDeviceCommand, postUpdate, type ApiUpdate, type DeviceCommandValue } from './apiClient';
+import { confirmDeviceCommand } from './deviceCommandSafety';
 import { createFloorplan3DModel, type Floorplan3DDevice, type Floorplan3DRoom, type FloorplanDeviceDisplayMode, type FloorplanEventReplay } from './floorplan3dModel';
+import { buildReplayShareReport } from './replayShareReport';
+import { createScenarioScriptPlan } from './scenarioScriptPlan';
 import { buildTwinSocketUrl, cursorFromSnapshot, cursorFromUpdate, needsFullTwinRefresh, nextReconnectDelayMs, parseTwinSocketMessage, type TwinSocketCursor } from './twinSocket';
 import { createDashboardModel, mergeTwinEvents } from './viewModel';
 import './styles.css';
@@ -42,6 +45,7 @@ function App(): React.ReactElement {
   const [activeReplayStepIndex, setActiveReplayStepIndex] = React.useState(0);
   const [activeDemoSpotlightId, setActiveDemoSpotlightId] = React.useState<string | null>(null);
   const [demoHoldUntil, setDemoHoldUntil] = React.useState<string | null>(null);
+  const [selectedForecastMetricByCard, setSelectedForecastMetricByCard] = React.useState<Record<string, string>>({});
   const [pendingAction, setPendingAction] = React.useState<string | null>(null);
   const [apiError, setApiError] = React.useState<string | null>(null);
   const [failedAction, setFailedAction] = React.useState<{ label: string; run: () => Promise<void> } | null>(null);
@@ -201,34 +205,32 @@ function App(): React.ReactElement {
 
   async function startScenarioCard(cardId: string, idempotencyKey: string): Promise<void> {
     resetDemoSpotlight();
-    if (cardId === 'weekday_normal' || cardId === 'away_day' || cardId === 'night_water_leak') {
-      const update = await postUpdate(`/api/scenarios/${cardId}/start`, {}, { idempotencyKey });
-      if (cardId === 'night_water_leak') {
-        const advanced = await postUpdate('/api/control/advance', { minutes: 10 }, { idempotencyKey: `${idempotencyKey}:advance` });
-        applyUpdate({ snapshot: advanced.snapshot, events: [...update.events, ...advanced.events] }, true);
+    const plan = createScenarioScriptPlan(cardId);
+    let combinedEvents: TwinEvent[] = [];
+    let latestSnapshot: TwinSnapshot | null = snapshot;
+
+    for (const [index, action] of plan.entries()) {
+      const stepKey = `${idempotencyKey}:${index}:${action.kind}`;
+      const update = action.kind === 'startScenario'
+        ? await postUpdate(`/api/scenarios/${action.scenarioId}/start`, {}, { idempotencyKey: stepKey })
+        : action.kind === 'advance'
+          ? await postUpdate('/api/control/advance', { minutes: action.minutes }, { idempotencyKey: stepKey })
+          : action.kind === 'inject'
+            ? await postUpdate('/api/control/inject', { kind: action.abnormality }, { idempotencyKey: stepKey })
+            : action.kind === 'resolve'
+              ? await postUpdate('/api/control/resolve', { kind: action.abnormality }, { idempotencyKey: stepKey })
+              : await postDeviceCommand(action.deviceId, action.command, action.value ?? null, { idempotencyKey: stepKey });
+      latestSnapshot = update.snapshot;
+      combinedEvents = [...combinedEvents, ...update.events];
+    }
+
+    if (plan.length > 0 && latestSnapshot) {
+      applyUpdate({ snapshot: latestSnapshot, events: combinedEvents }, true);
+      if (plan.length > 1) {
         holdDemoSpotlight(2000);
-        return;
       }
-      applyUpdate(update, true);
-      return;
-    }
-    if (cardId === 'kitchen_air_quality') {
-      const update = await postUpdate('/api/scenarios/weekday_normal/start', {}, { idempotencyKey: `${idempotencyKey}:start` });
-      const advanced = await postUpdate('/api/control/advance', { minutes: 750 }, { idempotencyKey: `${idempotencyKey}:advance` });
-      applyUpdate({ snapshot: advanced.snapshot, events: [...update.events, ...advanced.events] }, true);
-      holdDemoSpotlight(2000);
-      return;
-    }
-    const injectionMap: Record<string, string> = {
-      fridge_left_open: 'fridge_left_open',
-      door_left_open: 'door_left_open',
-      senior_no_activity: 'senior_no_activity',
-      network_offline: 'network_offline'
-    };
-    if (injectionMap[cardId]) {
-      const update = await postUpdate('/api/control/inject', { kind: injectionMap[cardId] }, { idempotencyKey });
-      applyUpdate(update);
-      holdDemoSpotlight(2000);
+    } else {
+      setApiError(`Unknown scenario script: ${cardId}`);
     }
   }
 
@@ -554,75 +556,6 @@ function App(): React.ReactElement {
           </section>
         ) : null}
 
-        <section className={`panel home-briefing ${model.homeBriefing.status === 'Needs attention' ? 'alert' : model.homeBriefing.status === 'Watch' ? 'watch' : 'normal'}`}>
-          <div>
-            <span className="eyebrow">Home briefing</span>
-            <h2>{model.homeBriefing.status}</h2>
-            <p>{model.homeBriefing.summary}</p>
-          </div>
-          <div className="briefing-primary">
-            <strong>{model.homeBriefing.primaryItem?.headline ?? 'No priority item'}</strong>
-            <span>{model.homeBriefing.primaryItem?.summary ?? 'The home is operating within expected ranges.'}</span>
-            <small>{model.homeBriefing.nextAction}</small>
-          </div>
-          <div className="briefing-highlights">
-            {model.homeBriefing.highlights.map((highlight) => <span key={highlight}>{highlight}</span>)}
-          </div>
-        </section>
-
-        <section className="story-row">
-          <div className="story-card primary-story">
-            <span className="eyebrow">Current household activity</span>
-            <h2>{model.householdActivity.title}</h2>
-            <p>{model.householdActivity.summary}</p>
-            <div className="tag-row">
-              <span>{model.householdActivity.roomName}</span>
-              {model.householdActivity.participants.slice(0, 4).map((participant) => <span key={participant}>{participant}</span>)}
-            </div>
-            <small>{model.householdActivity.nextAction}</small>
-          </div>
-          <div className="story-card">
-            <span className="eyebrow">Latest automation</span>
-            {model.automationExplanations[0] ? (
-              <>
-                <h2>{model.automationExplanations[0].ruleName}</h2>
-                <p>{model.automationExplanations[0].explanation}</p>
-                <small>{model.automationExplanations[0].actions.join(', ')}</small>
-              </>
-            ) : (
-              <p className="muted">No automation rule has fired yet.</p>
-            )}
-          </div>
-          <div className="story-card">
-            <span className="eyebrow">Latest control record</span>
-            {model.controlRecords[0] ? (
-              <>
-                <h2>{model.controlRecords[0].deviceName}</h2>
-                <p>{model.controlRecords[0].action}</p>
-                <small>{model.controlRecords[0].ruleName}</small>
-                <button
-                  className="story-action"
-                  onPointerDown={() => activateFromPointer(() => startReplayForRecord(model.controlRecords[0]))}
-                  onClick={() => activateFromClick(() => startReplayForRecord(model.controlRecords[0]))}
-                >
-                  <Play size={15} /> Replay in 3D
-                </button>
-              </>
-            ) : (
-              <p className="muted">No device control records yet.</p>
-            )}
-          </div>
-        </section>
-
-        <DemoSpotlightPanel
-          spotlight={model.demoSpotlight}
-          holdUntil={demoHoldUntil}
-          controlRecord={model.demoSpotlight?.controlRecordId
-            ? model.controlRecords.find((record) => record.id === model.demoSpotlight?.controlRecordId) ?? null
-            : null}
-          onReplay={(record) => startReplayForRecord(record)}
-        />
-
         <section className="main-grid">
           <div className="floorplan-view">
             <div className="view-toggle" aria-label="Floorplan view">
@@ -640,7 +573,11 @@ function App(): React.ReactElement {
                 <option value="actuator">Actuators</option>
                 <option value="appliance">Appliances</option>
                 <option value="security">Security</option>
+                <option value="lighting">Lighting</option>
+                <option value="climate">Climate</option>
+                <option value="media">Media</option>
                 <option value="mobile">Mobile</option>
+                <option value="network">Network</option>
               </select>
             </div>
             {floorplanView === '3d' ? (
@@ -649,6 +586,7 @@ function App(): React.ReactElement {
                 layers={floorplanLayers}
                 selected={floorplanSelection}
                 deviceDisplayMode={deviceDisplayMode}
+                replayFocusDeviceId={activeReplayStep?.deviceId ?? null}
                 onToggleLayer={toggleFloorplanLayer}
                 onSelect={setFloorplanSelection}
               />
@@ -662,33 +600,150 @@ function App(): React.ReactElement {
             )}
           </div>
 
-          <ReplayPanel
-            replay={activeReplay}
-            activeStepIndex={activeReplayStepIndex}
-            activeStepId={activeReplayStep?.id ?? null}
-            onStepSelect={(stepIndex) => activeReplay ? focusReplayStep(activeReplay, stepIndex) : undefined}
-          onNext={() => activeReplay ? focusReplayStep(activeReplay, Math.min(activeReplayStepIndex + 1, activeReplay.steps.length - 1)) : undefined}
-            onClose={() => {
-              setActiveReplayId(null);
-              setActiveReplayStepIndex(0);
-            }}
-          />
+          <div className="dashboard-side-stack">
+            <ReplayPanel
+              replay={activeReplay}
+              activeStepIndex={activeReplayStepIndex}
+              activeStepId={activeReplayStep?.id ?? null}
+              onStepSelect={(stepIndex) => activeReplay ? focusReplayStep(activeReplay, stepIndex) : undefined}
+              onNext={() => activeReplay ? focusReplayStep(activeReplay, Math.min(activeReplayStepIndex + 1, activeReplay.steps.length - 1)) : undefined}
+              onClose={() => {
+                setActiveReplayId(null);
+                setActiveReplayStepIndex(0);
+              }}
+            />
 
-          <SelectionPanel
-            room={selectedRoom}
-            device={selectedDevice}
-            snapshotDevice={selectedDevice ? snapshot.devices[selectedDevice.id] : null}
-            deviceControlCard={selectedDevice ? model.deviceControlCards.find((card) => card.deviceId === selectedDevice.id) ?? null : null}
-            roomOccupants={selectedRoom ? model.floorplanRooms[selectedRoom.id].people : []}
-            roomDevices={selectedRoom ? model.floorplanRooms[selectedRoom.id].devices : []}
-            roomRecords={selectedRoom ? model.controlRecords.filter((record) => record.roomName === selectedRoom.label).slice(0, 3) : []}
-            activeDeviceCount={model.activeDeviceCount}
-            occupiedRoomCount={model.occupiedRooms.length}
-            onSelectDevice={(deviceId) => setFloorplanSelection({ type: 'device', id: deviceId })}
-            onCommand={(deviceId, command, value) => void runApiAction(`${command} ${deviceId}`, (key) => executeDeviceCommand(deviceId, command, value, key))}
-          />
+            <SelectionPanel
+              room={selectedRoom}
+              device={selectedDevice}
+              snapshotDevice={selectedDevice ? snapshot.devices[selectedDevice.id] : null}
+              deviceControlCard={selectedDevice ? model.deviceControlCards.find((card) => card.deviceId === selectedDevice.id) ?? null : null}
+              roomOccupants={selectedRoom ? model.floorplanRooms[selectedRoom.id].people : []}
+              roomDevices={selectedRoom ? model.floorplanRooms[selectedRoom.id].devices : []}
+              focusDevices={Object.values(model.floorplanRooms).flatMap((item) => item.devices)}
+              roomRecords={selectedRoom ? model.controlRecords.filter((record) => record.roomName === selectedRoom.label).slice(0, 3) : []}
+              activeDeviceCount={model.activeDeviceCount}
+              occupiedRoomCount={model.occupiedRooms.length}
+              onSelectDevice={(deviceId) => setFloorplanSelection({ type: 'device', id: deviceId })}
+              onCommand={(deviceId, command, value) => void runApiAction(`${command} ${deviceId}`, (key) => executeDeviceCommand(deviceId, command, value, key))}
+            />
+          </div>
+        </section>
 
-          <div className="panel">
+        <section className="overview-grid">
+          <section className={`panel home-briefing ${model.homeBriefing.status === 'Needs attention' ? 'alert' : model.homeBriefing.status === 'Watch' ? 'watch' : 'normal'}`}>
+            <div>
+              <span className="eyebrow">Home briefing</span>
+              <h2>{model.homeBriefing.status}</h2>
+              <p>{model.homeBriefing.summary}</p>
+            </div>
+            <div className="briefing-primary">
+              <strong>{model.homeBriefing.primaryItem?.headline ?? 'No priority item'}</strong>
+              <span>{model.homeBriefing.primaryItem?.summary ?? 'The home is operating within expected ranges.'}</span>
+              <small>{model.homeBriefing.nextAction}</small>
+            </div>
+            <div className="briefing-highlights">
+              {model.homeBriefing.highlights.map((highlight) => <span key={highlight}>{highlight}</span>)}
+            </div>
+          </section>
+
+          <section className="story-row">
+            <div className="story-card primary-story">
+              <span className="eyebrow">Current household activity</span>
+              <h2>{model.householdActivity.title}</h2>
+              <p>{model.householdActivity.summary}</p>
+              <div className="tag-row">
+                <span>{model.householdActivity.roomName}</span>
+                {model.householdActivity.participants.slice(0, 4).map((participant) => <span key={participant}>{participant}</span>)}
+              </div>
+              <small>{model.householdActivity.nextAction}</small>
+            </div>
+            <div className="story-card">
+              <span className="eyebrow">Latest automation</span>
+              {model.automationExplanations[0] ? (
+                <>
+                  <h2>{model.automationExplanations[0].ruleName}</h2>
+                  <p>{model.automationExplanations[0].explanation}</p>
+                  <small>{model.automationExplanations[0].actions.join(', ')}</small>
+                </>
+              ) : (
+                <p className="muted">No automation rule has fired yet.</p>
+              )}
+            </div>
+            <div className="story-card">
+              <span className="eyebrow">Latest control record</span>
+              {model.controlRecords[0] ? (
+                <>
+                  <h2>{model.controlRecords[0].deviceName}</h2>
+                  <p>{model.controlRecords[0].action}</p>
+                  <small>{model.controlRecords[0].ruleName}</small>
+                  <button
+                    className="story-action"
+                    onPointerDown={() => activateFromPointer(() => startReplayForRecord(model.controlRecords[0]))}
+                    onClick={() => activateFromClick(() => startReplayForRecord(model.controlRecords[0]))}
+                  >
+                    <Play size={15} /> Replay in 3D
+                  </button>
+                </>
+              ) : (
+                <p className="muted">No device control records yet.</p>
+              )}
+            </div>
+          </section>
+
+          <section className="behavior-grid">
+            <div className="story-card behavior-card">
+              <span className="eyebrow">Behavior intents</span>
+              <div className="behavior-list">
+                {model.behaviorCards.slice(0, 4).map((card) => (
+                  <button
+                    key={card.personId}
+                    className="behavior-row"
+                    onClick={() => card.roomId === 'away' ? undefined : setFloorplanSelection({ type: 'room', id: card.roomId })}
+                  >
+                    <strong>{card.label}</strong>
+                    <span>{card.intent}</span>
+                    <small>{card.routinePhase} / {card.attentionTarget}</small>
+                    <em>{card.energy}</em>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="story-card lifecycle-card">
+              <span className="eyebrow">Lifecycle queue</span>
+              {model.deviceLifecycleCards.length > 0 ? (
+                <div className="behavior-list">
+                  {model.deviceLifecycleCards.slice(0, 3).map((card) => (
+                    <button
+                      key={card.deviceId}
+                      className="behavior-row"
+                      onClick={() => setFloorplanSelection({ type: 'device', id: card.deviceId })}
+                    >
+                      <strong>{card.headline}</strong>
+                      <span>{card.status}</span>
+                      <small>{card.roomName} / {card.nextAction}</small>
+                      <em>{card.priority}</em>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="muted">No device is waiting for household handling.</p>
+              )}
+            </div>
+          </section>
+
+          <DemoSpotlightPanel
+            spotlight={model.demoSpotlight}
+            holdUntil={demoHoldUntil}
+            controlRecord={model.demoSpotlight?.controlRecordId
+              ? model.controlRecords.find((record) => record.id === model.demoSpotlight?.controlRecordId) ?? null
+              : null}
+            onReplay={(record) => startReplayForRecord(record)}
+          />
+        </section>
+
+        <section className="secondary-grid">
+          <div className="panel alert-response-panel">
             <h2>Alert Response</h2>
             {model.alertWorkflows.length === 0 ? <p className="muted">No active alert workflow.</p> : model.alertWorkflows.map((workflow) => (
               <div key={workflow.alertId} className="workflow-card">
@@ -720,6 +775,101 @@ function App(): React.ReactElement {
           </div>
 
           <div className="panel">
+            <h2>Forecasts</h2>
+            <div className="insight-list">
+              {model.predictionCards.map((prediction) => {
+                const selectedMetric = selectedForecastMetricByCard[prediction.id] ?? prediction.chart.series[0]?.metric;
+                const selectedSeries = prediction.chart.series.find((series) => series.metric === selectedMetric) ?? prediction.chart.series[0];
+                return (
+                  <div key={prediction.id} className="insight-card watch forecast-card">
+                    <div className="forecast-card-header">
+                      <span>{prediction.roomName} / {prediction.horizon}</span>
+                      <button type="button" onClick={() => setFloorplanSelection({ type: 'device', id: prediction.relatedDeviceId })}>Focus device</button>
+                    </div>
+                    <strong>{prediction.title}</strong>
+                    <small>{prediction.forecast}</small>
+                    <em>{prediction.ifIgnored}</em>
+                    <small>{prediction.ifHandledNow}</small>
+                    <div className="forecast-recovery" title={prediction.recoveryEstimate.basis}>
+                      <span>{prediction.recoveryEstimate.action}</span>
+                      <strong>{prediction.recoveryEstimate.estimatedRecoveryMinutes} min</strong>
+                      <small>{prediction.recoveryEstimate.impactReductionPercent}% impact reduction / {prediction.recoveryEstimate.confidence} confidence</small>
+                    </div>
+                    {prediction.forecastPoints.length > 0 ? (
+                      <div className="forecast-points">
+                        {prediction.forecastPoints.map((point) => (
+                          <div key={point.metric} className="forecast-point">
+                            <span>
+                              {point.metric.replaceAll('_', ' ')}: ignore {point.ignored.join(' -> ')} {point.unit}; handle {point.handledNow.join(' -> ')} {point.unit}
+                            </span>
+                            <small>{point.confidenceInterval.levelPercent}% confidence band / +/-{point.confidenceInterval.spreadPercent}%</small>
+                            <div className="forecast-curve" aria-hidden="true">
+                              <div className="forecast-line ignore">
+                                {point.ignored.map((value, index) => (
+                                  <i
+                                    key={`ignored-${index}`}
+                                    style={{ height: `${forecastBarHeight(value, point.ignored, point.handledNow)}%` }}
+                                  />
+                                ))}
+                              </div>
+                              <div className="forecast-line handle">
+                                {point.handledNow.map((value, index) => (
+                                  <i
+                                    key={`handled-${index}`}
+                                    style={{ height: `${forecastBarHeight(value, point.ignored, point.handledNow)}%` }}
+                                  />
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {selectedSeries ? (
+                      <div className="forecast-chart" aria-label={`${prediction.chart.title} chart`}>
+                        <div className="forecast-metric-tabs" role="tablist" aria-label={`${prediction.title} metrics`}>
+                          {prediction.chart.series.map((series) => (
+                            <button
+                              key={series.metric}
+                              type="button"
+                              className={series.metric === selectedSeries.metric ? 'active' : ''}
+                              onClick={() => setSelectedForecastMetricByCard((current) => ({ ...current, [prediction.id]: series.metric }))}
+                            >
+                              {series.label}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="forecast-chart-axis">
+                          {prediction.chart.horizonMinutes.map((minute) => <span key={minute}>{minute}m</span>)}
+                        </div>
+                        <div className="forecast-chart-series">
+                          <span>{selectedSeries.label} ({selectedSeries.unit})</span>
+                          <div className="forecast-chart-lines">
+                            <div className="forecast-chart-line ignore">
+                              {selectedSeries.ignored.map((value, index) => (
+                                <i key={`chart-ignore-${index}`} style={{ height: `${forecastBarHeight(value, selectedSeries.ignored, selectedSeries.handledNow)}%` }} />
+                              ))}
+                            </div>
+                            <div className="forecast-chart-line handle">
+                              {selectedSeries.handledNow.map((value, index) => (
+                                <i key={`chart-handle-${index}`} style={{ height: `${forecastBarHeight(value, selectedSeries.ignored, selectedSeries.handledNow)}%` }} />
+                              ))}
+                            </div>
+                          </div>
+                          <small>
+                            {selectedSeries.confidenceInterval.levelPercent}% band: ignore {selectedSeries.confidenceInterval.ignoredLow.at(-1)}-{selectedSeries.confidenceInterval.ignoredHigh.at(-1)} {selectedSeries.unit}; handle {selectedSeries.confidenceInterval.handledNowLow.at(-1)}-{selectedSeries.confidenceInterval.handledNowHigh.at(-1)} {selectedSeries.unit}
+                          </small>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+              {model.predictionCards.length === 0 ? <p className="muted">No active forecast needs attention.</p> : null}
+            </div>
+          </div>
+
+          <div className="panel">
             <h2>Home Insights</h2>
             <div className="insight-list">
               {model.insightCards.map((insight) => (
@@ -738,6 +888,28 @@ function App(): React.ReactElement {
               {model.insightCards.length === 0 ? <p className="muted">No telemetry insight needs attention.</p> : null}
             </div>
           </div>
+
+          <div className="panel">
+            <h2>Device Health</h2>
+            <div className="insight-list">
+              {model.deviceHealthCards.map((card) => (
+                <button
+                  key={card.id}
+                  className={`insight-card ${card.status}`}
+                  onClick={() => setFloorplanSelection({ type: 'device', id: card.focusDeviceId })}
+                >
+                  <span>{card.roomName} / {card.maintenanceLabel}</span>
+                  <strong>{card.displayName} {card.signal.toLowerCase()}</strong>
+                  <small>{card.sourceField ?? 'device'}: {String(card.reportedValue)}</small>
+                  <em>{card.recommendedAction}</em>
+                  <small>{card.expectedEffect}</small>
+                </button>
+              ))}
+              {model.deviceHealthCards.length === 0 ? <p className="muted">No device health item needs attention.</p> : null}
+            </div>
+          </div>
+
+          {sidebarMode !== 'home' ? <BehaviorAuditPanel audit={model.behaviorAudit} /> : null}
 
           <div className="panel">
             <h2>Telemetry Trends</h2>
@@ -801,6 +973,49 @@ function App(): React.ReactElement {
         {sidebarMode === 'debug' ? <RawEventStream events={events} /> : null}
       </section>
     </main>
+  );
+}
+
+function BehaviorAuditPanel({ audit }: { audit: ReturnType<typeof createDashboardModel>['behaviorAudit'] }): React.ReactElement {
+  return (
+    <div className="panel behavior-audit-panel">
+      <h2>Behavior Audit</h2>
+      <div className="audit-summary">
+        <span>{audit.people.length} people</span>
+        <span>{audit.recentCausalEvents.length} causal events</span>
+        <span>{audit.unresolvedTasks.length} open tasks</span>
+      </div>
+      <div className="audit-person-list">
+        {audit.people.slice(0, 5).map((person) => (
+          <div key={person.personId} className="audit-person-row">
+            <div>
+              <strong>{person.label}</strong>
+              <span>{person.intent} / {person.routinePhase}</span>
+              <small>{person.nextPlan}</small>
+            </div>
+            <em>{person.energy}</em>
+            {person.triggeredRules.length > 0 ? <small>Rules: {person.triggeredRules.join(', ')}</small> : null}
+            {person.affectsDevices.length > 0 ? <small>Devices: {person.affectsDevices.join(', ')}</small> : null}
+          </div>
+        ))}
+      </div>
+      <div className="causal-list">
+        {audit.recentCausalEvents.slice(0, 4).map((event) => (
+          <div key={event.eventId} className="causal-row">
+            <time>{formatTime(event.time)}</time>
+            <strong>{event.ruleId ? formatRuleLabel(event.ruleId) : event.type}</strong>
+            <span>{event.why}</span>
+            <small>{event.actors.length > 0 ? `Actors: ${event.actors.join(', ')}` : 'Actors: system'}</small>
+            <small>{event.affectedDevices.length > 0 ? `Devices: ${event.affectedDevices.join(', ')}` : event.expectedOutcome}</small>
+          </div>
+        ))}
+      </div>
+      {audit.consistencyWarnings.length > 0 ? (
+        <div className="audit-warnings">
+          {audit.consistencyWarnings.map((warning) => <span key={warning}>{warning}</span>)}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1198,18 +1413,10 @@ function ReplayPanel({
   }
 
   const activeStep = replay.steps[activeStepIndex] ?? replay.steps[0];
+  const shareReplay = replay;
 
   async function copyShareReport(): Promise<void> {
-    await navigator.clipboard.writeText(JSON.stringify({
-      title: replay?.title,
-      ruleId: replay?.ruleId,
-      severity: replay?.severity,
-      steps: replay?.steps.map((step) => ({
-        label: step.label,
-        detail: step.detail,
-        sequence: step.atSequence
-      }))
-    }, null, 2));
+    await navigator.clipboard.writeText(JSON.stringify(buildReplayShareReport(shareReplay), null, 2));
   }
 
   return (
@@ -1246,6 +1453,8 @@ function ReplayPanel({
         </div>
       </div>
       <p>{activeStep.label}: {activeStep.detail}</p>
+      <ReplayStateEvidence step={activeStep} />
+      <ReplayDeviceTimelines replay={replay} />
       <input
         className="replay-timeline"
         type="range"
@@ -1273,6 +1482,69 @@ function ReplayPanel({
   );
 }
 
+function ReplayDeviceTimelines({ replay }: { replay: FloorplanEventReplay }): React.ReactElement | null {
+  if (replay.deviceTimelines.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="replay-state-evidence" aria-label="Replay device timelines">
+      {replay.deviceTimelines.map((timeline) => (
+        <div key={timeline.deviceId}>
+          <strong>{timeline.displayName} / {timeline.role}</strong>
+          <code>{timeline.entries.map((entry) => `${entry.phase}: ${formatReplayState(entry.state)}`).join(' -> ')}</code>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ReplayStateEvidence({ step }: { step: FloorplanEventReplay['steps'][number] }): React.ReactElement | null {
+  const previousState = formatReplayState(step.previousState);
+  const nextState = formatReplayState(step.nextState);
+  const snapshot = formatReplayState(step.stateSnapshot);
+
+  if (!previousState && !nextState && !snapshot && !step.commandStatus && !step.commandReason) {
+    return null;
+  }
+
+  return (
+    <div className="replay-state-evidence" aria-label="Replay state evidence">
+      {step.commandStatus ? (
+        <div>
+          <strong>Status</strong>
+          <code>{step.commandStatus}{step.commandReason ? ` / ${step.commandReason}` : ''}</code>
+        </div>
+      ) : null}
+      {previousState ? (
+        <div>
+          <strong>Before</strong>
+          <code>{previousState}</code>
+        </div>
+      ) : null}
+      {nextState ? (
+        <div>
+          <strong>After</strong>
+          <code>{nextState}</code>
+        </div>
+      ) : null}
+      {snapshot && snapshot !== nextState ? (
+        <div>
+          <strong>Snapshot</strong>
+          <code>{snapshot}</code>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function formatReplayState(state: FloorplanEventReplay['steps'][number]['stateSnapshot']): string {
+  if (!state) return '';
+  return Object.entries(state)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(', ');
+}
+
 function hasReplayForRecord(
   record: ReturnType<typeof createDashboardModel>['controlRecords'][number],
   replays: FloorplanEventReplay[]
@@ -1289,6 +1561,7 @@ function SelectionPanel({
   deviceControlCard,
   roomOccupants,
   roomDevices,
+  focusDevices,
   roomRecords,
   activeDeviceCount,
   occupiedRoomCount,
@@ -1301,6 +1574,7 @@ function SelectionPanel({
   deviceControlCard: ReturnType<typeof createDashboardModel>['deviceControlCards'][number] | null;
   roomOccupants: ReturnType<typeof createDashboardModel>['floorplanRooms'][keyof ReturnType<typeof createDashboardModel>['floorplanRooms']]['people'];
   roomDevices: ReturnType<typeof createDashboardModel>['floorplanRooms'][keyof ReturnType<typeof createDashboardModel>['floorplanRooms']]['devices'];
+  focusDevices: ReturnType<typeof createDashboardModel>['floorplanRooms'][keyof ReturnType<typeof createDashboardModel>['floorplanRooms']]['devices'];
   roomRecords: ReturnType<typeof createDashboardModel>['controlRecords'];
   activeDeviceCount: number;
   occupiedRoomCount: number;
@@ -1311,15 +1585,20 @@ function SelectionPanel({
     return (
       <div className="panel selection-panel">
         <span className="eyebrow">Selected device</span>
-        <h2>{device.label}</h2>
+        <h2>{device.displayName}</h2>
         <div className="detail-list">
           <Detail label="Device ID" value={device.id} />
           <Detail label="Room" value={device.roomId.replace('_', ' ')} />
+          <Detail label="Group" value={device.instanceGroup.replaceAll('_', ' ')} />
+          <Detail label="Privacy" value={device.privacyLevel} intent={device.privacyLevel === 'private' ? 'alert' : 'normal'} />
+          <Detail label="Risk" value={device.riskLevel.replaceAll('_', ' ')} intent={device.riskLevel === 'high' || device.riskLevel === 'privacy_sensitive' ? 'alert' : 'normal'} />
           <Detail label="Marker" value={`${device.markerKind} / ${device.animationHint}`} />
           <Detail label="Status" value={device.abnormal ? `Attention needed: ${device.statusLabel}` : device.active ? `Active: ${device.statusLabel}` : device.statusLabel} intent={device.abnormal ? 'alert' : 'normal'} />
+          <Detail label="Operability" value={device.interactionHint} intent={device.operability === 'offline' ? 'alert' : 'normal'} />
           <Detail label="State" value={summarizeState(snapshotDevice.state)} />
           {deviceControlCard ? <Detail label="Command state" value={deviceControlCard.commandStatus} intent={deviceControlCard.connectivity === 'offline' ? 'alert' : 'normal'} /> : null}
         </div>
+        {deviceControlCard ? <DeviceRecentEvents card={deviceControlCard} /> : null}
         {deviceControlCard ? (
           <DeviceControlCardView card={deviceControlCard} onCommand={onCommand} />
         ) : null}
@@ -1342,9 +1621,12 @@ function SelectionPanel({
           <Detail label="Risk" value={room.alertSeverity ? 'Needs attention' : room.occupied ? 'Normal occupied room' : 'Normal'} intent={room.alertSeverity ? 'alert' : 'normal'} />
           {room.alertSeverity ? <Detail label="Alert" value={room.alertSeverity} intent="alert" /> : null}
         </div>
+        <DeviceFocusList devices={roomDevices} onSelectDevice={onSelectDevice} />
       </div>
     );
   }
+
+  const overviewFocusDevice = focusDevices.find((item) => item.active) ?? focusDevices[0] ?? null;
 
   return (
     <div className="panel selection-panel">
@@ -1355,7 +1637,41 @@ function SelectionPanel({
         <Detail label="Active devices" value={String(activeDeviceCount)} />
         <Detail label="Selection" value="Click a room or device" />
       </div>
-      <button className="secondary-action" onClick={() => onSelectDevice('tv_01')}>Focus TV</button>
+      {overviewFocusDevice ? (
+        <button className="secondary-action" onClick={() => onSelectDevice(overviewFocusDevice.id)}>
+          Focus device: {overviewFocusDevice.label}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function DeviceFocusList({
+  devices,
+  onSelectDevice
+}: {
+  devices: ReturnType<typeof createDashboardModel>['floorplanRooms'][keyof ReturnType<typeof createDashboardModel>['floorplanRooms']]['devices'];
+  onSelectDevice: (deviceId: string) => void;
+}): React.ReactElement | null {
+  if (devices.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="device-focus-list" aria-label="Room device focus actions">
+      <strong>Focus device</strong>
+      <div>
+        {devices.slice(0, 6).map((device) => (
+          <button
+            key={device.id}
+            className={device.active ? 'active' : ''}
+            title={`${device.label}: ${device.summary}`}
+            onClick={() => onSelectDevice(device.id)}
+          >
+            {device.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1365,6 +1681,30 @@ function Detail({ label, value, intent = 'normal' }: { label: string; value: str
     <div className={`detail-row ${intent}`}>
       <span>{label}</span>
       <strong>{value}</strong>
+    </div>
+  );
+}
+
+function DeviceRecentEvents({
+  card
+}: {
+  card: ReturnType<typeof createDashboardModel>['deviceControlCards'][number];
+}): React.ReactElement {
+  return (
+    <div className="device-recent-events">
+      <div className="device-control-heading">
+        <strong>Recent events</strong>
+        <span>{card.lastEventAt ? formatTime(card.lastEventAt) : 'No event observed'}</span>
+      </div>
+      {card.recentEvents.length === 0 ? <p className="muted">No recent device event.</p> : null}
+      {card.recentEvents.map((event) => (
+        <div key={event.id} className="device-event-row">
+          <time>{formatTime(event.time)}</time>
+          <span>{event.type === 'DeviceTelemetry' ? 'Telemetry' : 'State'}</span>
+          <code>{event.label}</code>
+          {event.reason ? <small>{event.reason}</small> : null}
+        </div>
+      ))}
     </div>
   );
 }
@@ -1382,12 +1722,35 @@ function DeviceControlCardView({
     return draftValues[command.command] ?? command.value ?? command.min ?? null;
   }
 
+  function executeControl(command: ReturnType<typeof createDashboardModel>['deviceControlCards'][number]['controls'][number], value: DeviceCommandValue): void {
+    if (!confirmDeviceCommand({
+      displayName: card.displayName,
+      label: command.label,
+      highRisk: command.highRisk,
+      requiresConfirmation: command.requiresConfirmation,
+      disabled: command.disabled
+    })) {
+      return;
+    }
+    onCommand(card.deviceId, command.command, value);
+  }
+
   return (
     <div className="device-control-card">
       <div className="device-control-heading">
         <strong>Controls</strong>
         <span>{card.connectivity === 'offline' ? card.disabledReason : card.commandStatus}</span>
       </div>
+      {card.commandTimeline.length > 0 ? (
+        <div className="command-timeline" aria-label="Command lifecycle timeline">
+          {card.commandTimeline.map((entry) => (
+            <span key={`${entry.status}:${entry.at}`}>
+              <strong>{entry.status}</strong>
+              <time>{formatTime(entry.at)}</time>
+            </span>
+          ))}
+        </div>
+      ) : null}
       {card.controls.length === 0 ? <p className="muted">This device exposes no commands.</p> : null}
       {card.controls.map((control) => {
         const currentValue = valueFor(control);
@@ -1403,7 +1766,7 @@ function DeviceControlCardView({
                 disabled={control.disabled}
                 onChange={(event) => setDraftValues((current) => ({ ...current, [control.command]: Number(event.target.value) }))}
               />
-              <button disabled={control.disabled} onClick={() => onCommand(card.deviceId, control.command, currentValue)}>
+              <button disabled={control.disabled} onClick={() => executeControl(control, currentValue)}>
                 Apply {String(currentValue)}
               </button>
             </label>
@@ -1420,7 +1783,7 @@ function DeviceControlCardView({
               >
                 {(control.options ?? []).map((option) => <option key={option} value={option}>{option}</option>)}
               </select>
-              <button disabled={control.disabled} onClick={() => onCommand(card.deviceId, control.command, currentValue)}>
+              <button disabled={control.disabled} onClick={() => executeControl(control, currentValue)}>
                 Apply
               </button>
             </label>
@@ -1429,13 +1792,10 @@ function DeviceControlCardView({
         return (
           <button
             key={control.command}
-            className={`command-button ${control.highRisk ? 'danger-action' : ''}`}
+            className={`command-button ${control.highRisk || control.requiresConfirmation ? 'danger-action' : ''}`}
             disabled={control.disabled}
             title={control.disabledReason ?? control.label}
-            onClick={() => {
-              if (control.highRisk && !window.confirm(`${control.label} ${card.displayName}?`)) return;
-              onCommand(card.deviceId, control.command, currentValue);
-            }}
+            onClick={() => executeControl(control, currentValue)}
           >
             {control.label}
           </button>
@@ -1496,6 +1856,16 @@ function socketStatusLabel(status: 'connecting' | 'live' | 'reconnecting' | 'off
   return 'WS connecting';
 }
 
+function forecastBarHeight(value: number, ignored: number[], handledNow: number[]): number {
+  const values = [...ignored, ...handledNow];
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max === min) {
+    return 55;
+  }
+  return Math.round(22 + (value - min) / (max - min) * 68);
+}
+
 function summarizeState(state: Record<string, string | number | boolean | null>): string {
   return Object.entries(state).slice(0, 3).map(([key, value]) => `${key}:${String(value)}`).join(' ');
 }
@@ -1523,6 +1893,12 @@ function csvCell(value: string): string {
 
 function formatTime(value: string): string {
   return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatRuleLabel(ruleId: string): string {
+  return ruleId
+    .replaceAll('_', ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 createRoot(document.getElementById('root')!).render(<App />);

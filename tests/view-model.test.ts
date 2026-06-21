@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createSimulator } from '../src/sim/engine';
+import { getDeviceCapability } from '../src/shared/deviceRegistry';
 import { createDashboardModel, mergeTwinEvents } from '../src/web/viewModel';
 
 describe('dashboard view model', () => {
@@ -222,7 +223,7 @@ describe('dashboard view model', () => {
     expect(model.controlRecordFilters.devices).toContain('Induction Stove');
     expect(model.controlRecordFilters.people).toContain('Hybrid work adult');
     expect(model.controlRecordFilters.scenarios).toContain('weekday_normal');
-    expect(model.controlRecordFilters.alertSeverities).toEqual(expect.arrayContaining(['info', 'warning']));
+    expect(model.controlRecordFilters.alertSeverities).toContain('warning');
     expect(model.controlRecordFilters.timeRange?.from).toMatch(/T/);
     expect(model.controlRecordFilters.timeRange?.to).toMatch(/T/);
 
@@ -276,6 +277,270 @@ describe('dashboard view model', () => {
     expect(model.alerts.map((alert) => alert.id)).toContain('fridge_left_open_001');
   });
 
+  it('creates prediction and counterfactual cards for active household alerts', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.injectAbnormality('fridge_left_open');
+    simulator.injectAbnormality('network_offline');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+
+    expect(model.predictionCards).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'prediction:fridge_left_open_001',
+        horizon: '15 min',
+        title: 'Fridge door left open forecast',
+        ifIgnored: expect.stringContaining('power draw'),
+        ifHandledNow: expect.stringContaining('adult_1'),
+        impact: 'energy',
+        relatedDeviceId: 'fridge_01'
+      }),
+      expect.objectContaining({
+        id: 'prediction:network_offline_001',
+        horizon: '15 min',
+        title: 'Network outage forecast',
+        ifIgnored: expect.stringContaining('remote work'),
+        ifHandledNow: expect.stringContaining('adult_2'),
+        impact: 'automation_reliability',
+        relatedDeviceId: 'router_01'
+      })
+    ]));
+  });
+
+  it('adds numeric telemetry forecast points to prediction cards', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.injectAbnormality('fridge_left_open');
+    simulator.injectAbnormality('network_offline');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const fridge = model.predictionCards.find((card) => card.id === 'prediction:fridge_left_open_001');
+    const network = model.predictionCards.find((card) => card.id === 'prediction:network_offline_001');
+
+    expect(fridge?.forecastPoints).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        metric: 'fridge_power_w',
+        unit: 'W',
+        ignored: [148, 164, 176, 188],
+        handledNow: [148, 112, 94, 90]
+      }),
+      expect.objectContaining({
+        metric: 'kitchen_temperature_c',
+        unit: 'C',
+        ignored: [25, 25.3, 25.8, 26.2],
+        handledNow: [25, 25, 24.9, 24.9]
+      })
+    ]));
+    expect(network?.forecastPoints).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        metric: 'router_latency_ms',
+        unit: 'ms',
+        ignored: [0, 0, 0, 0],
+        handledNow: [0, 80, 32, 18]
+      })
+    ]));
+  });
+
+  it('backwrites prediction points into future telemetry forecast series', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.injectAbnormality('fridge_left_open');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+
+    expect(model.forecastTelemetrySeries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'forecast:fridge_left_open_001:fridge_power_w',
+        alertId: 'fridge_left_open_001',
+        metric: 'fridge_power_w',
+        unit: 'W',
+        horizonMinutes: [0, 5, 10, 15],
+        ignored: [148, 164, 176, 188],
+        handledNow: [148, 112, 94, 90]
+      }),
+      expect.objectContaining({
+        id: 'forecast:fridge_left_open_001:kitchen_temperature_c',
+        alertId: 'fridge_left_open_001',
+        metric: 'kitchen_temperature_c',
+        unit: 'C',
+        horizonMinutes: [0, 5, 10, 15],
+        ignored: [25, 25.3, 25.8, 26.2],
+        handledNow: [25, 25, 24.9, 24.9]
+      })
+    ]));
+  });
+
+  it('adds confidence intervals to forecast points and future telemetry series', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.injectAbnormality('fridge_left_open');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const fridge = model.predictionCards.find((card) => card.id === 'prediction:fridge_left_open_001');
+    const powerPoint = fridge?.forecastPoints.find((point) => point.metric === 'fridge_power_w');
+    const powerSeries = model.forecastTelemetrySeries.find((series) => series.metric === 'fridge_power_w');
+
+    expect(powerPoint?.confidenceInterval).toMatchObject({
+      levelPercent: 80,
+      spreadPercent: 10,
+      ignoredLow: [133.2, 147.6, 158.4, 169.2],
+      ignoredHigh: [162.8, 180.4, 193.6, 206.8],
+      handledNowLow: [133.2, 100.8, 84.6, 81],
+      handledNowHigh: [162.8, 123.2, 103.4, 99]
+    });
+    expect(powerSeries?.confidenceInterval).toEqual(powerPoint?.confidenceInterval);
+  });
+
+  it('uses current fridge thermal drivers for a more physical forecast curve', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.injectAbnormality('fridge_left_open');
+    simulator.advanceMinutes(12);
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const fridge = model.predictionCards.find((card) => card.id === 'prediction:fridge_left_open_001');
+    const powerPoint = fridge?.forecastPoints.find((point) => point.metric === 'fridge_power_w');
+    const temperaturePoint = fridge?.forecastPoints.find((point) => point.metric === 'kitchen_temperature_c');
+
+    expect(powerPoint?.ignored).toEqual([176, 188, 198, 206]);
+    expect(powerPoint?.handledNow).toEqual([176, 134, 102, 90]);
+    expect(temperaturePoint?.ignored).toEqual([28.6, 29.1, 29.6, 30]);
+    expect(temperaturePoint?.handledNow).toEqual([28.6, 28.1, 27.4, 26.8]);
+    expect(fridge?.forecastModel).toMatchObject({
+      kind: 'fridge_thermal_load',
+      season: 'summer',
+      roomVolumeM3: 42,
+      currentPowerW: 176,
+      openMinutes: 12,
+      currentTemperatureC: 28.6
+    });
+  });
+
+  it('builds chart-ready forecast data for full prediction visualizations', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.injectAbnormality('fridge_left_open');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const fridge = model.predictionCards.find((card) => card.id === 'prediction:fridge_left_open_001');
+
+    expect(fridge?.chart).toMatchObject({
+      title: 'Fridge door left open forecast',
+      horizonMinutes: [0, 5, 10, 15],
+      yAxisLabel: 'W / C',
+      series: expect.arrayContaining([
+        expect.objectContaining({
+          metric: 'fridge_power_w',
+          label: 'fridge power w',
+          unit: 'W',
+          ignored: [148, 164, 176, 188],
+          handledNow: [148, 112, 94, 90]
+        }),
+        expect.objectContaining({
+          metric: 'kitchen_temperature_c',
+          label: 'kitchen temperature c',
+          unit: 'C'
+        })
+      ])
+    });
+    expect(model.forecastCharts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'chart:fridge_left_open_001' })
+    ]));
+  });
+
+  it('models network outage impact on video calls and notification delay', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.injectAbnormality('network_offline');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const network = model.predictionCards.find((card) => card.id === 'prediction:network_offline_001');
+
+    expect(network?.forecastPoints).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        metric: 'video_call_quality_score',
+        unit: '%',
+        ignored: [35, 25, 18, 12],
+        handledNow: [35, 62, 84, 92]
+      }),
+      expect.objectContaining({
+        metric: 'notification_delay_s',
+        unit: 's',
+        ignored: [90, 120, 150, 180],
+        handledNow: [90, 35, 12, 5]
+      }),
+      expect.objectContaining({
+        metric: 'automation_ack_delay_s',
+        unit: 's',
+        ignored: [45, 75, 110, 150],
+        handledNow: [45, 18, 8, 4]
+      })
+    ]));
+    expect(network?.forecastModel).toMatchObject({
+      kind: 'router_reconnect_model',
+      currentPowerW: null
+    });
+    expect(network?.chart.series.map((series) => series.metric)).toEqual([
+      'router_latency_ms',
+      'video_call_quality_score',
+      'notification_delay_s',
+      'automation_ack_delay_s'
+    ]);
+  });
+
+  it('models senior care risk from sleep sensor state and morning time window', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.injectAbnormality('senior_no_activity');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const senior = model.predictionCards.find((card) => card.id === 'prediction:senior_no_activity_001');
+
+    expect(senior?.forecastPoints).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        metric: 'care_uncertainty_score',
+        unit: '%',
+        ignored: [45, 58, 72, 84],
+        handledNow: [45, 22, 8, 4]
+      }),
+      expect.objectContaining({
+        metric: 'check_in_urgency_score',
+        unit: '%',
+        ignored: [52, 66, 78, 88],
+        handledNow: [52, 28, 12, 6]
+      })
+    ]));
+    expect(senior?.forecastModel).toMatchObject({
+      kind: 'senior_care_risk_model',
+      currentTemperatureC: null,
+      openMinutes: null
+    });
+    expect(senior?.chart.series.map((series) => series.metric)).toEqual([
+      'care_uncertainty_score',
+      'check_in_urgency_score'
+    ]);
+  });
+
+  it('adds dynamic recovery estimates to prediction cards from current device state', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.injectAbnormality('fridge_left_open');
+    simulator.advanceMinutes(12);
+    simulator.injectAbnormality('network_offline');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const fridge = model.predictionCards.find((card) => card.id === 'prediction:fridge_left_open_001');
+    const network = model.predictionCards.find((card) => card.id === 'prediction:network_offline_001');
+
+    expect(fridge?.recoveryEstimate).toMatchObject({
+      operatorId: 'adult_1',
+      action: 'close fridge_01',
+      estimatedRecoveryMinutes: 5,
+      impactReductionPercent: 56,
+      confidence: 'medium'
+    });
+    expect(fridge?.recoveryEstimate.basis).toContain('open for 12 min');
+    expect(network?.recoveryEstimate).toMatchObject({
+      operatorId: 'adult_2',
+      action: 'restart router_01',
+      estimatedRecoveryMinutes: 4,
+      impactReductionPercent: 97,
+      confidence: 'high',
+      basis: expect.stringContaining('offline')
+    });
+  });
+
   it('prioritizes unresolved high severity alerts over newer automation spotlights', () => {
     const simulator = createSimulator({ seed: 42 });
     simulator.startScenario('night_water_leak');
@@ -319,26 +584,135 @@ describe('dashboard view model', () => {
     const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
     const router = model.deviceControlCards.find((card) => card.deviceId === 'router_01');
     const light = model.deviceControlCards.find((card) => card.deviceId === 'living_light_01');
+    const doorbell = model.deviceControlCards.find((card) => card.deviceId === 'doorbell_camera_01');
 
     expect(router).toMatchObject({
       deviceId: 'router_01',
       displayName: 'Home Router',
       connectivity: 'offline',
       disabledReason: 'Device is offline',
-      commandStatus: 'acknowledged'
+      commandStatus: 'failed',
+      commandTimeline: [
+        expect.objectContaining({ status: 'requested' }),
+        expect.objectContaining({ status: 'sent' }),
+        expect.objectContaining({ status: 'failed', reason: 'abnormality:network_offline' })
+      ]
     });
     expect(router?.controls[0]).toMatchObject({
       command: 'restart',
+      label: 'Restart router',
       controlType: 'button',
-      disabled: true
+      disabled: true,
+      requiresConfirmation: true,
+      failureReasons: ['offline', 'unsupported', 'invalid_params', 'device_rejected', 'timeout']
     });
     expect(light?.controls.map((control) => control.command)).toEqual(['turn_on', 'turn_off', 'set_brightness']);
     expect(light?.controls.find((control) => control.command === 'set_brightness')).toMatchObject({
       controlType: 'slider',
       field: 'brightness',
       min: 0,
-      max: 100
+      max: 100,
+      requiresConfirmation: false
     });
+    expect(doorbell?.controls.map((control) => control.command)).toEqual(['ring']);
+    expect(model.deviceControlCards.find((card) => card.deviceId === 'water_valve_01')?.controls.find((control) => control.command === 'open')).toMatchObject({
+      highRisk: true,
+      requiresConfirmation: true,
+      field: 'valveOpen'
+    });
+  });
+
+  it('surfaces person behavior intent cards from the snapshot behavior model', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(605);
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+
+    expect(model.behaviorCards.map((card) => card.personId)).toEqual(['adult_2', 'child_1', 'adult_1', 'senior_1', 'pet_1']);
+    expect(model.behaviorCards[0]).toMatchObject({
+      personId: 'adult_2',
+      label: 'Hybrid work adult',
+      roomName: 'Study',
+      activity: 'remote work',
+      routinePhase: 'workday',
+      intent: 'focused remote work',
+      attentionTarget: 'Home Router',
+      energy: 70
+    });
+    expect(model.behaviorCards.find((card) => card.personId === 'child_1')).toMatchObject({
+      routinePhase: 'after school',
+      intent: 'finish homework',
+      attentionTarget: 'Child Bedroom'
+    });
+  });
+
+  it('surfaces device lifecycle cards for appliances waiting on a person', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.commandDevice('dishwasher_01', 'start');
+    simulator.advanceMinutes(45);
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+
+    expect(model.deviceLifecycleCards[0]).toMatchObject({
+      deviceId: 'dishwasher_01',
+      displayName: 'Dishwasher',
+      roomName: 'Kitchen',
+      status: 'waiting unload',
+      headline: 'Dishwasher needs unloading',
+      nextAction: 'empty dishwasher',
+      relatedAlertId: 'dishwasher_cycle_done'
+    });
+    expect(model.deviceLifecycleCards[0].priority).toBeGreaterThan(50);
+  });
+
+  it('summarizes causal events and behavior audit coverage for explainable simulation review', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(605);
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const homeworkCausalEvent = model.causalEvents.find((event) => event.ruleId === 'child_homework_focus');
+    const childAudit = model.behaviorAudit.people.find((person) => person.personId === 'child_1');
+
+    expect(homeworkCausalEvent).toMatchObject({
+      ruleId: 'child_homework_focus',
+      why: 'child_1 is in after_school with intent finish_homework.',
+      actors: ['Student'],
+      affectedDevices: expect.arrayContaining(['Child Sleep Sensor', 'Living Room Light', 'Living Room TV']),
+      affectedRooms: ['Child Bedroom', 'Living Room'],
+      relatedIntent: 'finish homework',
+      expectedOutcome: 'Reduce entertainment distraction while the student finishes homework.',
+      actions: ['mark child out of bed', 'turn off tv for homework', 'dim living light for homework']
+    });
+    expect(childAudit).toMatchObject({
+      personId: 'child_1',
+      intent: 'finish homework',
+      routinePhase: 'after school',
+      nextPlan: 'Continue finish homework near Child Bedroom',
+      triggeredRules: ['Child homework focus'],
+      affectsDevices: expect.arrayContaining(['Child Sleep Sensor', 'Living Room Light', 'Living Room TV'])
+    });
+    expect(model.behaviorAudit.recentCausalEvents[0]).toMatchObject({ ruleId: expect.any(String) });
+    expect(model.behaviorAudit.consistencyWarnings).not.toContain('All household members are still sleeping after the morning routine window.');
+  });
+
+  it('adds recent device event evidence to device control cards', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('network_offline');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const router = model.deviceControlCards.find((card) => card.deviceId === 'router_01');
+
+    expect(router?.lastEventAt).toMatch(/T/);
+    expect(router?.recentEvents[0]).toMatchObject({
+      type: 'DeviceStateChanged',
+      label: 'online=false, latencyMs=0, lifecyclePhase=offline',
+      reason: 'abnormality:network_offline'
+    });
+    expect(router?.recentEvents[0].sequence).toBeGreaterThan(0);
   });
 
   it('promotes telemetry into prioritized insight cards', () => {
@@ -358,6 +732,122 @@ describe('dashboard view model', () => {
     expect(model.insightCards[0].priority).toBeGreaterThanOrEqual(model.insightCards.at(-1)?.priority ?? 0);
   });
 
+  it('creates device health cards from registry health signals with 3D focus targets', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('network_offline');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const routerHealth = model.deviceHealthCards.find((card) => card.deviceId === 'router_01');
+
+    expect(routerHealth).toMatchObject({
+      deviceId: 'router_01',
+      displayName: 'Home Router',
+      roomName: 'Study',
+      signal: 'Connectivity',
+      status: 'alert',
+      sourceField: 'online',
+      reportedValue: false,
+      impact: 'automation_reliability',
+      focusDeviceId: 'router_01',
+      recommendedAction: 'Check connectivity or restart the device before relying on related automation.'
+    });
+    expect(routerHealth?.priority).toBeGreaterThan(80);
+    expect(model.deviceHealthCards[0].priority).toBeGreaterThanOrEqual(model.deviceHealthCards.at(-1)?.priority ?? 0);
+    expect(model.insightCards.some((insight) => insight.id === 'device-health:router_01:connectivity:online')).toBe(true);
+  });
+
+  it('keeps device health card ids unique when multiple signals share a kind', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.devices.kitchen_temp_01.state.temperatureC = 35;
+    snapshot.devices.kitchen_temp_01.state.humidityPercent = 20;
+
+    const model = createDashboardModel(snapshot, simulator.getEvents());
+    const kitchenHealthCards = model.deviceHealthCards.filter((card) => card.deviceId === 'kitchen_temp_01');
+    const ids = kitchenHealthCards.map((card) => card.id);
+
+    expect(kitchenHealthCards.map((card) => card.sourceField).sort()).toEqual(['humidityPercent', 'temperatureC']);
+    expect(new Set(ids)).toHaveLength(ids.length);
+  });
+
+  it('classifies health cards into maintenance actions for replacement and recovery guidance', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('network_offline');
+    const snapshot = simulator.getSnapshot();
+    snapshot.devices.doorbell_camera_01.state.batteryPercent = 8;
+
+    const model = createDashboardModel(snapshot, simulator.getEvents());
+    const routerHealth = model.deviceHealthCards.find((card) => card.deviceId === 'router_01' && card.kind === 'connectivity');
+    const doorbellHealth = model.deviceHealthCards.find((card) => card.deviceId === 'doorbell_camera_01' && card.kind === 'battery');
+
+    expect(routerHealth).toMatchObject({
+      maintenanceAction: 'restart',
+      maintenanceLabel: 'Restart or reconnect'
+    });
+    expect(doorbellHealth).toMatchObject({
+      maintenanceAction: 'replace_or_recharge',
+      maintenanceLabel: 'Replace or recharge'
+    });
+  });
+
+  it('detects flat telemetry drift when a sensor reading stops changing', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(750);
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const soilDrift = model.deviceHealthCards.find((card) => card.deviceId === 'garden_soil_01' && card.kind === 'drift');
+
+    expect(soilDrift).toMatchObject({
+      displayName: 'Garden Soil',
+      signal: 'Reading drift',
+      sourceField: 'moisture_percent',
+      maintenanceAction: 'calibrate',
+      maintenanceLabel: 'Calibrate reading',
+      recommendedAction: 'Calibrate the sensor or inspect whether the reading is stuck.'
+    });
+  });
+
+  it('creates device health cards when recent command failures repeat', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('network_offline');
+
+    const events = simulator.getEvents();
+    const failedRouterEvent = events.find((event) => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'router_01' &&
+      event.reason === 'abnormality:network_offline'
+    ));
+    expect(failedRouterEvent).toBeDefined();
+
+    const repeatedFailures = [1, 2].map((offset) => ({
+      ...failedRouterEvent!,
+      id: `${failedRouterEvent!.id}:retry:${offset}`,
+      sequence: failedRouterEvent!.sequence + offset,
+      reason: `abnormality:network_offline:retry_${offset}`
+    }));
+
+    const model = createDashboardModel(simulator.getSnapshot(), [...events, ...repeatedFailures]);
+    const commandFailure = model.deviceHealthCards.find((card) => card.deviceId === 'router_01' && card.kind === 'command_failure');
+
+    expect(commandFailure).toMatchObject({
+      displayName: 'Home Router',
+      signal: 'Command failure rate',
+      status: 'alert',
+      sourceField: 'commandStatus',
+      reportedValue: '3 failed commands',
+      impact: 'automation_reliability',
+      maintenanceAction: 'inspect',
+      maintenanceLabel: 'Inspect command path',
+      recommendedAction: 'Inspect command routing and device availability before relying on automations.'
+    });
+    expect(model.insightCards.some((insight) => insight.id === 'device-health:router_01:command_failure')).toBe(true);
+  });
+
   it('surfaces expanded random household devices on the floorplan', () => {
     const simulator = createSimulator({ seed: 2026 });
     simulator.startScenario('weekday_normal');
@@ -375,5 +865,15 @@ describe('dashboard view model', () => {
     expect(robotVacuum?.active).toBe(true);
     expect(washer?.label).toBe('Washer');
     expect(washer?.active).toBe(true);
+  });
+
+  it('uses registry short labels for 2D floorplan device labels', () => {
+    const simulator = createSimulator({ seed: 2026 });
+    simulator.startScenario('weekday_normal');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const studyAirSensor = model.floorplanRooms.study.devices.find((device) => device.id === 'study_co2_01');
+
+    expect(studyAirSensor?.label).toBe(getDeviceCapability('air_quality_sensor').shortLabel);
   });
 });

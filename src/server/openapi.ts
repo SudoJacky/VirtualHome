@@ -284,14 +284,143 @@ const accessAuditRecordSchema: JsonSchema = {
   }
 };
 
+const commandMetadataSchema: JsonSchema = {
+  type: 'object',
+  required: ['label', 'controlType', 'valueType', 'field', 'highRisk', 'requiresConfirmation', 'lifecycle', 'failureReasons'],
+  properties: {
+    label: stringSchema,
+    controlType: { type: 'string', enum: ['button', 'toggle', 'slider', 'select'] },
+    valueType: { type: 'string', enum: ['none', 'boolean', 'number', 'string', 'enum'] },
+    field: { anyOf: [stringSchema, { type: 'null' }] },
+    min: { type: 'number' },
+    max: { type: 'number' },
+    options: {
+      type: 'array',
+      items: stringSchema
+    },
+    highRisk: { type: 'boolean' },
+    requiresConfirmation: { type: 'boolean' },
+    lifecycle: {
+      type: 'array',
+      items: { type: 'string', enum: ['requested', 'sent', 'acknowledged', 'failed', 'rolled_back'] }
+    },
+    failureReasons: {
+      type: 'array',
+      items: { type: 'string', enum: ['offline', 'unsupported', 'invalid_params', 'device_rejected', 'timeout'] }
+    }
+  }
+};
+
+const commandTimelineEntrySchema: JsonSchema = {
+  type: 'object',
+  required: ['status', 'at', 'reason'],
+  properties: {
+    status: { type: 'string', enum: ['requested', 'sent', 'acknowledged', 'failed', 'rolled_back'] },
+    at: isoDateTimeSchema,
+    reason: { anyOf: [stringSchema, { type: 'null' }] }
+  }
+};
+
+const healthSignalSchema: JsonSchema = {
+  type: 'object',
+  required: ['kind', 'label', 'sourceField', 'recommendation', 'impact'],
+  properties: {
+    kind: { type: 'string', enum: ['battery', 'command_failure', 'connectivity', 'drift', 'latency', 'range', 'staleness'] },
+    label: stringSchema,
+    sourceField: { anyOf: [stringSchema, { type: 'null' }] },
+    normalRange: {
+      type: 'array',
+      items: { type: 'number' },
+      minItems: 2,
+      maxItems: 2
+    },
+    warningBelow: { type: 'number' },
+    alertBelow: { type: 'number' },
+    warningAbove: { type: 'number' },
+    alertAbove: { type: 'number' },
+    staleAfterMinutes: { type: 'number' },
+    recommendation: stringSchema,
+    impact: { type: 'string', enum: ['automation_reliability', 'care', 'comfort', 'energy', 'safety', 'security', 'water'] }
+  }
+};
+
+const healthStatusSchema: JsonSchema = {
+  type: 'object',
+  required: ['kind', 'label', 'sourceField', 'status', 'reportedValue', 'recommendation', 'impact'],
+  properties: {
+    kind: { type: 'string', enum: ['battery', 'command_failure', 'connectivity', 'drift', 'latency', 'range', 'staleness'] },
+    label: stringSchema,
+    sourceField: { anyOf: [stringSchema, { type: 'null' }] },
+    status: { type: 'string', enum: ['normal', 'watch', 'alert'] },
+    reportedValue: {
+      anyOf: [
+        stringSchema,
+        { type: 'number' },
+        { type: 'boolean' },
+        { type: 'null' }
+      ]
+    },
+    recommendation: stringSchema,
+    impact: { type: 'string', enum: ['automation_reliability', 'care', 'comfort', 'energy', 'safety', 'security', 'water'] }
+  }
+};
+
+const deviceVisualModelSchema = {
+  type: 'string',
+  enum: [
+    'air_conditioner_wall',
+    'bed_sleep_pad',
+    'curtain_panel',
+    'dishwasher_box',
+    'door_lock',
+    'fridge_tower',
+    'generic_box',
+    'generic_sphere',
+    'light_disc',
+    'package_pad',
+    'range_hood',
+    'robot_vacuum',
+    'router_antennas',
+    'sensor_puck',
+    'soil_probe',
+    'sprinkler_head',
+    'stove_top',
+    'tv_screen',
+    'wall_camera',
+    'washer_drum',
+    'water_pipe_sensor',
+    'water_valve_handle'
+  ]
+};
+
+const devicePoseSchema: JsonSchema = {
+  type: 'object',
+  required: ['x', 'y', 'z', 'rotation', 'mount', 'visualVariant'],
+  properties: {
+    x: { type: 'number' },
+    y: { type: 'number' },
+    z: { type: 'number' },
+    rotation: { type: 'number' },
+    mount: { type: 'string', enum: ['ceiling', 'counter', 'embedded', 'floor', 'outdoor', 'pipe', 'wall'] },
+    visualVariant: { anyOf: [stringSchema, { type: 'null' }] }
+  }
+};
+
 const deviceAccessRecordSchema: JsonSchema = {
   type: 'object',
-  required: ['deviceId', 'roomId', 'deviceType', 'displayName', 'protocol', 'desiredState', 'reportedState', 'stateFields', 'supportedCommands', 'connectivity', 'lastSeenAt', 'dataQuality'],
+  required: ['deviceId', 'roomId', 'deviceType', 'displayName', 'shortLabel', 'instanceGroup', 'privacyLevel', 'riskLevel', 'visualModel', 'visualScale', 'pose', 'protocol', 'desiredState', 'reportedState', 'stateFields', 'supportedCommands', 'commandMetadata', 'connectivity', 'lastSeenAt', 'dataQuality', 'healthStatus'],
   properties: {
     deviceId: stringSchema,
     roomId: stringSchema,
     deviceType: stringSchema,
     displayName: stringSchema,
+    shortLabel: stringSchema,
+    instanceGroup: { type: 'string', enum: ['bathroom_water', 'bedroom_comfort', 'dining_lighting', 'entrance_security', 'garden_irrigation', 'kitchen_appliance', 'living_comfort', 'network_infrastructure'] },
+    privacyLevel: { type: 'string', enum: ['household', 'private', 'public'] },
+    riskLevel: { type: 'string', enum: ['normal', 'confirmation', 'required_confirmation', 'privacy_sensitive', 'high'] },
+    visualModel: deviceVisualModelSchema,
+    visualScale: { type: 'number', minimum: 0 },
+    pose: devicePoseSchema,
     protocol: { type: 'string', enum: ['simulated'] },
     desiredState: {
       anyOf: [
@@ -335,6 +464,10 @@ const deviceAccessRecordSchema: JsonSchema = {
       type: 'array',
       items: stringSchema
     },
+    commandMetadata: {
+      type: 'object',
+      additionalProperties: commandMetadataSchema
+    },
     connectivity: { type: 'string', enum: ['online', 'offline', 'unknown'] },
     lastSeenAt: isoDateTimeSchema,
     dataQuality: {
@@ -350,7 +483,7 @@ const deviceAccessRecordSchema: JsonSchema = {
       anyOf: [
         {
           type: 'object',
-          required: ['commandId', 'status', 'requestedAt', 'acknowledgedAt', 'reason'],
+          required: ['commandId', 'status', 'requestedAt', 'acknowledgedAt', 'reason', 'timeline'],
           properties: {
             commandId: stringSchema,
             status: { type: 'string', enum: ['requested', 'sent', 'acknowledged', 'failed', 'timed-out', 'none'] },
@@ -360,24 +493,35 @@ const deviceAccessRecordSchema: JsonSchema = {
             },
             reason: {
               anyOf: [stringSchema, { type: 'null' }]
+            },
+            timeline: {
+              type: 'array',
+              items: commandTimelineEntrySchema
             }
           }
         },
         { type: 'null' }
       ]
+    },
+    healthStatus: {
+      type: 'array',
+      items: healthStatusSchema
     }
   }
 };
 
 const deviceCapabilitySchema: JsonSchema = {
   type: 'object',
-  required: ['displayName', 'shortLabel', 'icon', 'markerKind', 'animationHint', 'defaultState', 'stateFields', 'telemetry', 'supportedCommands'],
+  required: ['displayName', 'shortLabel', 'icon', 'markerKind', 'animationHint', 'visualModel', 'visualScale', 'riskLevel', 'defaultState', 'stateFields', 'telemetry', 'supportedCommands', 'commandMetadata', 'healthSignals'],
   properties: {
     displayName: stringSchema,
     shortLabel: stringSchema,
     icon: stringSchema,
-    markerKind: { type: 'string', enum: ['sensor', 'actuator', 'appliance', 'security', 'mobile'] },
-    animationHint: { type: 'string', enum: ['airflow', 'curtain', 'glow', 'none', 'pulse', 'rotate', 'scan', 'vibrate'] },
+    markerKind: { type: 'string', enum: ['sensor', 'actuator', 'appliance', 'security', 'lighting', 'climate', 'media', 'mobile', 'network'] },
+    animationHint: { type: 'string', enum: ['airflow', 'glow', 'none', 'open_close', 'patrol', 'pulse', 'rotate', 'scan', 'vibrate', 'waterflow'] },
+    visualModel: deviceVisualModelSchema,
+    visualScale: { type: 'number', minimum: 0 },
+    riskLevel: { type: 'string', enum: ['normal', 'confirmation', 'required_confirmation', 'privacy_sensitive', 'high'] },
     defaultState: { type: 'object', additionalProperties: true },
     stateFields: {
       type: 'object',
@@ -429,6 +573,14 @@ const deviceCapabilitySchema: JsonSchema = {
     supportedCommands: {
       type: 'array',
       items: stringSchema
+    },
+    commandMetadata: {
+      type: 'object',
+      additionalProperties: commandMetadataSchema
+    },
+    healthSignals: {
+      type: 'array',
+      items: healthSignalSchema
     }
   }
 };
@@ -536,7 +688,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
       '/api/telemetry': {
         get: {
           summary: 'Get recent device telemetry events',
-          parameters: [limitParameter(), runIdParameter()],
+          parameters: [limitParameter(), runIdParameter(), privacyParameter()],
           responses: okResponse({
             type: 'array',
             items: { $ref: '#/components/schemas/TwinEvent' }
@@ -559,10 +711,11 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         get: {
           summary: 'Get simulated device access records',
           description: 'Projects devices into a bidirectional adapter-facing view with desired state, reported state, connectivity, freshness, and command acknowledgement metadata.',
+          parameters: [privacyParameter()],
           responses: okResponse({
             type: 'array',
             items: { $ref: '#/components/schemas/DeviceAccessRecord' }
-          })
+          }, true)
         }
       },
       '/api/device-capabilities': {

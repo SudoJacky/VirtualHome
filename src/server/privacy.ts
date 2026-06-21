@@ -1,4 +1,5 @@
 import type { DeviceTelemetryEvent, DeviceStateChangedEvent, TwinEvent, TwinSnapshot } from '../shared/types';
+import type { DeviceAccessRecord } from './deviceAccess';
 
 export type PrivacyMode = 'admin' | 'public';
 
@@ -63,6 +64,16 @@ export function projectTelemetryForPrivacy(events: DeviceTelemetryEvent[], priva
   return events
     .filter((event) => !isSensitiveDevice(event.deviceType))
     .map((event) => structuredClone(event));
+}
+
+export function projectDeviceAccessRecordsForPrivacy(records: DeviceAccessRecord[], privacy: PrivacyMode): DeviceAccessRecord[] {
+  if (privacy === 'admin') {
+    return structuredClone(records);
+  }
+  return records
+    .filter((record) => record.privacyLevel !== 'private')
+    .filter((record) => record.riskLevel !== 'privacy_sensitive' && record.riskLevel !== 'high')
+    .map((record) => structuredClone(record));
 }
 
 function isSensitiveDeviceEvent(event: TwinEvent): boolean {

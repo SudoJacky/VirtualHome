@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createCameraAutoFrameState, getRoomVisualTreatment, updateCameraAutoFrameState } from '../src/web/Floorplan3D';
+import { createCameraAutoFrameState, getDeviceActivityTreatment, getRoomVisualTreatment, updateCameraAutoFrameState } from '../src/web/Floorplan3D';
 
 describe('3D floorplan camera control', () => {
   it('pauses automatic framing after manual camera control until the focus target changes', () => {
@@ -47,5 +47,31 @@ describe('3D floorplan camera control', () => {
 
     expect(treatment.floorAccentOpacity).toBe(0);
     expect(treatment.wallColor).not.toBe('#1e6fbb');
+  });
+
+  it('gives replay-focused devices a distinct treatment that can combine with alerts', () => {
+    const selected = getDeviceActivityTreatment({
+      active: false,
+      abnormal: false,
+      selected: true,
+      replayFocused: false
+    });
+    const replayFocused = getDeviceActivityTreatment({
+      active: false,
+      abnormal: false,
+      selected: false,
+      replayFocused: true
+    });
+    const replayAlert = getDeviceActivityTreatment({
+      active: false,
+      abnormal: true,
+      selected: false,
+      replayFocused: true
+    });
+
+    expect(replayFocused.scaleMultiplier).toBeGreaterThan(selected.scaleMultiplier);
+    expect(replayFocused.ringOpacity).toBeGreaterThan(selected.ringOpacity);
+    expect(replayFocused.pulseStrength).toBeGreaterThan(0);
+    expect(replayAlert.emissiveIntensity).toBeGreaterThan(replayFocused.emissiveIntensity);
   });
 });

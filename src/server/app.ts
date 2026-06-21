@@ -8,12 +8,13 @@ import { getHomeDefinition } from '../sim/catalog';
 import { createSimulator } from '../sim/engine';
 import { getScenarioIds } from '../sim/scenarios';
 import { getDeviceCapability, getDeviceCapabilityMetadata } from '../shared/deviceRegistry';
+import { getDeviceSupportedCommands } from '../shared/deviceInstanceCapabilities';
 import type { HomeDefinition, StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { createDeviceAccessRecords } from './deviceAccess';
 import { loadHomeDefinitionFromFile } from './homeDefinitionLoader';
 import { buildOpenApiDocument } from './openapi';
 import { TwinDatabase } from './persistence';
-import { projectEventsForPrivacy, projectSnapshotForPrivacy, projectTelemetryForPrivacy, type PrivacyMode } from './privacy';
+import { projectDeviceAccessRecordsForPrivacy, projectEventsForPrivacy, projectSnapshotForPrivacy, projectTelemetryForPrivacy, type PrivacyMode } from './privacy';
 import { summarizeTelemetry } from './telemetrySummary';
 
 export interface ServerOptions {
@@ -195,10 +196,17 @@ export function createServer(options: ServerOptions): FastifyInstance {
     return summarizeTelemetry(db.getRecentTelemetry(result.data.limit, runId), result.data.limit, runId);
   });
 
-  app.get('/api/device-twins', async () => {
+  app.get('/api/device-twins', async (request, reply) => {
+    const result = privacyQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
     const snapshot = simulator.getSnapshot();
-    recordAccess('/api/device-twins', 'admin', snapshot.runId, snapshot.simClock.sequence);
-    return createDeviceAccessRecords(snapshot, db.getRecentEvents(500, snapshot.runId));
+    recordAccess('/api/device-twins', result.data.privacy, snapshot.runId, snapshot.simClock.sequence);
+    return projectDeviceAccessRecordsForPrivacy(
+      createDeviceAccessRecords(snapshot, db.getRecentEvents(500, snapshot.runId)),
+      result.data.privacy
+    );
   });
 
   app.get('/api/device-capabilities', async () => getDeviceCapabilityMetadata());
@@ -310,7 +318,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
     if (!device) {
       return sendNotFound(reply, 'Unknown device');
     }
-    if (!getDeviceCapability(device.type).supportedCommands.includes(result.data.command)) {
+    if (!getDeviceSupportedCommands(params.deviceId, device.type).includes(result.data.command)) {
       return reply.status(400).send({
         error: {
           code: 'UNSUPPORTED_DEVICE_COMMAND',
