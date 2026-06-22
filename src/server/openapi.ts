@@ -2,6 +2,10 @@ type JsonSchema = Record<string, unknown>;
 
 const stringSchema = { type: 'string' };
 const isoDateTimeSchema = { type: 'string', format: 'date-time' };
+const roomIdSchema = {
+  type: 'string',
+  enum: ['entrance', 'living_room', 'kitchen', 'dining_room', 'master_bedroom', 'child_bedroom', 'study', 'bathroom', 'garden']
+};
 const idempotencyKeySchema = {
   type: 'string',
   minLength: 1,
@@ -102,10 +106,31 @@ const alertStatusChangedEventSchema: JsonSchema = {
   }
 };
 
+const objectMovedEventSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'objectId', 'from', 'to'],
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    type: { type: 'string', enum: ['ObjectMoved'] },
+    ts: isoDateTimeSchema,
+    simTime: isoDateTimeSchema,
+    homeId: stringSchema,
+    scenarioId: stringSchema,
+    sequence: { type: 'integer', minimum: 1 },
+    reason: stringSchema,
+    objectId: stringSchema,
+    from: roomIdSchema,
+    to: roomIdSchema,
+    carriedByPersonId: stringSchema
+  }
+};
+
 const twinEventSchema: JsonSchema = {
   anyOf: [
     { $ref: '#/components/schemas/AbnormalityInjectedEvent' },
     { $ref: '#/components/schemas/AlertStatusChangedEvent' },
+    { $ref: '#/components/schemas/ObjectMovedEvent' },
     twinEventBaseSchema
   ]
 };
@@ -856,6 +881,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         TwinEvent: twinEventSchema,
         AbnormalityInjectedEvent: abnormalityInjectedEventSchema,
         AlertStatusChangedEvent: alertStatusChangedEventSchema,
+        ObjectMovedEvent: objectMovedEventSchema,
         HomeDefinition: homeDefinitionSchema,
         DeviceAccessRecord: deviceAccessRecordSchema,
         DeviceCapability: deviceCapabilitySchema,
