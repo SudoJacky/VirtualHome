@@ -137,6 +137,7 @@ function explainRoomBelief(
   if (evidence.activeDeviceRooms[roomId] !== undefined) reasons.push(`observation:${roomId}_device_state`);
   if (evidence.co2ByRoom[roomId] !== undefined) reasons.push(`observation:${roomId}_co2`);
   if (evidence.pm25ByRoom[roomId] !== undefined) reasons.push(`observation:${roomId}_pm25`);
+  if (roomId === 'master_bedroom' && evidence.sleepSensorInBed) reasons.push('observation:sleep_sensor_in_bed');
   if (reasons.length === 0) {
     if (minuteOfDay >= 22 * 60 || minuteOfDay < 6 * 60) reasons.push('time_prior:sleep_window');
     else if (isWorkday(externalContext) && minuteOfDay >= 9 * 60 && minuteOfDay < 18 * 60) reasons.push('time_prior:workday_routine');
@@ -160,6 +161,9 @@ function explainActivityBelief(
   }
   if (activity === 'remote_work_or_study' && roomId === 'study' && (evidence.co2ByRoom.study ?? 0) >= 900) {
     reasons.push('observation:study_co2');
+  }
+  if (activity === 'sleeping_or_resting' && roomId === 'master_bedroom' && evidence.sleepSensorInBed) {
+    reasons.push('observation:sleep_sensor_in_bed');
   }
   if (reasons.length === 0) {
     reasons.push(minuteOfDay >= 22 * 60 || minuteOfDay < 6 * 60 ? 'time_prior:sleep_window' : 'time_prior:daily_routine');
@@ -244,6 +248,9 @@ function inferPersonActivity(
   }
   if (roomId === 'study' && (evidence.co2ByRoom.study ?? 0) >= 900) {
     scores.remote_work_or_study += 3.2;
+  }
+  if (roomId === 'master_bedroom' && evidence.sleepSensorInBed) {
+    scores.sleeping_or_resting += 4.4;
   }
   return createBeliefDistribution(scores);
 }

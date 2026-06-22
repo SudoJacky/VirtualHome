@@ -112,6 +112,7 @@ export function roomEvidenceScore(roomId: RoomId, evidence: ObservationEvidence)
   return (
     (evidence.motionByRoom[roomId] ?? 0) * 6 +
     (evidence.activeDeviceRooms[roomId] ?? 0) * 2 +
+    (roomId === 'master_bedroom' && evidence.sleepSensorInBed ? 4.4 : 0) +
     co2OccupancyScore(evidence.co2ByRoom[roomId]) +
     pm25ActivityScore(evidence.pm25ByRoom[roomId])
   ) * evidence.observationQuality;

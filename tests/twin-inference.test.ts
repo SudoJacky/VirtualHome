@@ -224,6 +224,27 @@ describe('twin inference model', () => {
     expect(result.risks.senior_no_activity.drivers).not.toContain('master_sleep_01.in_bed');
   });
 
+  it('uses sleep sensor telemetry to infer resting activity without truth labels', () => {
+    const result = inferTwinState([
+      telemetryEvent('master_sleep_01', 'sleep_sensor', 'master_bedroom', { in_bed: true, confidence: 0.96 })
+    ], {
+      currentTime: '2026-06-17T10:15:00+08:00',
+      peopleIds: ['senior_1'],
+      rooms: ['master_bedroom', 'living_room', 'bathroom']
+    });
+
+    expect(result.inputSummary.acceptedEventCount).toBe(1);
+    expect(result.people.senior_1.room.top).toBe('master_bedroom');
+    expect(result.people.senior_1.activity.top).toBe('sleeping_or_resting');
+    expect(result.people.senior_1.activity.probabilities.sleeping_or_resting)
+      .toBeGreaterThan(result.people.senior_1.activity.probabilities.household_leisure);
+    expect(result.explanations.people.senior_1.activity).toEqual(expect.arrayContaining([
+      'observation:sleep_sensor_in_bed'
+    ]));
+    expect(JSON.stringify(result.explanations.people.senior_1)).not.toContain('truth');
+    expect(JSON.stringify(result.explanations.people.senior_1)).not.toContain('control');
+  });
+
   it('converts motion and public device observations into probabilistic room and activity beliefs', () => {
     const result = inferTwinState([
       motionEvent('kitchen', 0.91),
