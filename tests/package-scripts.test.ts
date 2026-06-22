@@ -18,4 +18,12 @@ describe('package scripts', () => {
 
     expect(packageJson.scripts?.evaluate).toBe('tsx src/sim/evaluation/runEvaluation.ts');
   });
+
+  it('defines a local training dataset export command', () => {
+    const packageJson = JSON.parse(readFileSync(path.resolve('package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+
+    expect(packageJson.scripts?.dataset).toBe('tsx src/sim/evaluation/runEvaluation.ts --dataset');
+  });
 });

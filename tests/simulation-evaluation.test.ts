@@ -2,10 +2,58 @@ import { describe, expect, it } from 'vitest';
 import { getHomeDefinition } from '../src/sim/catalog';
 import { createSimulator } from '../src/sim/engine';
 import { buildEvaluationReport } from '../src/sim/evaluation/metrics';
-import { createEvaluationCliReport, parseEvaluationCliArgs, runSimulationEvaluation } from '../src/sim/evaluation/runEvaluation';
+import { createEvaluationCliOutput, createEvaluationCliReport, createTrainingDataset, parseEvaluationCliArgs, runSimulationEvaluation } from '../src/sim/evaluation/runEvaluation';
 import type { ActivityStartedEvent, ConversationOccurredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent } from '../src/shared/types';
 
 describe('long horizon simulation evaluation', () => {
+  it('generates a reproducible observation-only training dataset with separate truth labels', () => {
+    const first = createTrainingDataset({
+      startDate: '2026-07-14',
+      days: 1,
+      seed: 42,
+      minutesPerDay: 120
+    });
+    const second = createTrainingDataset({
+      startDate: '2026-07-14',
+      days: 1,
+      seed: 42,
+      minutesPerDay: 120
+    });
+
+    expect(first).toEqual(second);
+    expect(first.metadata).toMatchObject({
+      schemaVersion: 1,
+      startDate: '2026-07-14',
+      days: 1,
+      seed: 42,
+      minutesPerDay: 120
+    });
+    expect(first.examples.length).toBeGreaterThan(0);
+    const example = first.examples[0];
+
+    expect(example.observations.length).toBeGreaterThan(0);
+    expect(example.observations.every((event) => (
+      event.type === 'DeviceTelemetry' && event.sourceLayer === 'sensor' ||
+      event.type === 'DeviceStateChanged' && event.sourceLayer === 'world'
+    ))).toBe(true);
+    expect(JSON.stringify(example.observations)).not.toContain('eventExplanation');
+    expect(example.observations.some((event) => event.type === 'DeviceStateChanged')).toBe(true);
+    expect(example.observations
+      .filter((event) => event.type === 'DeviceStateChanged')
+      .every((event) => event.lineage.observability === 'ml_observation' && event.lineage.causeEventIds.length === 0)).toBe(true);
+    expect(example.truth.homeMode).toEqual(expect.any(String));
+    expect(example.truth.people.adult_1).toMatchObject({
+      location: expect.any(String),
+      activity: expect.any(String)
+    });
+    expect(example.truth.risks).toMatchObject({
+      fridgeLeftOpen: expect.any(Boolean),
+      networkOffline: expect.any(Boolean),
+      waterLeak: expect.any(Boolean),
+      seniorNoActivity: expect.any(Boolean)
+    });
+  });
+
   it('formats a JSON evaluation report from CLI arguments', () => {
     const options = parseEvaluationCliArgs([
       '--start-date', '2026-07-14',
@@ -29,6 +77,28 @@ describe('long horizon simulation evaluation', () => {
     expect(report.logic.totalChecks).toBeGreaterThan(0);
     expect(report.sensor.telemetryEvents).toBeGreaterThan(0);
     expect(report.inference.forecastEvaluation.samples).toBeGreaterThanOrEqual(0);
+  });
+
+  it('formats a JSON training dataset from CLI arguments', () => {
+    const output = createEvaluationCliOutput([
+      '--dataset',
+      '--start-date', '2026-07-14',
+      '--days', '1',
+      '--seed', '42',
+      '--minutes-per-day', '60'
+    ]);
+    const dataset = JSON.parse(output);
+
+    expect(dataset.metadata).toMatchObject({
+      schemaVersion: 1,
+      startDate: '2026-07-14',
+      days: 1,
+      seed: 42,
+      minutesPerDay: 60
+    });
+    expect(dataset.examples.length).toBeGreaterThan(0);
+    expect(dataset.examples[0].observations.length).toBeGreaterThan(0);
+    expect(dataset.examples[0].truth.homeMode).toEqual(expect.any(String));
   });
 
   it('generates deterministic multi-day quality metrics for a fixed seed', () => {
