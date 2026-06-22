@@ -138,6 +138,41 @@ describe('agent policy', () => {
     expect(highLaundryDecision.score).toBeGreaterThan(lowLaundryDecision.score);
   });
 
+  it('raises trash priority when garbage accumulates across days', () => {
+    const lowTrashDecision = selectActivity({
+      personId: 'adult_1',
+      persona: getPersona('adult_1'),
+      needs: { ...baselineNeeds, taskPressure: 62, stress: 18 },
+      currentActivity: 'idle',
+      currentRoom: 'living_room',
+      homeMode: 'evening_home',
+      minuteOfDay: 19 * 60,
+      availableResources: resourcesFromInventory(createInitialInventory({
+        dirtyLaundryKg: 0.4,
+        dirtyDishes: 0,
+        trashBags: 0.2
+      }))
+    });
+    const highTrashDecision = selectActivity({
+      personId: 'adult_1',
+      persona: getPersona('adult_1'),
+      needs: { ...baselineNeeds, taskPressure: 62, stress: 18 },
+      currentActivity: 'idle',
+      currentRoom: 'living_room',
+      homeMode: 'evening_home',
+      minuteOfDay: 19 * 60,
+      availableResources: resourcesFromInventory(createInitialInventory({
+        dirtyLaundryKg: 0.4,
+        dirtyDishes: 0,
+        trashBags: 2.1
+      }))
+    });
+
+    expect(lowTrashDecision.activityId).not.toBe('take_out_trash');
+    expect(highTrashDecision.activityId).toBe('take_out_trash');
+    expect(highTrashDecision.score).toBeGreaterThan(lowTrashDecision.score);
+  });
+
   it('raises cooking priority for personas with stronger meal regularity', () => {
     const lowMealRegularity = {
       ...getPersona('adult_1'),

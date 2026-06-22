@@ -39,6 +39,7 @@ export function resourcesFromInventory(inventory: HouseholdInventory): Record<st
     tv_01: 1,
     dirty_laundry: inventory.dirtyLaundryKg >= 1 ? inventory.dirtyLaundryKg : 0,
     clean_dishes: inventory.dirtyDishes >= 4 ? inventory.dirtyDishes : 0,
+    trash_bags: inventory.trashBags >= 1 ? inventory.trashBags : 0,
     medicine: inventory.medicineDoses,
     cleaning_supplies: 1,
     garden_access: 1,
@@ -63,14 +64,24 @@ export function applyActivityToInventory(inventory: HouseholdInventory, activity
   } else if (activityId === 'laundry_cycle') {
     next.dirtyLaundryKg = Math.max(0, next.dirtyLaundryKg - 4);
     next.unfinishedChores = Math.max(0, next.unfinishedChores - 1);
+    removePendingChore(next, 'laundry');
   } else if (activityId === 'unload_dishwasher') {
     next.dirtyDishes = 0;
     next.unfinishedChores = Math.max(0, next.unfinishedChores - 1);
+    removePendingChore(next, 'dishes');
+  } else if (activityId === 'take_out_trash') {
+    next.trashBags = 0;
+    next.unfinishedChores = Math.max(0, next.unfinishedChores - 1);
+    removePendingChore(next, 'trash');
   } else if (activityId === 'take_medicine') {
     next.medicineDoses -= 1;
     next.healthRiskScore -= 12;
   }
   return normalizeInventory(next);
+}
+
+function removePendingChore(inventory: HouseholdInventory, chore: string): void {
+  inventory.pendingChores = inventory.pendingChores.filter((pending) => pending !== chore);
 }
 
 export function advanceInventoryOneDay(inventory: HouseholdInventory, context: InventoryDayContext): HouseholdInventory {

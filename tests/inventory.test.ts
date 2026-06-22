@@ -24,17 +24,19 @@ describe('household inventory and resources', () => {
     expect(resources.medicine).toBe(2);
   });
 
-  it('updates inventory when meals, laundry, dishwasher, and medicine activities happen', () => {
+  it('updates inventory when meals, laundry, dishwasher, medicine, and trash activities happen', () => {
     const inventory = createInitialInventory({
       breakfastFoodServings: 3,
       dirtyLaundryKg: 4.5,
       dirtyDishes: 6,
+      trashBags: 1.4,
       medicineDoses: 1
     });
     const afterBreakfast = applyActivityToInventory(inventory, 'prepare_breakfast');
     const afterLaundry = applyActivityToInventory(afterBreakfast, 'laundry_cycle');
     const afterDishwasher = applyActivityToInventory(afterLaundry, 'unload_dishwasher');
     const afterMedicine = applyActivityToInventory(afterDishwasher, 'take_medicine');
+    const afterTrash = applyActivityToInventory(afterMedicine, 'take_out_trash');
     const afterTakeout = applyActivityToInventory(createInitialInventory({ simpleFoodServings: 0, trashBags: 0.2 }), 'order_takeout');
 
     expect(afterBreakfast.breakfastFoodServings).toBe(2);
@@ -43,6 +45,8 @@ describe('household inventory and resources', () => {
     expect(afterDishwasher.dirtyDishes).toBe(0);
     expect(afterMedicine.medicineDoses).toBe(0);
     expect(afterMedicine.healthRiskScore).toBeLessThan(afterDishwasher.healthRiskScore);
+    expect(afterTrash.trashBags).toBe(0);
+    expect(afterTrash.pendingChores).not.toContain('trash');
     expect(afterTakeout.simpleFoodServings).toBe(0);
     expect(afterTakeout.trashBags).toBeGreaterThan(0.2);
   });
