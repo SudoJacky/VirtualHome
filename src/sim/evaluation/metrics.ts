@@ -27,6 +27,17 @@ export interface ForecastEvaluationSample {
   }>;
 }
 
+export type DownstreamRiskId = 'fridge_left_open' | 'network_impact' | 'stove_unattended' | 'senior_no_activity' | 'water_leak';
+
+export interface DownstreamUtilityValidationSample {
+  currentTime: string;
+  eventsUntilNow: TwinEvent[];
+  truth: {
+    homeMode: string;
+    risks: Record<DownstreamRiskId, boolean>;
+  };
+}
+
 export interface EvaluationViolation {
   kind:
     | 'movement_topology'
@@ -142,6 +153,16 @@ export interface SimulationEvaluationReport {
       homeModeTop1Accuracy: number;
       averageRiskBrierScore: number;
       featureCoverageRatio: number;
+      realWorldValidation: {
+        samples: number;
+        homeModeTop1Accuracy: number;
+        averageRiskBrierScore: number;
+        featureCoverageRatio: number;
+      };
+      syntheticToRealGap: {
+        homeModeAccuracyGap: number;
+        riskBrierScoreGap: number;
+      };
     };
   };
 }
@@ -149,12 +170,13 @@ export interface SimulationEvaluationReport {
 export function buildEvaluationReport(input: {
   days: EvaluationDayInput[];
   homeDefinition: HomeDefinition;
+  realWorldValidationSamples?: DownstreamUtilityValidationSample[];
 }): SimulationEvaluationReport {
   const events = input.days.flatMap((day) => day.events);
   const logic = evaluateLogic(input.days, input.homeDefinition);
   const behavior = evaluateBehavior(input.days, input.homeDefinition);
   const sensor = evaluateSensor(events);
-  const inference = evaluateInference(input.days, input.homeDefinition);
+  const inference = evaluateInference(input.days, input.homeDefinition, input.realWorldValidationSamples ?? []);
 
   return {
     days: input.days.map((day) => ({
@@ -195,7 +217,7 @@ function evaluateLogic(days: EvaluationDayInput[], homeDefinition: HomeDefinitio
   let totalChecks = 0;
   for (const day of days) {
     const peopleByRoom = new Map<RoomId, Set<string>>();
-    const activeResourceClaims = new Map<string, string>();
+    const activeResourceClaims = new Map<string, Array<{ eventId: string; activityId: string }>>();
     for (const event of day.events) {
       if (event.type === 'PersonMoved') {
         totalChecks += 1;
@@ -229,22 +251,27 @@ function evaluateLogic(days: EvaluationDayInput[], homeDefinition: HomeDefinitio
       if (event.type === 'ActivityStarted') {
         for (const resourceId of exclusiveResourcesForActivity(event.activityId)) {
           totalChecks += 1;
-          const activeActivityId = activeResourceClaims.get(resourceId);
-          if (activeActivityId && activeActivityId !== event.activityId) {
+          const activeActivities = activeResourceClaims.get(resourceId) ?? [];
+          const activeActivity = activeActivities[0];
+          if (activeActivity) {
             violations.push({
               kind: 'exclusive_resource_conflict',
               entityId: resourceId,
-              message: `${resourceId} was claimed by overlapping activities ${activeActivityId} and ${event.activityId}`,
+              message: `${resourceId} was claimed by overlapping activity instances ${activeActivity.eventId} and ${event.id} (${activeActivity.activityId} and ${event.activityId})`,
               simTime: event.simTime
             });
-          } else {
-            activeResourceClaims.set(resourceId, event.activityId);
           }
+          activeActivities.push({ eventId: event.id, activityId: event.activityId });
+          activeResourceClaims.set(resourceId, activeActivities);
         }
       }
       if (event.type === 'ActivityEnded') {
-        for (const [resourceId, activityId] of [...activeResourceClaims.entries()]) {
-          if (activityId === event.activityId) {
+        for (const [resourceId, activities] of [...activeResourceClaims.entries()]) {
+          const activityIndex = activities.findIndex((activity) => activity.activityId === event.activityId);
+          if (activityIndex >= 0) {
+            activities.splice(activityIndex, 1);
+          }
+          if (activities.length === 0) {
             activeResourceClaims.delete(resourceId);
           }
         }
@@ -435,7 +462,7 @@ function evaluateBehavior(days: EvaluationDayInput[], homeDefinition: HomeDefini
   for (const day of days) {
     const dailyCounts: Record<string, number> = {};
     const previousActivityByPerson = new Map<string, string>();
-    const activeActivities = new Map<string, { activityId: string; startedAt: string }>();
+    const activeActivities = new Map<string, Array<{ activityId: string; startedAt: string }>>();
     const dayKind = isWeekendDate(day.date) ? 'weekend' : 'weekday';
     let dayTransitions = 0;
     for (const event of day.events) {
@@ -455,18 +482,22 @@ function evaluateBehavior(days: EvaluationDayInput[], homeDefinition: HomeDefini
       }
       if (event.type === 'ActivityStarted') {
         activityStarted += 1;
-        activeActivities.set(event.activityId, { activityId: event.activityId, startedAt: event.simTime });
+        const active = activeActivities.get(event.activityId) ?? [];
+        active.push({ activityId: event.activityId, startedAt: event.simTime });
+        activeActivities.set(event.activityId, active);
         if (event.participants.length > 1) {
           jointActivityStarted += 1;
         }
       }
       if (event.type === 'ActivityEnded') {
-        const active = activeActivities.get(event.activityId);
+        const active = activeActivities.get(event.activityId)?.shift();
         if (active) {
           getNumberList(durationMinutesByActivity, event.activityId).push(
             Math.max(0, (Date.parse(event.simTime) - Date.parse(active.startedAt)) / 60000)
           );
-          activeActivities.delete(event.activityId);
+          if (activeActivities.get(event.activityId)?.length === 0) {
+            activeActivities.delete(event.activityId);
+          }
         }
       }
     }
@@ -682,7 +713,11 @@ function evaluateSensor(events: TwinEvent[]): SimulationEvaluationReport['sensor
   };
 }
 
-function evaluateInference(days: EvaluationDayInput[], homeDefinition: HomeDefinition): SimulationEvaluationReport['inference'] {
+function evaluateInference(
+  days: EvaluationDayInput[],
+  homeDefinition: HomeDefinition,
+  realWorldValidationSamples: DownstreamUtilityValidationSample[]
+): SimulationEvaluationReport['inference'] {
   let samples = 0;
   let top1Hits = 0;
   let acceptedObservationEvents = 0;
@@ -724,7 +759,7 @@ function evaluateInference(days: EvaluationDayInput[], homeDefinition: HomeDefin
     acceptedObservationEvents,
     rejectedTruthOrControlEvents,
     forecastEvaluation: evaluateForecastSamples(days, homeDefinition),
-    downstreamUtility: evaluateDownstreamUtility(days)
+    downstreamUtility: evaluateDownstreamUtility(days, realWorldValidationSamples)
   };
 }
 
@@ -783,7 +818,7 @@ function evaluateForecastSamples(
 interface DownstreamUtilityExample {
   featureKey: string;
   homeMode: string;
-  risks: Record<string, boolean>;
+  risks: Record<DownstreamRiskId, boolean>;
 }
 
 interface DownstreamUtilityBucket {
@@ -792,17 +827,36 @@ interface DownstreamUtilityBucket {
   riskPositiveCounts: Record<string, number>;
 }
 
-const downstreamRiskIds = ['fridge_left_open', 'network_impact', 'stove_unattended', 'senior_no_activity', 'water_leak'] as const;
+interface DownstreamUtilityMetrics {
+  samples: number;
+  homeModeTop1Accuracy: number;
+  averageRiskBrierScore: number;
+  featureCoverageRatio: number;
+}
 
-function evaluateDownstreamUtility(days: EvaluationDayInput[]): SimulationEvaluationReport['inference']['downstreamUtility'] {
+const downstreamRiskIds: DownstreamRiskId[] = ['fridge_left_open', 'network_impact', 'stove_unattended', 'senior_no_activity', 'water_leak'];
+
+function evaluateDownstreamUtility(
+  days: EvaluationDayInput[],
+  realWorldValidationSamples: DownstreamUtilityValidationSample[]
+): SimulationEvaluationReport['inference']['downstreamUtility'] {
   const examples = createDownstreamUtilityExamples(days);
   if (examples.length < 2) {
+    const emptyMetrics = emptyDownstreamUtilityMetrics();
     return {
       trainExamples: examples.length,
       holdoutExamples: 0,
       homeModeTop1Accuracy: 0,
       averageRiskBrierScore: 0,
-      featureCoverageRatio: 0
+      featureCoverageRatio: 0,
+      realWorldValidation: {
+        ...emptyMetrics,
+        samples: realWorldValidationSamples.length
+      },
+      syntheticToRealGap: {
+        homeModeAccuracyGap: 0,
+        riskBrierScoreGap: 0
+      }
     };
   }
 
@@ -810,12 +864,36 @@ function evaluateDownstreamUtility(days: EvaluationDayInput[]): SimulationEvalua
   const train = examples.slice(0, splitIndex);
   const holdout = examples.slice(splitIndex);
   const model = trainDownstreamUtilityBaseline(train);
+  const holdoutMetrics = evaluateDownstreamUtilityExamples(model, holdout);
+  const realWorldValidation = evaluateDownstreamUtilityExamples(
+    model,
+    createRealWorldDownstreamUtilityExamples(realWorldValidationSamples)
+  );
+
+  return {
+    trainExamples: train.length,
+    holdoutExamples: holdout.length,
+    homeModeTop1Accuracy: holdoutMetrics.homeModeTop1Accuracy,
+    averageRiskBrierScore: holdoutMetrics.averageRiskBrierScore,
+    featureCoverageRatio: holdoutMetrics.featureCoverageRatio,
+    realWorldValidation,
+    syntheticToRealGap: {
+      homeModeAccuracyGap: roundRatio(Math.abs(holdoutMetrics.homeModeTop1Accuracy - realWorldValidation.homeModeTop1Accuracy)),
+      riskBrierScoreGap: roundRatio(Math.abs(holdoutMetrics.averageRiskBrierScore - realWorldValidation.averageRiskBrierScore))
+    }
+  };
+}
+
+function evaluateDownstreamUtilityExamples(
+  model: ReturnType<typeof trainDownstreamUtilityBaseline>,
+  examples: DownstreamUtilityExample[]
+): DownstreamUtilityMetrics {
   let homeModeHits = 0;
   let coveredFeatures = 0;
   let brierTotal = 0;
   let brierSamples = 0;
 
-  for (const example of holdout) {
+  for (const example of examples) {
     const prediction = predictDownstreamUtility(model, example.featureKey);
     if (prediction.featureCovered) {
       coveredFeatures += 1;
@@ -832,11 +910,10 @@ function evaluateDownstreamUtility(days: EvaluationDayInput[]): SimulationEvalua
   }
 
   return {
-    trainExamples: train.length,
-    holdoutExamples: holdout.length,
-    homeModeTop1Accuracy: holdout.length > 0 ? roundRatio(homeModeHits / holdout.length) : 0,
+    samples: examples.length,
+    homeModeTop1Accuracy: examples.length > 0 ? roundRatio(homeModeHits / examples.length) : 0,
     averageRiskBrierScore: brierSamples > 0 ? roundRatio(brierTotal / brierSamples) : 0,
-    featureCoverageRatio: holdout.length > 0 ? roundRatio(coveredFeatures / holdout.length) : 0
+    featureCoverageRatio: examples.length > 0 ? roundRatio(coveredFeatures / examples.length) : 0
   };
 }
 
@@ -852,6 +929,23 @@ function createDownstreamUtilityExamples(days: EvaluationDayInput[]): Downstream
       risks: riskTruthLabels(truth.snapshot)
     }];
   }));
+}
+
+function createRealWorldDownstreamUtilityExamples(samples: DownstreamUtilityValidationSample[]): DownstreamUtilityExample[] {
+  return samples.map((sample) => ({
+    featureKey: createObservationFeatureKey(sample.currentTime, sample.eventsUntilNow),
+    homeMode: sample.truth.homeMode,
+    risks: sample.truth.risks
+  }));
+}
+
+function emptyDownstreamUtilityMetrics(): DownstreamUtilityMetrics {
+  return {
+    samples: 0,
+    homeModeTop1Accuracy: 0,
+    averageRiskBrierScore: 0,
+    featureCoverageRatio: 0
+  };
 }
 
 function trainDownstreamUtilityBaseline(examples: DownstreamUtilityExample[]): {

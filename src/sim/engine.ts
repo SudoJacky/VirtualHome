@@ -2254,21 +2254,39 @@ class Simulator implements VirtualHomeSimulator {
         }
         Object.assign(measurements, sensorObservation.event.measurements);
       } else if (device.type === 'router') {
-        sensorObservation = observeBinarySensor({
+        const previousObservation = this.state.sensorObservations.get(device.id);
+        const routerProfile = withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 });
+        const onlineObservation = observeBinarySensor({
           deviceId: device.id,
           roomId: device.roomId,
           deviceType: device.type,
           worldState: {
             online: state.online === true
           },
-          previousObservation: this.state.sensorObservations.get(device.id),
+          previousObservation,
           currentTime: this.state.snapshot.simClock.currentTime,
           randomSeed: this.state.random.getState()
-        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }), {
+        }, routerProfile, {
           worldKey: 'online',
           measurementName: 'online',
           inactiveValue: true
         });
+        const latencyObservation = observeNumericSensor({
+          deviceId: device.id,
+          roomId: device.roomId,
+          deviceType: device.type,
+          worldState: {
+            latencyMs: Number(state.latencyMs ?? 18)
+          },
+          previousObservation,
+          currentTime: this.state.snapshot.simClock.currentTime,
+          randomSeed: this.state.random.getState()
+        }, routerProfile, {
+          worldKey: 'latencyMs',
+          measurementName: 'latency_ms',
+          inactiveValue: 18
+        });
+        sensorObservation = mergeSensorObservations(onlineObservation, latencyObservation);
         if (!sensorObservation) {
           continue;
         }
@@ -3047,6 +3065,38 @@ function telemetryMeasurementsToDeviceState(measurements: Record<string, number 
   return Object.fromEntries(Object.entries(measurements)
     .map(([measurement, value]) => [measurementStateKeys[measurement], value] as const)
     .filter(([stateKey]) => Boolean(stateKey)));
+}
+
+function mergeSensorObservations(
+  first: SensorObservation | null,
+  second: SensorObservation | null
+): SensorObservation | null {
+  if (!first) return second;
+  if (!second) return first;
+  return {
+    event: {
+      ...first.event,
+      measurements: {
+        ...first.event.measurements,
+        ...second.event.measurements
+      },
+      lineage: {
+        ...first.event.lineage,
+        quality: {
+          ...first.event.lineage.quality,
+          ...second.event.lineage.quality
+        }
+      }
+    },
+    additionalEvents: [
+      ...(first.additionalEvents ?? []),
+      ...(second.additionalEvents ?? [])
+    ],
+    observedState: {
+      ...first.observedState,
+      ...second.observedState
+    }
+  };
 }
 
 function restoreSensorObservations(events: TwinEvent[], runId: string, sequence: number): Map<string, Record<string, unknown>> {

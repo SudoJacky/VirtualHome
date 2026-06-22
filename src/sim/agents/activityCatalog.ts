@@ -40,6 +40,7 @@ const activityTemplates: ActivityTemplate[] = [
   activity('watch_tv', ['relax'], [], [{ resourceId: 'tv_01', quantity: 1 }], 'living_room', { kind: 'uniform', min: 20, max: 90 }, 0.75, ['sit', 'watch'], [{ need: 'stress', delta: -25 }, { need: 'mood', delta: 10 }]),
   activity('laundry_cycle', ['chore'], [], [{ resourceId: 'dirty_laundry', quantity: 1 }], 'bathroom', { kind: 'uniform', min: 8, max: 18 }, 0.35, ['load_washer'], [{ need: 'taskPressure', delta: -12 }]),
   activity('unload_dishwasher', ['chore'], [], [{ resourceId: 'clean_dishes', quantity: 1 }], 'kitchen', { kind: 'uniform', min: 5, max: 12 }, 0.5, ['empty_rack'], [{ need: 'taskPressure', delta: -10 }]),
+  activity('take_out_trash', ['chore'], [], [{ resourceId: 'trash_bags', quantity: 1 }], 'entrance', { kind: 'uniform', min: 5, max: 12 }, 0.45, ['tie_bag', 'carry_out'], [{ need: 'taskPressure', delta: -12 }, { need: 'comfort', delta: 6 }]),
   activity('take_medicine', ['health'], [], [{ resourceId: 'medicine', quantity: 1 }], 'master_bedroom', { kind: 'uniform', min: 2, max: 5 }, 0.2, ['take_pill'], [{ need: 'healthConcern', delta: -35 }]),
   activity('senior_check_in', ['care'], [], [], 'living_room', { kind: 'uniform', min: 4, max: 10 }, 0.3, ['talk'], [{ need: 'healthConcern', delta: -18 }, { need: 'socialNeed', delta: -20 }]),
   activity('clean_room', ['chore'], [], [{ resourceId: 'cleaning_supplies', quantity: 1 }], 'living_room', { kind: 'uniform', min: 10, max: 25 }, 0.45, ['tidy'], [{ need: 'taskPressure', delta: -10 }]),

@@ -109,6 +109,9 @@ function scoreResourceUrgency(input: ActivityDecisionInput, template: ActivityTe
   if (template.id === 'unload_dishwasher') {
     return Math.min(28, Math.max(0, (input.availableResources.clean_dishes ?? 0) - 4) * 4);
   }
+  if (template.id === 'take_out_trash') {
+    return Math.min(42, Math.max(0, (input.availableResources.trash_bags ?? 0) - 0.8) * 20);
+  }
   if (template.id === 'take_medicine' && input.persona.role === 'senior') {
     return (input.availableResources.medicine ?? 0) > 0 ? 8 : 0;
   }

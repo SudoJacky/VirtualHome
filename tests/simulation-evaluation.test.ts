@@ -178,6 +178,74 @@ describe('long horizon simulation evaluation', () => {
     expect(report.behavior.shortTermVariationScore).toBeLessThanOrEqual(1);
   });
 
+  it('measures overlapping same-activity durations as separate activity instances', () => {
+    const baseActivity: ActivityStartedEvent = {
+      id: 'watch_tv_start_1',
+      runId: 'run_duration',
+      type: 'ActivityStarted',
+      ts: '2026-06-17T19:00:00+08:00',
+      simTime: '2026-06-17T19:00:00+08:00',
+      homeId: 'default_home',
+      scenarioId: 'weekday_normal',
+      sequence: 1,
+      sourceLayer: 'truth',
+      lineage: {
+        eventTime: '2026-06-17T19:00:00+08:00',
+        ingestTime: '2026-06-17T19:00:00+08:00',
+        sourceLayer: 'truth',
+        causeEventIds: [],
+        episodeId: 'test',
+        observability: 'private',
+        quality: {},
+        schemaVersion: 1,
+        behaviorModelVersion: 'test'
+      },
+      activityId: 'watch_tv',
+      participants: ['adult_1'],
+      roomId: 'living_room'
+    };
+    const events = [
+      baseActivity,
+      {
+        ...baseActivity,
+        id: 'watch_tv_start_2',
+        sequence: 2,
+        ts: '2026-06-17T19:02:00+08:00',
+        simTime: '2026-06-17T19:02:00+08:00',
+        participants: ['child_1']
+      },
+      {
+        ...baseActivity,
+        id: 'watch_tv_end_1',
+        type: 'ActivityEnded' as const,
+        sequence: 3,
+        ts: '2026-06-17T19:10:00+08:00',
+        simTime: '2026-06-17T19:10:00+08:00'
+      },
+      {
+        ...baseActivity,
+        id: 'watch_tv_end_2',
+        type: 'ActivityEnded' as const,
+        sequence: 4,
+        ts: '2026-06-17T19:12:00+08:00',
+        simTime: '2026-06-17T19:12:00+08:00',
+        participants: ['child_1']
+      }
+    ];
+
+    const report = buildEvaluationReport({
+      days: [{ date: '2026-06-17', events, finalSnapshot: null }],
+      homeDefinition: getHomeDefinition()
+    });
+
+    expect(report.behavior.activityDurationMinutes.watch_tv).toMatchObject({
+      samples: 2,
+      averageMinutes: 10,
+      shortestMinutes: 10,
+      longestMinutes: 10
+    });
+  });
+
   it('reports truth-only agent memory summaries in behavior evaluation', () => {
     const activityBase: ActivityStartedEvent = {
       id: 'activity_1',
@@ -426,6 +494,96 @@ describe('long horizon simulation evaluation', () => {
     expect(report.inference.downstreamUtility.featureCoverageRatio).toBeLessThanOrEqual(1);
   });
 
+  it('reports synthetic-to-real downstream validation gap when real observation samples are provided', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    const eveningSnapshot = structuredClone(snapshot);
+    eveningSnapshot.homeState.mode = 'evening_home';
+    const morningSnapshot = structuredClone(snapshot);
+    morningSnapshot.homeState.mode = 'morning';
+    const leakTelemetry: DeviceTelemetryEvent = {
+      id: 'real_leak_observation',
+      runId: 'run_real_validation',
+      type: 'DeviceTelemetry',
+      ts: snapshot.simClock.currentTime,
+      simTime: snapshot.simClock.currentTime,
+      homeId: snapshot.homeId,
+      scenarioId: snapshot.scenarioId,
+      sequence: 1,
+      sourceLayer: 'sensor',
+      lineage: {
+        eventTime: snapshot.simClock.currentTime,
+        ingestTime: snapshot.simClock.currentTime,
+        sourceLayer: 'sensor',
+        causeEventIds: [],
+        episodeId: 'sensor:water_leak_01',
+        observability: 'ml_observation',
+        quality: { confidence: 0.96 },
+        schemaVersion: 1,
+        behaviorModelVersion: 'test'
+      },
+      roomId: 'bathroom',
+      deviceId: 'water_leak_01',
+      deviceType: 'water_leak_sensor',
+      measurements: {
+        leak_detected: true,
+        confidence: 0.96
+      }
+    };
+
+    const report = buildEvaluationReport({
+      days: [{
+        date: '2026-06-17',
+        events: [],
+        finalSnapshot: snapshot,
+        forecastSamples: [
+          {
+            currentTime: '2026-06-17T08:00:00+08:00',
+            eventsUntilNow: [],
+            truthByHorizon: [{ horizonMinutes: 60, snapshot: morningSnapshot }]
+          },
+          {
+            currentTime: '2026-06-17T19:00:00+08:00',
+            eventsUntilNow: [],
+            truthByHorizon: [{ horizonMinutes: 60, snapshot: eveningSnapshot }]
+          },
+          {
+            currentTime: '2026-06-17T19:00:00+08:00',
+            eventsUntilNow: [],
+            truthByHorizon: [{ horizonMinutes: 60, snapshot: eveningSnapshot }]
+          }
+        ]
+      }],
+      homeDefinition: getHomeDefinition(),
+      realWorldValidationSamples: [{
+        currentTime: '2026-06-17T02:15:00+08:00',
+        eventsUntilNow: [leakTelemetry],
+        truth: {
+          homeMode: 'alert',
+          risks: {
+            fridge_left_open: false,
+            network_impact: false,
+            stove_unattended: false,
+            senior_no_activity: false,
+            water_leak: true
+          }
+        }
+      }]
+    });
+
+    expect(report.inference.downstreamUtility.realWorldValidation).toMatchObject({
+      samples: 1,
+      homeModeTop1Accuracy: expect.any(Number),
+      averageRiskBrierScore: expect.any(Number),
+      featureCoverageRatio: expect.any(Number)
+    });
+    expect(report.inference.downstreamUtility.syntheticToRealGap).toMatchObject({
+      homeModeAccuracyGap: expect.any(Number),
+      riskBrierScoreGap: expect.any(Number)
+    });
+  });
+
   it('scores water leak forecasts in risk calibration metrics', () => {
     const simulator = createSimulator({ seed: 42 });
     simulator.startScenario('night_water_leak');
@@ -655,6 +813,116 @@ describe('long horizon simulation evaluation', () => {
         kind: 'exclusive_resource_conflict',
         entityId: 'tv_01',
         message: expect.stringContaining('watch_tv and watching_tv')
+      })
+    ]));
+  });
+
+  it('reports exclusive resource conflicts between separate overlapping instances of the same activity', () => {
+    const firstActivity: ActivityStartedEvent = {
+      id: 'activity_1',
+      runId: 'run_bad',
+      type: 'ActivityStarted',
+      ts: '2026-06-17T19:00:00+08:00',
+      simTime: '2026-06-17T19:00:00+08:00',
+      homeId: 'default_home',
+      scenarioId: 'weekday_normal',
+      sequence: 1,
+      sourceLayer: 'truth',
+      lineage: {
+        eventTime: '2026-06-17T19:00:00+08:00',
+        ingestTime: '2026-06-17T19:00:00+08:00',
+        sourceLayer: 'truth',
+        causeEventIds: [],
+        episodeId: 'test',
+        observability: 'private',
+        quality: {},
+        schemaVersion: 1,
+        behaviorModelVersion: 'test'
+      },
+      activityId: 'watch_tv',
+      participants: ['adult_1'],
+      roomId: 'living_room'
+    };
+    const secondActivity: ActivityStartedEvent = {
+      ...firstActivity,
+      id: 'activity_2',
+      sequence: 2,
+      participants: ['child_1']
+    };
+
+    const report = buildEvaluationReport({
+      days: [{ date: '2026-06-17', events: [firstActivity, secondActivity], finalSnapshot: null }],
+      homeDefinition: getHomeDefinition()
+    });
+
+    expect(report.logic.violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'exclusive_resource_conflict',
+        entityId: 'tv_01',
+        message: expect.stringContaining('activity_1 and activity_2')
+      })
+    ]));
+  });
+
+  it('keeps conflicting exclusive resource claims active until each activity instance ends', () => {
+    const firstActivity: ActivityStartedEvent = {
+      id: 'activity_1',
+      runId: 'run_bad',
+      type: 'ActivityStarted',
+      ts: '2026-06-17T19:00:00+08:00',
+      simTime: '2026-06-17T19:00:00+08:00',
+      homeId: 'default_home',
+      scenarioId: 'weekday_normal',
+      sequence: 1,
+      sourceLayer: 'truth',
+      lineage: {
+        eventTime: '2026-06-17T19:00:00+08:00',
+        ingestTime: '2026-06-17T19:00:00+08:00',
+        sourceLayer: 'truth',
+        causeEventIds: [],
+        episodeId: 'test',
+        observability: 'private',
+        quality: {},
+        schemaVersion: 1,
+        behaviorModelVersion: 'test'
+      },
+      activityId: 'watch_tv',
+      participants: ['adult_1'],
+      roomId: 'living_room'
+    };
+    const secondActivity: ActivityStartedEvent = {
+      ...firstActivity,
+      id: 'activity_2',
+      sequence: 2,
+      participants: ['child_1']
+    };
+    const firstEnded = {
+      ...firstActivity,
+      id: 'activity_1_end',
+      type: 'ActivityEnded' as const,
+      sequence: 3
+    };
+    const thirdActivity: ActivityStartedEvent = {
+      ...firstActivity,
+      id: 'activity_3',
+      sequence: 4,
+      participants: ['senior_1']
+    };
+
+    const report = buildEvaluationReport({
+      days: [{
+        date: '2026-06-17',
+        events: [firstActivity, secondActivity, firstEnded, thirdActivity],
+        finalSnapshot: null
+      }],
+      homeDefinition: getHomeDefinition()
+    });
+
+    expect(report.logic.violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'exclusive_resource_conflict',
+        entityId: 'tv_01',
+        message: expect.stringContaining('activity_2 and activity_3')
       })
     ]));
   });
