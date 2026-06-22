@@ -56,6 +56,10 @@ export function coordinateHousehold(context: HouseholdSocialContext): SocialDeci
   if (maintenanceVisit) {
     decisions.push(maintenanceVisit);
   }
+  const medicineRefill = createMedicineRefillDecision(context);
+  if (medicineRefill) {
+    decisions.push(medicineRefill);
+  }
   const visitorGreeting = createVisitorGreetingDecision(context);
   if (visitorGreeting) {
     decisions.push(visitorGreeting);
@@ -131,6 +135,33 @@ function createMaintenanceVisitDecision(context: HouseholdSocialContext): Social
     targetActivity: 'meet_maintenance_worker',
     conversationTopic: 'maintenance_visit',
     reason: 'social:maintenance_visit_response'
+  };
+}
+
+function createMedicineRefillDecision(context: HouseholdSocialContext): SocialDecision | null {
+  if ((context.availableResources.medicine ?? 0) > 2) {
+    return null;
+  }
+  const minuteOfDay = minuteOfDayFromTime(context.currentTime);
+  if (minuteOfDay < 9 * 60 || minuteOfDay > 19 * 60) {
+    return null;
+  }
+  const responderId = ['adult_1', 'adult_2', 'senior_1']
+    .find((personId) => {
+      const person = context.people[personId];
+      return person?.available === true && person.location !== 'away';
+    });
+  if (!responderId) {
+    return null;
+  }
+  return {
+    kind: 'external_response',
+    ruleId: 'medicine_refill_response',
+    actorIds: [responderId],
+    targetRoom: 'entrance',
+    targetActivity: 'refill_medicine',
+    conversationTopic: 'medicine_refill',
+    reason: 'social:medicine_refill_response'
   };
 }
 

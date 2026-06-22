@@ -222,6 +222,27 @@ describe('household social behavior model', () => {
     ]));
   });
 
+  it('coordinates medicine refills when household medicine stock is low', () => {
+    const context = baseSocialContext();
+    context.currentTime = '2026-06-17T15:10:00+08:00';
+    context.people.adult_1 = { location: 'living_room', activity: 'idle', available: true };
+    context.people.adult_2 = { location: 'away', activity: 'commute', available: false };
+    context.availableResources.medicine = 1;
+
+    const decisions = coordinateHousehold(context);
+
+    expect(decisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'external_response',
+        ruleId: 'medicine_refill_response',
+        actorIds: ['adult_1'],
+        targetRoom: 'entrance',
+        targetActivity: 'refill_medicine',
+        conversationTopic: 'medicine_refill'
+      })
+    ]));
+  });
+
   it('coordinates a visitor greeting when the doorbell rings without a package', () => {
     const context = baseSocialContext();
     context.currentTime = '2026-06-17T19:10:00+08:00';
