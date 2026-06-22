@@ -146,6 +146,35 @@ describe('long horizon simulation evaluation', () => {
     expect(first.inference.forecastEvaluation.averageRiskBrierScoreByHorizon[30]).toBeLessThanOrEqual(1);
   });
 
+  it('passes real household validation samples through the long-horizon evaluation entrypoint', () => {
+    const report = runSimulationEvaluation({
+      startDate: '2026-07-14',
+      days: 1,
+      seed: 42,
+      minutesPerDay: 180,
+      realWorldValidationSamples: [{
+        currentTime: '2026-07-14T20:30:00+08:00',
+        eventsUntilNow: [],
+        truth: {
+          homeMode: 'evening_home',
+          risks: {
+            fridge_left_open: false,
+            network_impact: false,
+            stove_unattended: false,
+            senior_no_activity: false,
+            water_leak: false
+          }
+        }
+      }]
+    });
+
+    expect(report.inference.downstreamUtility.realWorldValidation.samples).toBe(1);
+    expect(report.inference.downstreamUtility.syntheticToRealGap).toMatchObject({
+      homeModeAccuracyGap: expect.any(Number),
+      riskBrierScoreGap: expect.any(Number)
+    });
+  });
+
   it('reports behavior timing, weekday-weekend differences, and habit stability metrics', () => {
     const report = runSimulationEvaluation({
       startDate: '2026-07-14',

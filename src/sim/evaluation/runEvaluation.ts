@@ -3,7 +3,13 @@ import { pathToFileURL } from 'node:url';
 import { getHomeDefinition } from '../catalog';
 import { createSimulator } from '../engine';
 import { advanceInventoryOneDay } from '../world/inventory';
-import { buildEvaluationReport, type ForecastEvaluationSample, type ForecastHorizonMinutes, type SimulationEvaluationReport } from './metrics';
+import {
+  buildEvaluationReport,
+  type DownstreamUtilityValidationSample,
+  type ForecastEvaluationSample,
+  type ForecastHorizonMinutes,
+  type SimulationEvaluationReport
+} from './metrics';
 import { projectEventsForPrivacy } from '../../server/privacy';
 import type { DeviceStateChangedEvent, DeviceTelemetryEvent, TwinEvent, TwinSnapshot } from '../../shared/types';
 
@@ -12,13 +18,16 @@ export interface SimulationEvaluationOptions {
   days?: number;
   seed?: number;
   minutesPerDay?: number;
+  realWorldValidationSamples?: DownstreamUtilityValidationSample[];
 }
+
+type ResolvedCliSimulationEvaluationOptions = Required<Omit<SimulationEvaluationOptions, 'realWorldValidationSamples'>>;
 
 export type EvaluationCliMode = 'evaluation' | 'dataset';
 
 export interface EvaluationCliRequest {
   mode: EvaluationCliMode;
-  options: Required<SimulationEvaluationOptions>;
+  options: ResolvedCliSimulationEvaluationOptions;
 }
 
 export interface TrainingDataset {
@@ -51,8 +60,8 @@ export interface TrainingDatasetExample {
   };
 }
 
-export function parseEvaluationCliArgs(args: string[]): Required<SimulationEvaluationOptions> {
-  const options: Required<SimulationEvaluationOptions> = {
+export function parseEvaluationCliArgs(args: string[]): ResolvedCliSimulationEvaluationOptions {
+  const options: ResolvedCliSimulationEvaluationOptions = {
     startDate: '2026-07-14',
     days: 7,
     seed: 42,
@@ -206,7 +215,8 @@ export function runSimulationEvaluation(options: SimulationEvaluationOptions): S
 
   return buildEvaluationReport({
     days: dayInputs,
-    homeDefinition: getHomeDefinition()
+    homeDefinition: getHomeDefinition(),
+    realWorldValidationSamples: options.realWorldValidationSamples
   });
 }
 
