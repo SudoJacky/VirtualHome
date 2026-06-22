@@ -532,6 +532,31 @@ describe('virtual home simulator MVP', () => {
     expect(motionTelemetry[0].lineage.ingestTime).not.toBe(motionTelemetry[0].lineage.eventTime);
   });
 
+  it('reports fridge door contact through delayed sensor telemetry', () => {
+    const simulator = createSimulator({ seed: 334 });
+
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('fridge_left_open');
+    const events = simulator.advanceMinutes(1);
+    const contactTelemetry = events.find((event): event is DeviceTelemetryEvent => (
+      event.type === 'DeviceTelemetry' &&
+      event.deviceId === 'fridge_01' &&
+      event.measurements.contact_open === true
+    ));
+
+    expect(contactTelemetry).toMatchObject({
+      sourceLayer: 'sensor',
+      lineage: expect.objectContaining({
+        sourceLayer: 'sensor',
+        observability: 'ml_observation',
+        quality: expect.objectContaining({
+          delayedMs: expect.any(Number)
+        })
+      })
+    });
+    expect(contactTelemetry?.lineage.ingestTime).not.toBe(contactTelemetry?.lineage.eventTime);
+  });
+
   it('uses autonomous agent policy to prevent unreasonable daytime sleep persistence', () => {
     const simulator = createSimulator({ seed: 515 });
 

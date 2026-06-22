@@ -46,6 +46,37 @@ export function observeMotionSensor(input: SensorObservationInput, profile: Sens
     }, measurements);
 }
 
+export function observeContactSensor(input: SensorObservationInput, profile: SensorProfile): SensorObservation | null {
+  if (!shouldSampleSensor(profile, input.currentTime, input.previousObservation)) {
+    return null;
+  }
+
+  const actualOpen = input.worldState.contactOpen === true;
+  const missedOpen = actualOpen && probabilityHit(profile.falseNegativeRate, input.randomSeed, `${input.deviceId}:contact:false-negative:${input.currentTime}`);
+  const falseOpen = !actualOpen && probabilityHit(profile.falsePositiveRate, input.randomSeed, `${input.deviceId}:contact:false-positive:${input.currentTime}`);
+  const contactOpen = actualOpen ? !missedOpen : falseOpen;
+  const confidence = contactOpen === actualOpen ? 0.96 : 0.28;
+  const noisy = missedOpen || falseOpen;
+  if (!noisy && !contactOpen && input.previousObservation?.contactOpen === undefined) {
+    return null;
+  }
+  if (!noisy && input.previousObservation?.contactOpen === contactOpen) {
+    return null;
+  }
+  const measurements = {
+    contact_open: contactOpen,
+    confidence
+  };
+
+  return createSensorObservation(input, measurements, profile, {
+    noisy,
+    confidence
+  }, {
+    contactOpen,
+    lastObservedAt: input.currentTime
+  });
+}
+
 export function observeEnvironmentSensor(input: SensorObservationInput, profile: SensorProfile): SensorObservation | null {
   if (!shouldSampleSensor(profile, input.currentTime, input.previousObservation)) {
     return null;

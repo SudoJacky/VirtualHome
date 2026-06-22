@@ -6,7 +6,7 @@ import { getScenario, type ScenarioAction, type ScenarioDefinition } from './sce
 import { getDeviceCapability, validateDeviceStatePatch } from '../shared/deviceRegistry';
 import { getDeviceSupportedCommands } from '../shared/deviceInstanceCapabilities';
 import { getSensorProfile, withSensorProfileOverrides } from './sensors/deviceProfiles';
-import { observeEnvironmentSensor, observeMotionSensor, type SensorObservation } from './sensors/sensorModel';
+import { observeContactSensor, observeEnvironmentSensor, observeMotionSensor, type SensorObservation } from './sensors/sensorModel';
 import { selectActivity } from './agents/agentPolicy';
 import { advanceNeeds, applyActivityEffectsToNeeds, createInitialNeeds, type NeedState } from './agents/needs';
 import { commitmentPressureAtMinute, createDailyCommitments } from './agents/scheduler';
@@ -2057,7 +2057,7 @@ class Simulator implements VirtualHomeSimulator {
   private generateTelemetry(): TwinEvent[] {
     const events: TwinEvent[] = [];
     for (const device of this.state.catalog.devices) {
-      if (!['temperature_humidity_sensor', 'air_quality_sensor', 'water_flow_sensor', 'soil_moisture_sensor'].includes(device.type)) {
+      if (!['temperature_humidity_sensor', 'air_quality_sensor', 'water_flow_sensor', 'soil_moisture_sensor', 'fridge', 'door_lock'].includes(device.type)) {
         continue;
       }
       const state = this.state.snapshot.devices[device.id].state;
@@ -2123,6 +2123,25 @@ class Simulator implements VirtualHomeSimulator {
         if (typeof measurements.co2 === 'number') {
           state.co2 = measurements.co2;
         }
+      } else if (device.type === 'fridge' || device.type === 'door_lock') {
+        const contactOpen = device.type === 'fridge'
+          ? state.doorOpen === true
+          : state.locked === false;
+        sensorObservation = observeContactSensor({
+          deviceId: device.id,
+          roomId: device.roomId,
+          deviceType: device.type,
+          worldState: {
+            contactOpen
+          },
+          previousObservation: this.state.sensorObservations.get(device.id),
+          currentTime: this.state.snapshot.simClock.currentTime,
+          randomSeed: this.state.random.getState()
+        }, withSensorProfileOverrides(getSensorProfile('contact_sensor'), { samplingIntervalSec: 1 }));
+        if (!sensorObservation) {
+          continue;
+        }
+        Object.assign(measurements, sensorObservation.event.measurements);
       } else if (device.type === 'water_flow_sensor') {
         const roomOccupied = this.state.snapshot.rooms[device.roomId].humanOccupancy;
         const leakActive = this.state.snapshot.devices.water_leak_01.state.leakDetected === true;
