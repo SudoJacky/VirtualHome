@@ -6,6 +6,14 @@ const roomIdSchema = {
   type: 'string',
   enum: ['entrance', 'living_room', 'kitchen', 'dining_room', 'master_bedroom', 'child_bedroom', 'study', 'bathroom', 'garden']
 };
+const roomOrAwaySchema = {
+  type: 'string',
+  enum: ['entrance', 'living_room', 'kitchen', 'dining_room', 'master_bedroom', 'child_bedroom', 'study', 'bathroom', 'garden', 'away']
+};
+const alertSeveritySchema = {
+  type: 'string',
+  enum: ['info', 'warning', 'high']
+};
 const eventSourceLayerSchema = {
   type: 'string',
   enum: ['truth', 'world', 'sensor', 'inference', 'control']
@@ -84,6 +92,28 @@ const eventLineageSchema: JsonSchema = {
   }
 };
 
+const eventExplanationSchema: JsonSchema = {
+  type: 'object',
+  required: ['why', 'actorIds', 'affectedDeviceIds', 'affectedRoomIds', 'expectedOutcome'],
+  properties: {
+    why: stringSchema,
+    actorIds: {
+      type: 'array',
+      items: stringSchema
+    },
+    affectedDeviceIds: {
+      type: 'array',
+      items: stringSchema
+    },
+    affectedRoomIds: {
+      type: 'array',
+      items: roomIdSchema
+    },
+    relatedIntent: stringSchema,
+    expectedOutcome: stringSchema
+  }
+};
+
 const twinEventBaseSchema: JsonSchema = {
   type: 'object',
   required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'sourceLayer', 'lineage'],
@@ -98,7 +128,8 @@ const twinEventBaseSchema: JsonSchema = {
     sequence: { type: 'integer', minimum: 1 },
     sourceLayer: eventSourceLayerSchema,
     lineage: { $ref: '#/components/schemas/EventLineage' },
-    reason: stringSchema
+    reason: stringSchema,
+    eventExplanation: { $ref: '#/components/schemas/EventExplanation' }
   },
   additionalProperties: true
 };
@@ -165,9 +196,92 @@ const deviceStateChangedEventSchema: JsonSchema = {
   }
 };
 
+const personMovedEventSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'sourceLayer', 'lineage', 'personId', 'from', 'to', 'activity'],
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    type: { type: 'string', enum: ['PersonMoved'] },
+    ts: isoDateTimeSchema,
+    simTime: isoDateTimeSchema,
+    homeId: stringSchema,
+    scenarioId: stringSchema,
+    sequence: { type: 'integer', minimum: 1 },
+    sourceLayer: { type: 'string', enum: ['truth'] },
+    lineage: { $ref: '#/components/schemas/EventLineage' },
+    reason: stringSchema,
+    personId: stringSchema,
+    from: roomOrAwaySchema,
+    to: roomOrAwaySchema,
+    activity: stringSchema,
+    travelMinutes: { type: 'number', minimum: 0 }
+  }
+};
+
+const activityStartedEventSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'sourceLayer', 'lineage', 'activityId', 'participants', 'roomId'],
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    type: { type: 'string', enum: ['ActivityStarted'] },
+    ts: isoDateTimeSchema,
+    simTime: isoDateTimeSchema,
+    homeId: stringSchema,
+    scenarioId: stringSchema,
+    sequence: { type: 'integer', minimum: 1 },
+    sourceLayer: { type: 'string', enum: ['truth'] },
+    lineage: { $ref: '#/components/schemas/EventLineage' },
+    reason: stringSchema,
+    activityId: stringSchema,
+    participants: {
+      type: 'array',
+      items: stringSchema
+    },
+    roomId: roomIdSchema
+  }
+};
+
+const activityEndedEventSchema: JsonSchema = {
+  ...activityStartedEventSchema,
+  properties: {
+    ...(activityStartedEventSchema.properties as Record<string, unknown>),
+    type: { type: 'string', enum: ['ActivityEnded'] }
+  }
+};
+
+const conversationOccurredEventSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'sourceLayer', 'lineage', 'conversationId', 'speakerId', 'listenerIds', 'topic', 'intent', 'roomId', 'summary'],
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    type: { type: 'string', enum: ['ConversationOccurred'] },
+    ts: isoDateTimeSchema,
+    simTime: isoDateTimeSchema,
+    homeId: stringSchema,
+    scenarioId: stringSchema,
+    sequence: { type: 'integer', minimum: 1 },
+    sourceLayer: { type: 'string', enum: ['truth'] },
+    lineage: { $ref: '#/components/schemas/EventLineage' },
+    reason: stringSchema,
+    conversationId: stringSchema,
+    speakerId: stringSchema,
+    listenerIds: {
+      type: 'array',
+      items: stringSchema
+    },
+    topic: stringSchema,
+    intent: stringSchema,
+    roomId: roomIdSchema,
+    summary: stringSchema
+  }
+};
+
 const abnormalityInjectedEventSchema: JsonSchema = {
   type: 'object',
-  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'kind', 'affectedEntities'],
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'sourceLayer', 'lineage', 'kind', 'affectedEntities'],
   properties: {
     id: stringSchema,
     runId: stringSchema,
@@ -177,6 +291,8 @@ const abnormalityInjectedEventSchema: JsonSchema = {
     homeId: stringSchema,
     scenarioId: stringSchema,
     sequence: { type: 'integer', minimum: 1 },
+    sourceLayer: { type: 'string', enum: ['control'] },
+    lineage: { $ref: '#/components/schemas/EventLineage' },
     reason: stringSchema,
     kind: {
       type: 'string',
@@ -191,7 +307,7 @@ const abnormalityInjectedEventSchema: JsonSchema = {
 
 const alertStatusChangedEventSchema: JsonSchema = {
   type: 'object',
-  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'alertId', 'previousStatus', 'status'],
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'sourceLayer', 'lineage', 'alertId', 'previousStatus', 'status'],
   properties: {
     id: stringSchema,
     runId: stringSchema,
@@ -201,6 +317,8 @@ const alertStatusChangedEventSchema: JsonSchema = {
     homeId: stringSchema,
     scenarioId: stringSchema,
     sequence: { type: 'integer', minimum: 1 },
+    sourceLayer: { type: 'string', enum: ['control'] },
+    lineage: { $ref: '#/components/schemas/EventLineage' },
     reason: stringSchema,
     alertId: stringSchema,
     previousStatus: alertLifecycleStatusSchema(),
@@ -210,7 +328,7 @@ const alertStatusChangedEventSchema: JsonSchema = {
 
 const objectMovedEventSchema: JsonSchema = {
   type: 'object',
-  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'objectId', 'from', 'to'],
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'sourceLayer', 'lineage', 'objectId', 'from', 'to'],
   properties: {
     id: stringSchema,
     runId: stringSchema,
@@ -220,6 +338,8 @@ const objectMovedEventSchema: JsonSchema = {
     homeId: stringSchema,
     scenarioId: stringSchema,
     sequence: { type: 'integer', minimum: 1 },
+    sourceLayer: { type: 'string', enum: ['world'] },
+    lineage: { $ref: '#/components/schemas/EventLineage' },
     reason: stringSchema,
     objectId: stringSchema,
     from: roomIdSchema,
@@ -230,7 +350,7 @@ const objectMovedEventSchema: JsonSchema = {
 
 const externalInteractionOccurredEventSchema: JsonSchema = {
   type: 'object',
-  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'interactionId', 'actorKind', 'purpose', 'roomId', 'status', 'relatedDeviceIds'],
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'sourceLayer', 'lineage', 'interactionId', 'actorKind', 'purpose', 'roomId', 'status', 'relatedDeviceIds'],
   properties: {
     id: stringSchema,
     runId: stringSchema,
@@ -240,6 +360,8 @@ const externalInteractionOccurredEventSchema: JsonSchema = {
     homeId: stringSchema,
     scenarioId: stringSchema,
     sequence: { type: 'integer', minimum: 1 },
+    sourceLayer: { type: 'string', enum: ['truth'] },
+    lineage: { $ref: '#/components/schemas/EventLineage' },
     reason: stringSchema,
     interactionId: stringSchema,
     actorKind: { type: 'string', enum: ['courier', 'visitor', 'repair'] },
@@ -253,12 +375,124 @@ const externalInteractionOccurredEventSchema: JsonSchema = {
   }
 };
 
+const automationTriggeredEventSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'sourceLayer', 'lineage', 'ruleId', 'explanation', 'actions'],
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    type: { type: 'string', enum: ['AutomationTriggered'] },
+    ts: isoDateTimeSchema,
+    simTime: isoDateTimeSchema,
+    homeId: stringSchema,
+    scenarioId: stringSchema,
+    sequence: { type: 'integer', minimum: 1 },
+    sourceLayer: { type: 'string', enum: ['inference'] },
+    lineage: { $ref: '#/components/schemas/EventLineage' },
+    reason: stringSchema,
+    ruleId: stringSchema,
+    explanation: stringSchema,
+    eventExplanation: { $ref: '#/components/schemas/EventExplanation' },
+    actions: {
+      type: 'array',
+      items: stringSchema
+    }
+  }
+};
+
+const ruleRecoveredEventSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'sourceLayer', 'lineage', 'ruleId', 'recoveredFacts', 'cooldownUntil'],
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    type: { type: 'string', enum: ['RuleRecovered'] },
+    ts: isoDateTimeSchema,
+    simTime: isoDateTimeSchema,
+    homeId: stringSchema,
+    scenarioId: stringSchema,
+    sequence: { type: 'integer', minimum: 1 },
+    sourceLayer: { type: 'string', enum: ['inference'] },
+    lineage: { $ref: '#/components/schemas/EventLineage' },
+    reason: stringSchema,
+    ruleId: stringSchema,
+    recoveredFacts: {
+      type: 'array',
+      items: stringSchema
+    },
+    cooldownUntil: isoDateTimeSchema
+  }
+};
+
+const alertCreatedEventSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'sourceLayer', 'lineage', 'alertId', 'severity', 'roomId', 'message', 'recommendedAction'],
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    type: { type: 'string', enum: ['AlertCreated'] },
+    ts: isoDateTimeSchema,
+    simTime: isoDateTimeSchema,
+    homeId: stringSchema,
+    scenarioId: stringSchema,
+    sequence: { type: 'integer', minimum: 1 },
+    sourceLayer: { type: 'string', enum: ['inference'] },
+    lineage: { $ref: '#/components/schemas/EventLineage' },
+    reason: stringSchema,
+    alertId: stringSchema,
+    severity: alertSeveritySchema,
+    roomId: roomIdSchema,
+    message: stringSchema,
+    recommendedAction: stringSchema,
+    eventExplanation: { $ref: '#/components/schemas/EventExplanation' },
+    sourceRuleId: stringSchema,
+    sourceEntityIds: {
+      type: 'array',
+      items: stringSchema
+    }
+  }
+};
+
+const scenarioControlEventSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'sourceLayer', 'lineage', 'command', 'value'],
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    type: { type: 'string', enum: ['ScenarioControl'] },
+    ts: isoDateTimeSchema,
+    simTime: isoDateTimeSchema,
+    homeId: stringSchema,
+    scenarioId: stringSchema,
+    sequence: { type: 'integer', minimum: 1 },
+    sourceLayer: { type: 'string', enum: ['control'] },
+    lineage: { $ref: '#/components/schemas/EventLineage' },
+    reason: stringSchema,
+    command: { type: 'string', enum: ['start', 'pause', 'resume', 'speed', 'inject'] },
+    value: {
+      anyOf: [
+        stringSchema,
+        { type: 'number' },
+        { type: 'boolean' }
+      ]
+    }
+  }
+};
+
 const twinEventSchema: JsonSchema = {
   anyOf: [
     { $ref: '#/components/schemas/DeviceTelemetryEvent' },
     { $ref: '#/components/schemas/DeviceStateChangedEvent' },
+    { $ref: '#/components/schemas/PersonMovedEvent' },
+    { $ref: '#/components/schemas/ActivityStartedEvent' },
+    { $ref: '#/components/schemas/ActivityEndedEvent' },
+    { $ref: '#/components/schemas/ConversationOccurredEvent' },
     { $ref: '#/components/schemas/AbnormalityInjectedEvent' },
+    { $ref: '#/components/schemas/AlertCreatedEvent' },
     { $ref: '#/components/schemas/AlertStatusChangedEvent' },
+    { $ref: '#/components/schemas/AutomationTriggeredEvent' },
+    { $ref: '#/components/schemas/RuleRecoveredEvent' },
+    { $ref: '#/components/schemas/ScenarioControlEvent' },
     { $ref: '#/components/schemas/ObjectMovedEvent' },
     { $ref: '#/components/schemas/ExternalInteractionOccurredEvent' },
     twinEventBaseSchema
@@ -1010,10 +1244,19 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         TwinSnapshot: twinSnapshotSchema,
         TwinEvent: twinEventSchema,
         EventLineage: eventLineageSchema,
+        EventExplanation: eventExplanationSchema,
         DeviceTelemetryEvent: deviceTelemetryEventSchema,
         DeviceStateChangedEvent: deviceStateChangedEventSchema,
+        PersonMovedEvent: personMovedEventSchema,
+        ActivityStartedEvent: activityStartedEventSchema,
+        ActivityEndedEvent: activityEndedEventSchema,
+        ConversationOccurredEvent: conversationOccurredEventSchema,
         AbnormalityInjectedEvent: abnormalityInjectedEventSchema,
+        AlertCreatedEvent: alertCreatedEventSchema,
         AlertStatusChangedEvent: alertStatusChangedEventSchema,
+        AutomationTriggeredEvent: automationTriggeredEventSchema,
+        RuleRecoveredEvent: ruleRecoveredEventSchema,
+        ScenarioControlEvent: scenarioControlEventSchema,
         ObjectMovedEvent: objectMovedEventSchema,
         ExternalInteractionOccurredEvent: externalInteractionOccurredEventSchema,
         HomeDefinition: homeDefinitionSchema,
