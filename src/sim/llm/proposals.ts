@@ -183,7 +183,7 @@ export function createLlmProposalCacheKey(input: LlmProposalCacheKeyInput): stri
 export function resolveCachedOrFallbackProposal(input: CachedOrFallbackProposalInput): CachedOrFallbackProposalResult {
   const cacheKey = createLlmProposalCacheKey(input);
   const cached = input.cache?.[cacheKey];
-  if (cached && validateCachedProposalBoundary(cached, input.availableResources)) {
+  if (cached && validateCachedProposalBoundary(cached, input)) {
     return {
       source: 'cache',
       cacheKey,
@@ -199,11 +199,26 @@ export function resolveCachedOrFallbackProposal(input: CachedOrFallbackProposalI
 
 function validateCachedProposalBoundary(
   proposal: LlmProposal,
-  availableResources: Record<string, number>
+  input: CachedOrFallbackProposalInput
 ): boolean {
   const parsed = rawProposalSchema.safeParse(proposal);
   if (!parsed.success) return false;
-  return validateProposalBoundary(parsed.data, availableResources).length === 0;
+  if (validateProposalBoundary(parsed.data, input.availableResources).length > 0) return false;
+  return validateProposalMetadata(proposal, input.prompt);
+}
+
+function validateProposalMetadata(proposal: LlmProposal, prompt: string): boolean {
+  return proposal.metadata.schemaVersion === 1 &&
+    proposal.metadata.model.length > 0 &&
+    proposal.metadata.promptHash === shortHash(prompt) &&
+    proposal.metadata.outputHash === shortHash(stableStringify({
+      kind: proposal.kind,
+      title: proposal.title,
+      summary: proposal.summary,
+      items: proposal.items,
+      requiredResources: proposal.requiredResources,
+      safetyTags: proposal.safetyTags
+    }));
 }
 
 function validateProposalBoundary(

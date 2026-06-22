@@ -193,4 +193,39 @@ describe('LLM proposal boundary', () => {
     expect(result.proposal.items[0].type).toBe('schedule_hint');
     expect(result.proposal.safetyTags).toEqual([]);
   });
+
+  it('does not replay cached LLM proposals with tampered metadata hashes', () => {
+    const cacheKey = createLlmProposalCacheKey({
+      purpose: 'weekly_schedule',
+      prompt: 'Create cached weekly schedule',
+      availableResources: { cleaning_supplies: 1 }
+    });
+    const cachedProposal = createDeterministicFallbackProposal({
+      purpose: 'weekly_schedule',
+      seed: 1,
+      prompt: 'Create cached weekly schedule',
+      availableResources: { cleaning_supplies: 1 }
+    });
+    const tamperedMetadataProposal = {
+      ...cachedProposal,
+      metadata: {
+        ...cachedProposal.metadata,
+        outputHash: '0000000000000000'
+      }
+    };
+
+    const result = resolveCachedOrFallbackProposal({
+      purpose: 'weekly_schedule',
+      seed: 42,
+      prompt: 'Create cached weekly schedule',
+      availableResources: { cleaning_supplies: 1 },
+      cache: {
+        [cacheKey]: tamperedMetadataProposal
+      }
+    });
+
+    expect(result.source).toBe('deterministic-fallback');
+    expect(result.cacheKey).toBe(cacheKey);
+    expect(result.proposal.metadata.outputHash).not.toBe('0000000000000000');
+  });
 });
