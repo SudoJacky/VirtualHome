@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { getSensorProfile, withSensorProfileOverrides } from '../src/sim/sensors/deviceProfiles';
 import {
+  observeContactSensor,
   observeEnvironmentSensor,
   observeMotionSensor,
   type SensorObservationInput
@@ -193,5 +194,104 @@ describe('sensor model', () => {
         }
       }
     });
+  });
+
+  it('reports contact changes with delay and duplicate quality markers', () => {
+    const profile = withSensorProfileOverrides(getSensorProfile('contact_sensor'), {
+      falsePositiveRate: 0,
+      falseNegativeRate: 0,
+      dropRate: 0,
+      duplicateRate: 1,
+      delayMs: { kind: 'constant', value: 450 }
+    });
+
+    const observation = observeContactSensor({
+      deviceId: 'fridge_01',
+      roomId: 'kitchen',
+      deviceType: 'fridge',
+      worldState: {
+        contactOpen: true
+      },
+      previousObservation: {
+        contactOpen: false,
+        lastObservedAt: '2026-06-17T08:00:00+08:00'
+      },
+      currentTime: '2026-06-17T08:01:00+08:00',
+      randomSeed: 23
+    }, profile);
+
+    expect(observation?.event).toMatchObject({
+      deviceId: 'fridge_01',
+      deviceType: 'fridge',
+      measurements: {
+        contact_open: true
+      },
+      lineage: {
+        eventTime: '2026-06-17T08:01:00+08:00',
+        ingestTime: '2026-06-17T08:01:00.450+08:00',
+        sourceLayer: 'sensor',
+        quality: {
+          delayedMs: 450
+        }
+      }
+    });
+    expect(observation?.additionalEvents).toHaveLength(1);
+    expect(observation?.additionalEvents?.[0]).toMatchObject({
+      measurements: {
+        contact_open: true
+      },
+      lineage: {
+        quality: {
+          duplicated: true
+        }
+      }
+    });
+  });
+
+  it('does not report unchanged contact state after an initial observation', () => {
+    const profile = withSensorProfileOverrides(getSensorProfile('contact_sensor'), {
+      falsePositiveRate: 0,
+      falseNegativeRate: 0,
+      cooldownSec: 0,
+      delayMs: { kind: 'constant', value: 0 }
+    });
+
+    const unchanged = observeContactSensor({
+      deviceId: 'fridge_01',
+      roomId: 'kitchen',
+      deviceType: 'fridge',
+      worldState: {
+        contactOpen: false
+      },
+      previousObservation: {
+        contactOpen: false,
+        lastObservedAt: '2026-06-17T08:00:00+08:00'
+      },
+      currentTime: '2026-06-17T08:01:00+08:00',
+      randomSeed: 29
+    }, profile);
+
+    expect(unchanged).toBeNull();
+  });
+
+  it('does not report an initial clean closed contact state', () => {
+    const profile = withSensorProfileOverrides(getSensorProfile('contact_sensor'), {
+      falsePositiveRate: 0,
+      falseNegativeRate: 0,
+      delayMs: { kind: 'constant', value: 0 }
+    });
+
+    const initialClosed = observeContactSensor({
+      deviceId: 'fridge_01',
+      roomId: 'kitchen',
+      deviceType: 'fridge',
+      worldState: {
+        contactOpen: false
+      },
+      currentTime: '2026-06-17T08:01:00+08:00',
+      randomSeed: 31
+    }, profile);
+
+    expect(initialClosed).toBeNull();
   });
 });
