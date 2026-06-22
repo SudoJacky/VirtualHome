@@ -195,7 +195,7 @@ function evaluateLogic(days: EvaluationDayInput[], homeDefinition: HomeDefinitio
   let totalChecks = 0;
   for (const day of days) {
     const peopleByRoom = new Map<RoomId, Set<string>>();
-    const activeResourceClaims = new Map<string, string>();
+    const activeResourceClaims = new Map<string, { eventId: string; activityId: string }>();
     for (const event of day.events) {
       if (event.type === 'PersonMoved') {
         totalChecks += 1;
@@ -229,22 +229,22 @@ function evaluateLogic(days: EvaluationDayInput[], homeDefinition: HomeDefinitio
       if (event.type === 'ActivityStarted') {
         for (const resourceId of exclusiveResourcesForActivity(event.activityId)) {
           totalChecks += 1;
-          const activeActivityId = activeResourceClaims.get(resourceId);
-          if (activeActivityId && activeActivityId !== event.activityId) {
+          const activeActivity = activeResourceClaims.get(resourceId);
+          if (activeActivity) {
             violations.push({
               kind: 'exclusive_resource_conflict',
               entityId: resourceId,
-              message: `${resourceId} was claimed by overlapping activities ${activeActivityId} and ${event.activityId}`,
+              message: `${resourceId} was claimed by overlapping activity instances ${activeActivity.eventId} and ${event.id} (${activeActivity.activityId} and ${event.activityId})`,
               simTime: event.simTime
             });
           } else {
-            activeResourceClaims.set(resourceId, event.activityId);
+            activeResourceClaims.set(resourceId, { eventId: event.id, activityId: event.activityId });
           }
         }
       }
       if (event.type === 'ActivityEnded') {
-        for (const [resourceId, activityId] of [...activeResourceClaims.entries()]) {
-          if (activityId === event.activityId) {
+        for (const [resourceId, activity] of [...activeResourceClaims.entries()]) {
+          if (activity.activityId === event.activityId) {
             activeResourceClaims.delete(resourceId);
           }
         }
