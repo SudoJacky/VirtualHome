@@ -22,6 +22,7 @@ export interface ObservationEvidence {
   droppedObservationEvents: number;
   observationQuality: number;
   fridgeDoorOpen: boolean;
+  fridgeDoorConfidence: number;
   routerOffline: boolean;
   routerOfflineConfidence: number;
   stovePowerW: number;
@@ -41,6 +42,7 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
   const pm25ByRoom: Partial<Record<RoomId, number>> = {};
   let droppedObservationEvents = 0;
   let fridgeDoorOpen = false;
+  let fridgeDoorConfidence = 0;
   let routerOffline = false;
   let routerOfflineConfidence = 0;
   let stovePowerW = 0;
@@ -61,6 +63,13 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
         motionByRoom[event.roomId] = Math.max(
           motionByRoom[event.roomId] ?? 0,
           measurementConfidence(event, 0.65) * observationQualityWeight(event)
+        );
+      }
+      if (event.deviceId === 'fridge_01' && event.measurements.contact_open === true) {
+        fridgeDoorOpen = true;
+        fridgeDoorConfidence = Math.max(
+          fridgeDoorConfidence,
+          measurementConfidence(event, 0.8) * observationQualityWeight(event)
         );
       }
       if (typeof event.measurements.co2 === 'number') {
@@ -104,6 +113,7 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
       activeDeviceRooms[event.roomId] = Math.max(activeDeviceRooms[event.roomId] ?? 0, 0.55);
       if (event.deviceId === 'fridge_01' && event.state.doorOpen === true) {
         fridgeDoorOpen = true;
+        fridgeDoorConfidence = Math.max(fridgeDoorConfidence, 1);
       }
       if (event.deviceId === 'router_01' && event.state.online === false) {
         routerOffline = true;
@@ -130,6 +140,7 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
       ? Math.max(0.45, 1 - droppedObservationEvents / acceptedEvents.length * 0.55)
       : 1,
     fridgeDoorOpen,
+    fridgeDoorConfidence,
     routerOffline,
     routerOfflineConfidence,
     stovePowerW,

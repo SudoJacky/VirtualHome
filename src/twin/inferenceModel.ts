@@ -56,6 +56,7 @@ export function inferTwinState(events: TwinEvent[], options: TwinInferenceOption
   }));
   const risks = createAnomalyRisks({
     fridgeDoorOpen: evidence.fridgeDoorOpen,
+    fridgeDoorConfidence: evidence.fridgeDoorConfidence,
     routerOffline: evidence.routerOffline,
     routerOfflineConfidence: evidence.routerOfflineConfidence,
     stovePowerW: evidence.stovePowerW,

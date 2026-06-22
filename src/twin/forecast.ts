@@ -15,6 +15,7 @@ export interface TwinStateForecast {
 
 export function createAnomalyRisks(input: {
   fridgeDoorOpen: boolean;
+  fridgeDoorConfidence?: number;
   routerOffline: boolean;
   routerOfflineConfidence?: number;
   stovePowerW: number;
@@ -32,9 +33,10 @@ export function createAnomalyRisks(input: {
   const stovePowerConfidence = clamp01(input.stovePowerConfidence ?? 1);
   const sleepSensorConfidence = clamp01(input.sleepSensorConfidence ?? 1);
   const waterLeakConfidence = clamp01(input.waterLeakConfidence ?? 1);
+  const fridgeDoorConfidence = clamp01(input.fridgeDoorConfidence ?? 1);
   return {
     fridge_left_open: {
-      probability: input.fridgeDoorOpen ? 0.82 : 0.12,
+      probability: input.fridgeDoorOpen ? weightedProbability(0.46, 0.82, fridgeDoorConfidence) : 0.12,
       drivers: input.fridgeDoorOpen ? ['fridge_01.doorOpen'] : ['prior']
     },
     network_impact: {

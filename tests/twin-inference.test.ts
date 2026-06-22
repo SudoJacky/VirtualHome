@@ -467,6 +467,52 @@ describe('twin inference model', () => {
     expect(result.risks.stove_unattended.probability).toBeGreaterThan(0.75);
   });
 
+  it('uses fridge contact telemetry for kitchen activity and fridge-left-open risk', () => {
+    const result = inferTwinState([
+      telemetryEvent('fridge_01', 'fridge', 'kitchen', { contact_open: true, confidence: 0.96 })
+    ], {
+      currentTime: '2026-06-17T18:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'kitchen', 'child_bedroom']
+    });
+
+    expect(result.inputSummary.acceptedEventCount).toBe(1);
+    expect(result.people.adult_1.activity.top).toBe('meal_prep_or_kitchen_visit');
+    expect(result.risks.fridge_left_open).toMatchObject({
+      probability: expect.any(Number),
+      drivers: expect.arrayContaining(['fridge_01.doorOpen'])
+    });
+    expect(result.risks.fridge_left_open.probability).toBeGreaterThan(0.75);
+    expect(result.explanations.people.adult_1.activity).toContain('observation:fridge_door_open');
+  });
+
+  it('reduces fridge-left-open risk when contact telemetry is low quality', () => {
+    const clean = inferTwinState([
+      telemetryEvent('fridge_01', 'fridge', 'kitchen', { contact_open: true, confidence: 0.96 })
+    ], {
+      currentTime: '2026-06-17T18:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'kitchen', 'child_bedroom']
+    });
+    const degraded = inferTwinState([
+      telemetryEvent(
+        'fridge_01',
+        'fridge',
+        'kitchen',
+        { contact_open: true, confidence: 0.96 },
+        { delayedMs: 12 * 60 * 1000, noisy: true, confidence: 0.4 }
+      )
+    ], {
+      currentTime: '2026-06-17T18:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'kitchen', 'child_bedroom']
+    });
+
+    expect(degraded.risks.fridge_left_open.drivers).toContain('fridge_01.doorOpen');
+    expect(degraded.risks.fridge_left_open.probability).toBeLessThan(clean.risks.fridge_left_open.probability);
+    expect(degraded.risks.fridge_left_open.probability).toBeGreaterThan(0.45);
+  });
+
   it('uses air quality telemetry to infer room occupancy and likely work activity', () => {
     const result = inferTwinState([
       telemetryEvent('study_co2_01', 'air_quality_sensor', 'study', { co2: 1180, confidence: 0.88 })
