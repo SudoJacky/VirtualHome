@@ -195,7 +195,7 @@ function evaluateLogic(days: EvaluationDayInput[], homeDefinition: HomeDefinitio
   let totalChecks = 0;
   for (const day of days) {
     const peopleByRoom = new Map<RoomId, Set<string>>();
-    const activeResourceClaims = new Map<string, { eventId: string; activityId: string }>();
+    const activeResourceClaims = new Map<string, Array<{ eventId: string; activityId: string }>>();
     for (const event of day.events) {
       if (event.type === 'PersonMoved') {
         totalChecks += 1;
@@ -229,7 +229,8 @@ function evaluateLogic(days: EvaluationDayInput[], homeDefinition: HomeDefinitio
       if (event.type === 'ActivityStarted') {
         for (const resourceId of exclusiveResourcesForActivity(event.activityId)) {
           totalChecks += 1;
-          const activeActivity = activeResourceClaims.get(resourceId);
+          const activeActivities = activeResourceClaims.get(resourceId) ?? [];
+          const activeActivity = activeActivities[0];
           if (activeActivity) {
             violations.push({
               kind: 'exclusive_resource_conflict',
@@ -237,14 +238,18 @@ function evaluateLogic(days: EvaluationDayInput[], homeDefinition: HomeDefinitio
               message: `${resourceId} was claimed by overlapping activity instances ${activeActivity.eventId} and ${event.id} (${activeActivity.activityId} and ${event.activityId})`,
               simTime: event.simTime
             });
-          } else {
-            activeResourceClaims.set(resourceId, { eventId: event.id, activityId: event.activityId });
           }
+          activeActivities.push({ eventId: event.id, activityId: event.activityId });
+          activeResourceClaims.set(resourceId, activeActivities);
         }
       }
       if (event.type === 'ActivityEnded') {
-        for (const [resourceId, activity] of [...activeResourceClaims.entries()]) {
-          if (activity.activityId === event.activityId) {
+        for (const [resourceId, activities] of [...activeResourceClaims.entries()]) {
+          const activityIndex = activities.findIndex((activity) => activity.activityId === event.activityId);
+          if (activityIndex >= 0) {
+            activities.splice(activityIndex, 1);
+          }
+          if (activities.length === 0) {
             activeResourceClaims.delete(resourceId);
           }
         }

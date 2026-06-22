@@ -774,6 +774,69 @@ describe('long horizon simulation evaluation', () => {
     ]));
   });
 
+  it('keeps conflicting exclusive resource claims active until each activity instance ends', () => {
+    const firstActivity: ActivityStartedEvent = {
+      id: 'activity_1',
+      runId: 'run_bad',
+      type: 'ActivityStarted',
+      ts: '2026-06-17T19:00:00+08:00',
+      simTime: '2026-06-17T19:00:00+08:00',
+      homeId: 'default_home',
+      scenarioId: 'weekday_normal',
+      sequence: 1,
+      sourceLayer: 'truth',
+      lineage: {
+        eventTime: '2026-06-17T19:00:00+08:00',
+        ingestTime: '2026-06-17T19:00:00+08:00',
+        sourceLayer: 'truth',
+        causeEventIds: [],
+        episodeId: 'test',
+        observability: 'private',
+        quality: {},
+        schemaVersion: 1,
+        behaviorModelVersion: 'test'
+      },
+      activityId: 'watch_tv',
+      participants: ['adult_1'],
+      roomId: 'living_room'
+    };
+    const secondActivity: ActivityStartedEvent = {
+      ...firstActivity,
+      id: 'activity_2',
+      sequence: 2,
+      participants: ['child_1']
+    };
+    const firstEnded = {
+      ...firstActivity,
+      id: 'activity_1_end',
+      type: 'ActivityEnded' as const,
+      sequence: 3
+    };
+    const thirdActivity: ActivityStartedEvent = {
+      ...firstActivity,
+      id: 'activity_3',
+      sequence: 4,
+      participants: ['senior_1']
+    };
+
+    const report = buildEvaluationReport({
+      days: [{
+        date: '2026-06-17',
+        events: [firstActivity, secondActivity, firstEnded, thirdActivity],
+        finalSnapshot: null
+      }],
+      homeDefinition: getHomeDefinition()
+    });
+
+    expect(report.logic.violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'exclusive_resource_conflict',
+        entityId: 'tv_01',
+        message: expect.stringContaining('activity_2 and activity_3')
+      })
+    ]));
+  });
+
   it('reports a person sleeping while assigned to a cooking activity', () => {
     const simulator = createSimulator({ seed: 42 });
     simulator.startScenario('weekday_normal');
