@@ -247,6 +247,38 @@ describe('twin inference model', () => {
     expect(result.risks.stove_unattended.probability).toBeGreaterThan(0.75);
   });
 
+  it('uses air quality telemetry to infer room occupancy and likely work activity', () => {
+    const result = inferTwinState([
+      telemetryEvent('study_co2_01', 'air_quality_sensor', 'study', { co2: 1180, confidence: 0.88 })
+    ], {
+      currentTime: '2026-06-17T14:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'study', 'kitchen']
+    });
+
+    expect(result.inputSummary.acceptedEventCount).toBe(1);
+    expect(result.people.adult_1.room.top).toBe('study');
+    expect(result.people.adult_1.activity.top).toBe('remote_work_or_study');
+    expect(result.people.adult_1.activity.probabilities.remote_work_or_study)
+      .toBeGreaterThan(result.people.adult_1.activity.probabilities.household_leisure);
+  });
+
+  it('uses kitchen air and power telemetry to infer meal preparation activity', () => {
+    const result = inferTwinState([
+      telemetryEvent('pm25_01', 'air_quality_sensor', 'kitchen', { pm25: 62, co2: 760, confidence: 0.83 }),
+      telemetryEvent('stove_01', 'stove', 'kitchen', { power_w: 720 })
+    ], {
+      currentTime: '2026-06-17T12:10:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'study', 'kitchen']
+    });
+
+    expect(result.people.adult_1.room.top).toBe('kitchen');
+    expect(result.people.adult_1.activity.top).toBe('meal_prep_or_kitchen_visit');
+    expect(result.people.adult_1.activity.probabilities.meal_prep_or_kitchen_visit)
+      .toBeGreaterThan(result.people.adult_1.activity.probabilities.away_or_unknown);
+  });
+
   it('raises senior wellness and leak risks from sensor telemetry without truth labels', () => {
     const result = inferTwinState([
       telemetryEvent('master_sleep_01', 'sleep_sensor', 'master_bedroom', { in_bed: true, confidence: 0.96 }),

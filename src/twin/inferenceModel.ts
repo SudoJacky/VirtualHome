@@ -94,6 +94,12 @@ function inferPersonActivity(
   if (roomId === 'kitchen' && evidence.fridgeDoorOpen) {
     scores.meal_prep_or_kitchen_visit += 3.8;
   }
+  if (roomId === 'kitchen' && (evidence.stovePowerW >= 400 || (evidence.pm25ByRoom.kitchen ?? 0) >= 35)) {
+    scores.meal_prep_or_kitchen_visit += 2.6;
+  }
+  if (roomId === 'study' && (evidence.co2ByRoom.study ?? 0) >= 900) {
+    scores.remote_work_or_study += 3.2;
+  }
   return createBeliefDistribution(scores);
 }
 
