@@ -807,6 +807,8 @@ class Simulator implements VirtualHomeSimulator {
         events.push(...this.applyPackagePickupResponse(decision));
       } else if (decision.ruleId === 'maintenance_visit_response') {
         events.push(...this.applyMaintenanceVisitResponse(decision));
+      } else if (decision.ruleId === 'medicine_refill_response') {
+        events.push(...this.applyMedicineRefillResponse(decision));
       } else if (decision.ruleId === 'visitor_greeting_response') {
         events.push(...this.applyVisitorGreetingResponse(decision));
       } else if (decision.ruleId === 'household_chore_assignment') {
@@ -1036,6 +1038,56 @@ class Simulator implements VirtualHomeSimulator {
       })
     ];
     return events;
+  }
+
+  private applyMedicineRefillResponse(decision: SocialDecision): TwinEvent[] {
+    if (
+      this.state.triggeredRules.has(decision.ruleId) ||
+      !decision.targetRoom ||
+      !decision.targetActivity ||
+      this.state.snapshot.worldState.inventory.medicineDoses > 2
+    ) {
+      return [];
+    }
+    const actorId = decision.actorIds[0];
+    const actor = actorId ? this.state.snapshot.people[actorId] : undefined;
+    if (!actor || actor.location === 'away') {
+      return [];
+    }
+
+    this.state.triggeredRules.add(decision.ruleId);
+    this.state.snapshot.worldState.inventory = applyActivityToInventory(
+      this.state.snapshot.worldState.inventory,
+      decision.targetActivity
+    );
+    return [
+      this.createEvent({
+        type: 'ExternalInteractionOccurred',
+        interactionId: `${decision.ruleId}_${this.state.snapshot.simClock.sequence + 1}`,
+        actorKind: 'courier',
+        purpose: 'medicine_refill',
+        roomId: 'entrance',
+        status: 'completed',
+        relatedDeviceIds: ['doorbell_camera_01', 'package_sensor_01'],
+        reason: decision.reason
+      }),
+      ...this.createRoutedPersonMovedEvents(actor.id, decision.targetRoom, decision.targetActivity, decision.reason),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: decision.ruleId,
+        explanation: 'Low household medicine stock caused an available family member to collect a refill and restock the medicine box.',
+        actions: ['detect_low_medicine_stock', 'collect_medicine_refill', 'restock_medicine_box', 'clear_medicine_refill_chore'],
+        reason: decision.reason,
+        eventExplanation: {
+          why: `${actor.id} is available while household medicine stock is low.`,
+          actorIds: [actor.id],
+          affectedDeviceIds: ['doorbell_camera_01', 'package_sensor_01'],
+          affectedRoomIds: ['entrance', 'master_bedroom'],
+          relatedIntent: 'maintain_medicine_supply',
+          expectedOutcome: 'Keep long-term medicine stock from staying depleted across days.'
+        }
+      })
+    ];
   }
 
   private applyVisitorGreetingResponse(decision: SocialDecision): TwinEvent[] {

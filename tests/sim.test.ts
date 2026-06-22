@@ -1005,6 +1005,46 @@ describe('virtual home simulator MVP', () => {
     ]));
   });
 
+  it('responds to low medicine stock by refilling the medicine box', () => {
+    const simulator = createSimulator({ seed: 1124 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T15:10:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_1.location = 'living_room';
+    snapshot.people.adult_1.activity = 'idle';
+    snapshot.people.adult_2.location = 'away';
+    snapshot.people.adult_2.activity = 'commute';
+    snapshot.worldState.inventory.packageCount = 0;
+    snapshot.worldState.inventory.dirtyDishes = 1;
+    snapshot.worldState.inventory.unfinishedChores = 1;
+    snapshot.worldState.inventory.deviceMaintenanceScore = 8;
+    snapshot.worldState.inventory.medicineDoses = 1;
+    snapshot.worldState.inventory.healthRiskScore = 52;
+    snapshot.worldState.inventory.pendingChores = ['medicine_refill'];
+    simulator.restore(snapshot, simulator.getEvents());
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.people.adult_1).toMatchObject({ location: 'entrance', activity: 'refill_medicine' });
+    expect(updated.worldState.inventory.medicineDoses).toBeGreaterThan(10);
+    expect(updated.worldState.inventory.healthRiskScore).toBeLessThan(52);
+    expect(updated.worldState.inventory.pendingChores).not.toContain('medicine_refill');
+    expect(events.some((event): event is ExternalInteractionOccurredEvent => (
+      event.type === 'ExternalInteractionOccurred' &&
+      event.actorKind === 'courier' &&
+      event.purpose === 'medicine_refill' &&
+      event.roomId === 'entrance'
+    ))).toBe(true);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'AutomationTriggered',
+        ruleId: 'medicine_refill_response'
+      })
+    ]));
+  });
+
   it('responds to a visitor at the door by greeting them at the entrance', () => {
     const simulator = createSimulator({ seed: 1123 });
 
