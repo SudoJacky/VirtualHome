@@ -1057,6 +1057,7 @@ function createObservationFeatureKey(currentTime: string, events: TwinEvent[]): 
       if (Number(event.measurements.power_w ?? 0) >= 400) features.add('stove:active');
       if (Number(event.measurements.co2 ?? 0) >= 900) features.add(`co2:${event.roomId}`);
       if (Number(event.measurements.pm25 ?? 0) >= 35) features.add(`pm25:${event.roomId}`);
+      if (Number(event.measurements.flow_l_min ?? 0) >= 1.2) features.add(`water_flow:${event.roomId}`);
     } else if (event.type === 'DeviceStateChanged' && event.sourceLayer === 'world') {
       features.add(`world:${event.deviceType}`);
       features.add(`room:${event.roomId}`);

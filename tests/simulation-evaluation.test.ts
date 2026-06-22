@@ -613,6 +613,82 @@ describe('long horizon simulation evaluation', () => {
     });
   });
 
+  it('does not treat inactive water-flow observations as coverage for active-flow validation samples', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    const morningSnapshot = structuredClone(snapshot);
+    morningSnapshot.homeState.mode = 'morning';
+    const eveningSnapshot = structuredClone(snapshot);
+    eveningSnapshot.homeState.mode = 'evening_home';
+    const waterFlowTelemetry = (flowLMin: number): DeviceTelemetryEvent => ({
+      id: `water_flow_${flowLMin}`,
+      runId: snapshot.runId,
+      type: 'DeviceTelemetry',
+      ts: snapshot.simClock.currentTime,
+      simTime: snapshot.simClock.currentTime,
+      homeId: snapshot.homeId,
+      scenarioId: snapshot.scenarioId,
+      sequence: 1,
+      sourceLayer: 'sensor',
+      lineage: {
+        eventTime: snapshot.simClock.currentTime,
+        ingestTime: snapshot.simClock.currentTime,
+        sourceLayer: 'sensor',
+        causeEventIds: [],
+        episodeId: 'sensor:bathroom_water_01',
+        observability: 'ml_observation',
+        quality: { confidence: 0.9 },
+        schemaVersion: 1,
+        behaviorModelVersion: 'test'
+      },
+      roomId: 'bathroom',
+      deviceId: 'bathroom_water_01',
+      deviceType: 'water_flow_sensor',
+      measurements: {
+        flow_l_min: flowLMin,
+        confidence: 0.9
+      }
+    });
+
+    const report = buildEvaluationReport({
+      days: [{
+        date: '2026-06-17',
+        events: [waterFlowTelemetry(0)],
+        finalSnapshot: snapshot,
+        forecastSamples: [
+          {
+            currentTime: '2026-06-17T07:20:00+08:00',
+            eventsUntilNow: [waterFlowTelemetry(0)],
+            truthByHorizon: [{ horizonMinutes: 60, snapshot: morningSnapshot }]
+          },
+          {
+            currentTime: '2026-06-17T19:00:00+08:00',
+            eventsUntilNow: [],
+            truthByHorizon: [{ horizonMinutes: 60, snapshot: eveningSnapshot }]
+          }
+        ]
+      }],
+      homeDefinition: getHomeDefinition(),
+      realWorldValidationSamples: [{
+        currentTime: '2026-06-17T07:20:00+08:00',
+        eventsUntilNow: [waterFlowTelemetry(4.8)],
+        truth: {
+          homeMode: 'morning',
+          risks: {
+            fridge_left_open: false,
+            network_impact: false,
+            stove_unattended: false,
+            senior_no_activity: false,
+            water_leak: false
+          }
+        }
+      }]
+    });
+
+    expect(report.inference.downstreamUtility.realWorldValidation.featureCoverageRatio).toBe(0);
+  });
+
   it('compares synthetic-to-real downstream gaps before and after simulation parameter tuning', () => {
     const comparison = compareDownstreamUtilityGaps(
       {
