@@ -57,11 +57,14 @@ export function createAnomalyRisks(input: {
 
 export function createStateForecasts(
   homeMode: BeliefDistribution<InferredHomeMode>,
-  risks: Record<string, AnomalyRisk>
+  risks: Record<string, AnomalyRisk>,
+  options: {
+    homeModeByHorizon?: Partial<Record<15 | 30 | 60, BeliefDistribution<InferredHomeMode>>>;
+  } = {}
 ): TwinStateForecast[] {
   return [15, 30, 60].map((horizonMinutes) => ({
     horizonMinutes: horizonMinutes as 15 | 30 | 60,
-    homeMode,
+    homeMode: options.homeModeByHorizon?.[horizonMinutes as 15 | 30 | 60] ?? homeMode,
     risks: Object.fromEntries(Object.entries(risks).map(([riskId, risk]) => [
       riskId,
       Math.min(0.99, risk.probability + horizonMinutes / 60 * 0.12)

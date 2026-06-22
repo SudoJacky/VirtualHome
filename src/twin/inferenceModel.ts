@@ -62,7 +62,20 @@ export function inferTwinState(events: TwinEvent[], options: TwinInferenceOption
     people,
     homeMode,
     risks,
-    forecasts: createStateForecasts(homeMode, risks)
+    forecasts: createStateForecasts(homeMode, risks, {
+      homeModeByHorizon: createHomeModeForecasts(minuteOfDay, evidence)
+    })
+  };
+}
+
+function createHomeModeForecasts(
+  minuteOfDay: number,
+  evidence: ReturnType<typeof extractObservationEvidence>
+): Partial<Record<15 | 30 | 60, BeliefDistribution<InferredHomeMode>>> {
+  return {
+    15: inferHomeMode(addMinutesOfDay(minuteOfDay, 15), evidence),
+    30: inferHomeMode(addMinutesOfDay(minuteOfDay, 30), evidence),
+    60: inferHomeMode(addMinutesOfDay(minuteOfDay, 60), evidence)
   };
 }
 
@@ -145,4 +158,8 @@ function minuteOfDayFromTime(time: string): number {
     return 12 * 60;
   }
   return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function addMinutesOfDay(minuteOfDay: number, minutes: number): number {
+  return (minuteOfDay + minutes) % (24 * 60);
 }
