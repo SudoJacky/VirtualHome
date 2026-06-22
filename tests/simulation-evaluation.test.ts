@@ -302,6 +302,17 @@ describe('long horizon simulation evaluation', () => {
     ]));
   });
 
+  it('keeps generated person and pet movement on adjacent room paths', () => {
+    const report = runSimulationEvaluation({
+      startDate: '2026-07-14',
+      days: 1,
+      seed: 42,
+      minutesPerDay: 240
+    });
+
+    expect(report.logic.violations.filter((violation) => violation.kind === 'movement_topology')).toEqual([]);
+  });
+
   it('reports operator device commands without a nearby person', () => {
     const commandWithoutOperator: DeviceStateChangedEvent = {
       id: 'bad_command',

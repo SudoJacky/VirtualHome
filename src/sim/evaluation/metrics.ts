@@ -781,7 +781,16 @@ function isTopologyMoveAllowed(event: PersonMovedEvent, homeDefinition: HomeDefi
     return true;
   }
   const room = homeDefinition.floors.flatMap((floor) => floor.rooms).find((candidate) => candidate.id === event.from);
-  return room?.connectedRooms.includes(event.to) ?? false;
+  const roomAllowsMove = room?.connectedRooms.includes(event.to) ?? false;
+  const reverseRoomAllowsMove = homeDefinition.floors
+    .flatMap((floor) => floor.rooms)
+    .find((candidate) => candidate.id === event.to)
+    ?.connectedRooms.includes(event.from) ?? false;
+  const topologyAllowsMove = homeDefinition.topology.connections.some((connection) => (
+    connection.from === event.from && connection.to === event.to ||
+    connection.from === event.to && connection.to === event.from
+  ));
+  return roomAllowsMove || reverseRoomAllowsMove || topologyAllowsMove;
 }
 
 function collectDeviceRooms(homeDefinition: HomeDefinition): Map<string, RoomId> {

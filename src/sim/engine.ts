@@ -303,12 +303,7 @@ class Simulator implements VirtualHomeSimulator {
       }));
       events.push(this.setDeviceState('router_01', { online: false, latencyMs: 0, lifecyclePhase: 'offline' }, 'abnormality:network_offline'));
     } else if (kind === 'senior_no_activity') {
-      const senior = this.state.snapshot.people.senior_1;
-      const event = this.createPersonMovedEvent('senior_1', senior.location, 'master_bedroom', 'no_activity');
-      senior.location = 'master_bedroom';
-      senior.activity = 'no_activity';
-      this.updatePersonBehavior('senior_1');
-      events.push(event);
+      events.push(...this.createRoutedPersonMovedEvents('senior_1', 'master_bedroom', 'no_activity'));
       events.push(this.setDeviceState('master_sleep_01', { inBed: true, heartRateSimulated: 60 }, 'abnormality:senior_no_activity'));
     }
     this.rebuildRooms();
@@ -341,12 +336,7 @@ class Simulator implements VirtualHomeSimulator {
       events.push(...this.recoverRuleIfActive('network_offline', ['router_01.online:true']));
     } else if (kind === 'senior_no_activity') {
       events.push(...this.createSeniorCheckInEvents());
-      const senior = this.state.snapshot.people.senior_1;
-      const event = this.createPersonMovedEvent('senior_1', senior.location, 'living_room', 'morning_check_in');
-      senior.location = 'living_room';
-      senior.activity = 'morning_check_in';
-      this.updatePersonBehavior('senior_1');
-      events.push(event);
+      events.push(...this.createRoutedPersonMovedEvents('senior_1', 'living_room', 'morning_check_in'));
       events.push(this.setDeviceState('master_sleep_01', { inBed: false, heartRateSimulated: 70 }, 'recovery:senior_no_activity'));
       events.push(...this.recoverRuleIfActive('senior_no_activity', ['senior_1.activity:morning_check_in', 'master_sleep_01.inBed:false']));
     }
@@ -695,11 +685,7 @@ class Simulator implements VirtualHomeSimulator {
     const to = candidates[Math.floor(this.state.random.range(0, candidates.length))] ?? 'living_room';
     const activities = ['wandering', 'sniffing', 'resting', 'checking_room'];
     const activity = activities[Math.floor(this.state.random.range(0, activities.length))] ?? 'wandering';
-    const event = this.createPersonMovedEvent('pet_1', pet.location, to, activity);
-    pet.location = to;
-    pet.activity = activity;
-    this.updatePersonBehavior('pet_1');
-    return [event];
+    return this.createRoutedPersonMovedEvents('pet_1', to, activity);
   }
 
   private applyAutonomousAgentPolicy(): TwinEvent[] {
@@ -744,13 +730,10 @@ class Simulator implements VirtualHomeSimulator {
           continue;
         }
       }
-      const event = this.createPersonMovedEvent(person.id, person.location, decision.targetRoom, decision.activityId, `agent_policy:${decision.activityId}`);
-      person.location = decision.targetRoom;
-      person.activity = decision.activityId;
+      const moveEvents = this.createRoutedPersonMovedEvents(person.id, decision.targetRoom, decision.activityId, `agent_policy:${decision.activityId}`);
       this.state.snapshot.worldState.inventory = applyActivityToInventory(this.state.snapshot.worldState.inventory, decision.activityId);
       this.applyActivityEffectsToPerson(person.id, decision.activityId);
-      this.updatePersonBehavior(person.id);
-      events.push(event);
+      events.push(...moveEvents);
     }
     return events;
   }
@@ -919,11 +902,7 @@ class Simulator implements VirtualHomeSimulator {
       }))
     ];
 
-    const from = child.location;
-    child.location = decision.targetRoom;
-    child.activity = decision.targetActivity;
-    this.updatePersonBehavior(child.id);
-    events.push(this.createPersonMovedEvent(child.id, from, decision.targetRoom, decision.targetActivity, decision.reason));
+    events.push(...this.createRoutedPersonMovedEvents(child.id, decision.targetRoom, decision.targetActivity, decision.reason));
     events.push(this.createEvent({
       type: 'AutomationTriggered',
       ruleId: decision.ruleId,
@@ -958,10 +937,6 @@ class Simulator implements VirtualHomeSimulator {
     }
 
     this.state.triggeredRules.add(decision.ruleId);
-    const from = actor.location;
-    actor.location = decision.targetRoom;
-    actor.activity = decision.targetActivity;
-    this.updatePersonBehavior(actor.id);
     this.state.snapshot.worldState.inventory.packageCount = Math.max(0, this.state.snapshot.worldState.inventory.packageCount - 1);
     const events: TwinEvent[] = [
       this.createEvent({
@@ -974,7 +949,7 @@ class Simulator implements VirtualHomeSimulator {
         relatedDeviceIds: ['doorbell_camera_01', 'package_sensor_01'],
         reason: decision.reason
       }),
-      this.createPersonMovedEvent(actor.id, from, decision.targetRoom, decision.targetActivity, decision.reason),
+      ...this.createRoutedPersonMovedEvents(actor.id, decision.targetRoom, decision.targetActivity, decision.reason),
       this.setDeviceState('package_sensor_01', { packagePresent: false, weightKg: 0 }, 'social:package_pickup_response:collected'),
       this.setDeviceState('doorbell_camera_01', { motion: false, ringing: false }, 'social:package_pickup_response:acknowledged'),
       this.createEvent({
@@ -1014,11 +989,7 @@ class Simulator implements VirtualHomeSimulator {
     }
 
     this.state.triggeredRules.add(decision.ruleId);
-    const from = assignee.location;
-    assignee.location = decision.targetRoom;
-    assignee.activity = decision.targetActivity;
     this.state.snapshot.worldState.inventory = applyActivityToInventory(this.state.snapshot.worldState.inventory, decision.targetActivity);
-    this.updatePersonBehavior(assignee.id);
     return [
       this.createEvent(createConversationDraft({
         conversationId: `${decision.ruleId}_${this.state.snapshot.simClock.sequence + 1}`,
@@ -1031,7 +1002,7 @@ class Simulator implements VirtualHomeSimulator {
         summary: `${assigner.id} assigns dish cleanup to ${assignee.id}.`,
         reason: decision.reason
       })),
-      this.createPersonMovedEvent(assignee.id, from, decision.targetRoom, decision.targetActivity, decision.reason),
+      ...this.createRoutedPersonMovedEvents(assignee.id, decision.targetRoom, decision.targetActivity, decision.reason),
       this.setDeviceState('dishwasher_01', { status: 'idle', remainingMin: 0, powerW: 0 }, 'social:household_chore_assignment:unloaded'),
       this.createEvent({
         type: 'AutomationTriggered',
@@ -1090,11 +1061,7 @@ class Simulator implements VirtualHomeSimulator {
       if (!person || person.location === 'away') {
         continue;
       }
-      const from = person.location;
-      person.location = decision.targetRoom;
-      person.activity = decision.targetActivity;
-      this.updatePersonBehavior(person.id);
-      events.push(this.createPersonMovedEvent(person.id, from, decision.targetRoom, decision.targetActivity, decision.reason));
+      events.push(...this.createRoutedPersonMovedEvents(person.id, decision.targetRoom, decision.targetActivity, decision.reason));
     }
 
     this.state.snapshot.activities.family_dinner = {
@@ -1163,12 +1130,8 @@ class Simulator implements VirtualHomeSimulator {
       }))
     ];
 
-    const from = senior.location;
-    senior.location = decision.targetRoom;
-    senior.activity = decision.targetActivity;
     this.state.snapshot.worldState.inventory = applyActivityToInventory(this.state.snapshot.worldState.inventory, decision.targetActivity);
-    this.updatePersonBehavior(senior.id);
-    events.push(this.createPersonMovedEvent(senior.id, from, decision.targetRoom, decision.targetActivity, decision.reason));
+    events.push(...this.createRoutedPersonMovedEvents(senior.id, decision.targetRoom, decision.targetActivity, decision.reason));
     events.push(this.setDeviceState('master_sleep_01', { inBed: false, heartRateSimulated: 72 }, 'social:senior_medicine_reminder:wellness_signal'));
     events.push(this.createEvent({
       type: 'AutomationTriggered',
@@ -1781,13 +1744,9 @@ class Simulator implements VirtualHomeSimulator {
 
   private applyAction(action: ScenarioAction): TwinEvent[] {
     if (action.kind === 'movePerson') {
-      const person = this.state.snapshot.people[action.personId];
-      const event = this.createPersonMovedEvent(action.personId, person.location, action.to, action.activity);
-      person.location = action.to;
-      person.activity = action.activity;
+      const events = this.createRoutedPersonMovedEvents(action.personId, action.to, action.activity);
       this.applyActivityEffectsToPerson(action.personId, action.activity);
-      this.updatePersonBehavior(action.personId);
-      return [event];
+      return events;
     }
 
     if (action.kind === 'setHomeMode') {
@@ -2378,6 +2337,46 @@ class Simulator implements VirtualHomeSimulator {
       ...(sourceEntityIds ? { sourceEntityIds } : {}),
       reason
     });
+  }
+
+  private createRoutedPersonMovedEvents(
+    personId: string,
+    to: RoomId | 'away',
+    activity: string,
+    reason = `activity:${activity}`
+  ): PersonMovedEvent[] {
+    const person = this.state.snapshot.people[personId];
+    if (!person) {
+      return [];
+    }
+
+    const from = person.location;
+    if (from === 'away' || to === 'away') {
+      person.location = to;
+      person.activity = activity;
+      this.updatePersonBehavior(personId);
+      return [this.createPersonMovedEvent(personId, from, to, activity, reason)];
+    }
+
+    const path = this.roomPath(from, to);
+    if (path.length <= 1) {
+      person.location = to;
+      person.activity = activity;
+      this.updatePersonBehavior(personId);
+      return [this.createPersonMovedEvent(personId, from, to, activity, reason, 0)];
+    }
+
+    const events: PersonMovedEvent[] = [];
+    for (let index = 1; index < path.length; index += 1) {
+      const stepFrom = path[index - 1];
+      const stepTo = path[index];
+      const isFinalStep = index === path.length - 1;
+      person.location = stepTo;
+      person.activity = isFinalStep ? activity : `walking_to_${to}`;
+      events.push(this.createPersonMovedEvent(personId, stepFrom, stepTo, person.activity, reason, 1));
+    }
+    this.updatePersonBehavior(personId);
+    return events;
   }
 
   private createPersonMovedEvent(personId: string, from: RoomId | 'away', to: RoomId | 'away', activity: string, reason = `activity:${activity}`, travelMinutes?: number): PersonMovedEvent {

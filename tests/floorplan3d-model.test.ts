@@ -417,7 +417,7 @@ describe('3D floorplan layout and model', () => {
     const recentPerson = model.people.find((person) => person.recent);
 
     expect(recentPerson?.movementPath.length).toBeGreaterThanOrEqual(2);
-    expect(recentPerson?.movementTrailVisible).toBe(false);
+    expect(recentPerson?.movementTrailVisible).toBe(true);
     expect(recentPerson?.movementPath.every((point) => Number.isFinite(point.x) && Number.isFinite(point.z))).toBe(true);
   });
 
