@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { inferTwinState } from '../src/twin/inferenceModel';
+import { createExternalContext } from '../src/sim/externalContext';
 import type { DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent, RoomId, ScenarioControlEvent } from '../src/shared/types';
 
 const baseEvent = {
@@ -100,6 +101,34 @@ describe('twin inference model', () => {
     expect(result.homeMode.top).toBe('sleeping');
     expect(result.people.adult_1.room.top).toBe('master_bedroom');
     expect(result.people.adult_1.room.confidence).toBeLessThan(0.7);
+  });
+
+  it('uses calendar context to adjust away and work priors without truth labels', () => {
+    const workday = inferTwinState([], {
+      currentTime: '2026-07-14T10:30:00+08:00',
+      peopleIds: ['adult_2'],
+      rooms: ['living_room', 'study', 'kitchen'],
+      externalContext: createExternalContext({
+        date: '2026-07-14',
+        overrides: {
+          workday: true,
+          schoolDay: true,
+          holidayName: null
+        }
+      })
+    });
+    const holiday = inferTwinState([], {
+      currentTime: '2026-10-01T10:30:00+08:00',
+      peopleIds: ['adult_2'],
+      rooms: ['living_room', 'study', 'kitchen'],
+      externalContext: createExternalContext({
+        date: '2026-10-01'
+      })
+    });
+
+    expect(workday.homeMode.probabilities.away).toBeGreaterThan(holiday.homeMode.probabilities.away);
+    expect(workday.people.adult_2.room.probabilities.study).toBeGreaterThan(holiday.people.adult_2.room.probabilities.study);
+    expect(holiday.people.adult_2.room.probabilities.living_room).toBeGreaterThan(workday.people.adult_2.room.probabilities.living_room);
   });
 
   it('rejects truth and control events instead of reading simulator labels', () => {

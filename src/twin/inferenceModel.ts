@@ -1,4 +1,5 @@
 import type { RoomId, TwinEvent } from '../shared/types';
+import type { ExternalContext } from '../sim/externalContext';
 import { createBeliefDistribution, type BeliefDistribution } from './beliefState';
 import { createAnomalyRisks, createStateForecasts, type AnomalyRisk, type TwinStateForecast } from './forecast';
 import { extractObservationEvidence, roomEvidenceScore } from './observationLikelihood';
@@ -9,6 +10,7 @@ export interface TwinInferenceOptions {
   currentTime: string;
   peopleIds: string[];
   rooms: RoomId[];
+  externalContext?: ExternalContext;
 }
 
 export interface PersonInferenceBelief {
@@ -33,9 +35,9 @@ export interface TwinInferenceResult {
 export function inferTwinState(events: TwinEvent[], options: TwinInferenceOptions): TwinInferenceResult {
   const evidence = extractObservationEvidence(events);
   const minuteOfDay = minuteOfDayFromTime(options.currentTime);
-  const homeMode = inferHomeMode(minuteOfDay, evidence);
+  const homeMode = inferHomeMode(minuteOfDay, evidence, options.externalContext);
   const people = Object.fromEntries(options.peopleIds.map((personId) => {
-    const room = inferPersonRoom(personId, options.rooms, minuteOfDay, evidence);
+    const room = inferPersonRoom(personId, options.rooms, minuteOfDay, evidence, options.externalContext);
     return [personId, {
       personId,
       room,
@@ -63,20 +65,21 @@ export function inferTwinState(events: TwinEvent[], options: TwinInferenceOption
     homeMode,
     risks,
     forecasts: createStateForecasts(homeMode, risks, {
-      homeModeByHorizon: createHomeModeForecasts(minuteOfDay, evidence),
-      peopleByHorizon: createPeopleForecasts(options.peopleIds, options.rooms, minuteOfDay, evidence)
+      homeModeByHorizon: createHomeModeForecasts(minuteOfDay, evidence, options.externalContext),
+      peopleByHorizon: createPeopleForecasts(options.peopleIds, options.rooms, minuteOfDay, evidence, options.externalContext)
     })
   };
 }
 
 function createHomeModeForecasts(
   minuteOfDay: number,
-  evidence: ReturnType<typeof extractObservationEvidence>
+  evidence: ReturnType<typeof extractObservationEvidence>,
+  externalContext: ExternalContext | undefined
 ): Partial<Record<15 | 30 | 60, BeliefDistribution<InferredHomeMode>>> {
   return {
-    15: inferHomeMode(addMinutesOfDay(minuteOfDay, 15), evidence),
-    30: inferHomeMode(addMinutesOfDay(minuteOfDay, 30), evidence),
-    60: inferHomeMode(addMinutesOfDay(minuteOfDay, 60), evidence)
+    15: inferHomeMode(addMinutesOfDay(minuteOfDay, 15), evidence, externalContext),
+    30: inferHomeMode(addMinutesOfDay(minuteOfDay, 30), evidence, externalContext),
+    60: inferHomeMode(addMinutesOfDay(minuteOfDay, 60), evidence, externalContext)
   };
 }
 
@@ -84,12 +87,13 @@ function createPeopleForecasts(
   peopleIds: string[],
   rooms: RoomId[],
   minuteOfDay: number,
-  evidence: ReturnType<typeof extractObservationEvidence>
+  evidence: ReturnType<typeof extractObservationEvidence>,
+  externalContext: ExternalContext | undefined
 ): Partial<Record<15 | 30 | 60, Record<string, PersonInferenceBelief>>> {
   return {
-    15: inferPeopleAtMinute(peopleIds, rooms, addMinutesOfDay(minuteOfDay, 15), evidence),
-    30: inferPeopleAtMinute(peopleIds, rooms, addMinutesOfDay(minuteOfDay, 30), evidence),
-    60: inferPeopleAtMinute(peopleIds, rooms, addMinutesOfDay(minuteOfDay, 60), evidence)
+    15: inferPeopleAtMinute(peopleIds, rooms, addMinutesOfDay(minuteOfDay, 15), evidence, externalContext),
+    30: inferPeopleAtMinute(peopleIds, rooms, addMinutesOfDay(minuteOfDay, 30), evidence, externalContext),
+    60: inferPeopleAtMinute(peopleIds, rooms, addMinutesOfDay(minuteOfDay, 60), evidence, externalContext)
   };
 }
 
@@ -97,10 +101,11 @@ function inferPeopleAtMinute(
   peopleIds: string[],
   rooms: RoomId[],
   minuteOfDay: number,
-  evidence: ReturnType<typeof extractObservationEvidence>
+  evidence: ReturnType<typeof extractObservationEvidence>,
+  externalContext: ExternalContext | undefined
 ): Record<string, PersonInferenceBelief> {
   return Object.fromEntries(peopleIds.map((personId) => {
-    const room = inferPersonRoom(personId, rooms, minuteOfDay, evidence);
+    const room = inferPersonRoom(personId, rooms, minuteOfDay, evidence, externalContext);
     return [personId, {
       personId,
       room,
@@ -113,11 +118,12 @@ function inferPersonRoom(
   personId: string,
   rooms: RoomId[],
   minuteOfDay: number,
-  evidence: ReturnType<typeof extractObservationEvidence>
+  evidence: ReturnType<typeof extractObservationEvidence>,
+  externalContext: ExternalContext | undefined
 ): BeliefDistribution<RoomId> {
   const scores = Object.fromEntries(rooms.map((roomId) => [
     roomId,
-    roomPrior(personId, roomId, minuteOfDay) + roomEvidenceScore(roomId, evidence)
+    roomPrior(personId, roomId, minuteOfDay, externalContext) + roomEvidenceScore(roomId, evidence)
   ])) as Record<RoomId, number>;
   return createBeliefDistribution(scores);
 }
@@ -148,14 +154,16 @@ function inferPersonActivity(
 
 function inferHomeMode(
   minuteOfDay: number,
-  evidence: ReturnType<typeof extractObservationEvidence>
+  evidence: ReturnType<typeof extractObservationEvidence>,
+  externalContext: ExternalContext | undefined
 ): BeliefDistribution<InferredHomeMode> {
+  const workday = isWorkday(externalContext);
   const scores: Record<InferredHomeMode, number> = {
     morning: minuteOfDay >= 6 * 60 && minuteOfDay < 10 * 60 ? 2.5 : 0.5,
     breakfast: minuteOfDay >= 6 * 60 && minuteOfDay < 9 * 60 ? 2.2 : 0.4,
-    away: minuteOfDay >= 9 * 60 && minuteOfDay < 16 * 60 ? 2.4 : 0.5,
+    away: minuteOfDay >= 9 * 60 && minuteOfDay < 16 * 60 ? workday ? 2.4 : 0.6 : 0.5,
     dinner: minuteOfDay >= 17 * 60 && minuteOfDay < 20 * 60 ? 3.2 : 0.4,
-    evening_home: minuteOfDay >= 18 * 60 && minuteOfDay < 22 * 60 ? 2.1 : 0.5,
+    evening_home: minuteOfDay >= 18 * 60 && minuteOfDay < 22 * 60 ? 2.1 : workday ? 0.5 : 1.3,
     sleeping: minuteOfDay >= 22 * 60 || minuteOfDay < 6 * 60 ? 3.1 : 0.4,
     alert: evidence.waterLeakDetected ? 5.5 : evidence.fridgeDoorOpen || evidence.routerOffline ? 1.2 : 0.2
   };
@@ -165,7 +173,8 @@ function inferHomeMode(
   return createBeliefDistribution(scores);
 }
 
-function roomPrior(personId: string, roomId: RoomId, minuteOfDay: number): number {
+function roomPrior(personId: string, roomId: RoomId, minuteOfDay: number, externalContext: ExternalContext | undefined): number {
+  const workday = isWorkday(externalContext);
   if (minuteOfDay >= 22 * 60 || minuteOfDay < 6 * 60) {
     if (personId === 'child_1' && roomId === 'child_bedroom') return 3;
     if (personId !== 'child_1' && roomId === 'master_bedroom') return 3;
@@ -176,10 +185,15 @@ function roomPrior(personId: string, roomId: RoomId, minuteOfDay: number): numbe
   if (minuteOfDay >= 18 * 60 && minuteOfDay < 22 * 60 && roomId === 'living_room') {
     return 1.8;
   }
-  if (personId === 'adult_2' && roomId === 'study' && minuteOfDay >= 9 * 60 && minuteOfDay < 18 * 60) {
+  if (personId === 'adult_2' && roomId === 'study' && minuteOfDay >= 9 * 60 && minuteOfDay < 18 * 60 && workday) {
     return 2.4;
   }
+  if (!workday && minuteOfDay >= 9 * 60 && minuteOfDay < 18 * 60 && roomId === 'living_room') return 1.8;
   return 1;
+}
+
+function isWorkday(externalContext: ExternalContext | undefined): boolean {
+  return externalContext?.calendar.workday ?? true;
 }
 
 function minuteOfDayFromTime(time: string): number {
