@@ -1,4 +1,5 @@
 import { getCatalog } from '../sim/catalog';
+import { createExternalContext } from '../sim/externalContext';
 import { summarizeAgentMemory } from '../sim/agents/memory';
 import { commitmentPressureAtMinute, createDailyCommitments, type DailyCommitment } from '../sim/agents/scheduler';
 import { getPersona } from '../sim/personas/defaultFamily';
@@ -622,7 +623,11 @@ function createTwinInferencePanel(snapshot: TwinSnapshot, events: TwinEvent[]): 
   const inference = inferTwinState(events, {
     currentTime: snapshot.simClock.currentTime,
     peopleIds,
-    rooms: roomIds
+    rooms: roomIds,
+    externalContext: createExternalContext({
+      date: snapshot.simClock.currentTime.slice(0, 10),
+      seed: snapshot.runContext.seed
+    })
   });
 
   return {

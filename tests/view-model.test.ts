@@ -336,6 +336,26 @@ describe('dashboard view model', () => {
     expect(model.twinInference.risks.length).toBeGreaterThan(0);
   });
 
+  it('passes calendar context into dashboard twin inference', () => {
+    const workdaySimulator = createSimulator({ seed: 42 });
+    workdaySimulator.startDailyScenario({ date: '2026-07-14', seed: 42 });
+    const workdaySnapshot = workdaySimulator.getSnapshot();
+    workdaySnapshot.simClock.currentTime = '2026-07-14T10:30:00+08:00';
+
+    const holidaySimulator = createSimulator({ seed: 42 });
+    holidaySimulator.startDailyScenario({ date: '2026-10-01', seed: 42 });
+    const holidaySnapshot = holidaySimulator.getSnapshot();
+    holidaySnapshot.simClock.currentTime = '2026-10-01T10:30:00+08:00';
+
+    const workday = createDashboardModel(workdaySnapshot, []);
+    const holiday = createDashboardModel(holidaySnapshot, []);
+
+    expect(workday.twinInference.homeMode.probabilities.away)
+      .toBeGreaterThan(holiday.twinInference.homeMode.probabilities.away);
+    expect(holiday.twinInference.homeMode.probabilities.evening_home)
+      .toBeGreaterThan(workday.twinInference.homeMode.probabilities.evening_home);
+  });
+
   it('adds numeric telemetry forecast points to prediction cards', () => {
     const simulator = createSimulator({ seed: 42 });
     simulator.injectAbnormality('fridge_left_open');
