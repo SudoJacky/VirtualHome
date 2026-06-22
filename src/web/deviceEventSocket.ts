@@ -68,19 +68,8 @@ export function cursorFromDeviceRunChanged(update: DeviceRunChangedMessage): Dev
   return { runId: update.runId, sequence: 0 };
 }
 
-export function cursorFromProcessedDeviceUpdate(update: DeviceUpdateMessage, previousCursor: DeviceEventCursor | null): DeviceEventCursor | null {
-  if (update.replayComplete) {
-    return { runId: update.runId, sequence: update.sequence };
-  }
-
-  const lastProcessedEvent = update.events.reduce<DeviceValueEvent | null>((latest, event) => {
-    if (!latest || event.sequence > latest.sequence) {
-      return event;
-    }
-    return latest;
-  }, null);
-
-  return lastProcessedEvent ? cursorFromDeviceEvent(lastProcessedEvent) : previousCursor;
+export function cursorFromProcessedDeviceUpdate(update: DeviceUpdateMessage): DeviceEventCursor {
+  return { runId: update.runId, sequence: update.sequence };
 }
 
 export function nextDeviceEventReconnectDelayMs(attempt: number): number {

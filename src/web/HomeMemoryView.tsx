@@ -92,16 +92,18 @@ export function HomeMemoryView(): React.ReactElement {
           return;
         }
 
-        const nextCursor = cursorFromProcessedDeviceUpdate(update, cursorRef.current);
-        if (nextCursor) {
-          updateCursor(nextCursor);
-        }
+        updateCursor(cursorFromProcessedDeviceUpdate(update));
         setLastUpdateAt(new Date().toISOString());
         setConnectionStatus('live');
 
         if (update.replayComplete === false) {
-          setMemory(reduceDeviceEvents(createHomeMemory(), update.events));
-          setRecentEvents(newestFirst(update.events).slice(0, RECENT_DEVICE_EVENT_LIMIT));
+          if (update.events.length > 0) {
+            setMemory((current) => reduceDeviceEvents(current, update.events));
+            setRecentEvents((current) => [
+              ...newestFirst(update.events),
+              ...current
+            ].slice(0, RECENT_DEVICE_EVENT_LIMIT));
+          }
           setSelectedNodeId(null);
           setMemoryWarning('Replay was incomplete; memory is showing the processed partial batch until the device stream catches up.');
           staleSocket = true;
@@ -111,6 +113,7 @@ export function HomeMemoryView(): React.ReactElement {
           return;
         }
 
+        setMemoryWarning(null);
         if (update.events.length > 0) {
           setMemory((current) => reduceDeviceEvents(current, update.events));
           setRecentEvents((current) => [

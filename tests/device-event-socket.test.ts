@@ -112,10 +112,10 @@ describe('device event WebSocket client helpers', () => {
       sequence: 42,
       replayComplete: true,
       events: []
-    }, { runId: 'run_1', sequence: 12 })).toEqual({ runId: 'run_1', sequence: 42 });
+    })).toEqual({ runId: 'run_1', sequence: 42 });
   });
 
-  it('advances incomplete replay only to the last processed event cursor', () => {
+  it('advances incomplete replay to the update-level safe cursor', () => {
     expect(cursorFromProcessedDeviceUpdate({
       type: 'device.update',
       runId: 'run_1',
@@ -153,17 +153,17 @@ describe('device event WebSocket client helpers', () => {
           value: false
         }
       ]
-    }, { runId: 'run_1', sequence: 10 })).toEqual({ runId: 'run_1', sequence: 14 });
+    })).toEqual({ runId: 'run_1', sequence: 100 });
   });
 
-  it('keeps the previous cursor for incomplete replay with no processed events', () => {
+  it('advances incomplete replay with no device events to the update-level safe cursor', () => {
     expect(cursorFromProcessedDeviceUpdate({
       type: 'device.update',
       runId: 'run_1',
       sequence: 100,
       replayComplete: false,
       events: []
-    }, { runId: 'run_1', sequence: 10 })).toEqual({ runId: 'run_1', sequence: 10 });
+    })).toEqual({ runId: 'run_1', sequence: 100 });
   });
 
   it('starts replay from the beginning of a changed run', () => {
