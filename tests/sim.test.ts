@@ -759,6 +759,14 @@ describe('virtual home simulator MVP', () => {
         personId: 'adult_1',
         activity: 'order_takeout',
         reason: 'agent_policy:order_takeout'
+      }),
+      expect.objectContaining({
+        type: 'ExternalInteractionOccurred',
+        actorKind: 'courier',
+        purpose: 'takeout_delivery',
+        roomId: 'entrance',
+        status: 'completed',
+        reason: 'agent_policy:order_takeout'
       })
     ]));
   });

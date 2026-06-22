@@ -738,6 +738,18 @@ class Simulator implements VirtualHomeSimulator {
       this.state.snapshot.worldState.inventory = applyActivityToInventory(this.state.snapshot.worldState.inventory, decision.activityId);
       this.applyActivityEffectsToPerson(person.id, decision.activityId);
       events.push(...moveEvents);
+      if (decision.activityId === 'order_takeout') {
+        events.push(this.createEvent({
+          type: 'ExternalInteractionOccurred',
+          interactionId: `takeout_delivery_${this.state.snapshot.simClock.sequence + 1}`,
+          actorKind: 'courier',
+          purpose: 'takeout_delivery',
+          roomId: 'entrance',
+          status: 'completed',
+          relatedDeviceIds: ['doorbell_camera_01'],
+          reason: `agent_policy:${decision.activityId}`
+        }));
+      }
     }
     return events;
   }
