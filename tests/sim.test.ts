@@ -707,6 +707,37 @@ describe('virtual home simulator MVP', () => {
     ]));
   });
 
+  it('orders takeout when all household food inventory is unavailable', () => {
+    const simulator = createSimulator({ seed: 618 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T08:30:00+08:00';
+    snapshot.homeState.mode = 'morning';
+    snapshot.people.adult_1.location = 'living_room';
+    snapshot.people.adult_1.activity = 'idle';
+    snapshot.worldState.inventory.breakfastFoodServings = 0;
+    snapshot.worldState.inventory.preparedMeals = 0;
+    snapshot.worldState.inventory.simpleFoodServings = 0;
+    snapshot.worldState.inventory.trashBags = 0.2;
+    simulator.restore(snapshot, simulator.getEvents());
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.people.adult_1.activity).toBe('order_takeout');
+    expect(updated.people.adult_1.location).toBe('entrance');
+    expect(updated.worldState.inventory.simpleFoodServings).toBe(0);
+    expect(updated.worldState.inventory.trashBags).toBeGreaterThan(0.2);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'PersonMoved',
+        personId: 'adult_1',
+        activity: 'order_takeout',
+        reason: 'agent_policy:order_takeout'
+      })
+    ]));
+  });
+
   it('uses accumulated dynamic needs to trigger autonomous food activity outside fixed script windows', () => {
     const simulator = createSimulator({ seed: 617 });
 

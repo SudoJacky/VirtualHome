@@ -44,8 +44,7 @@ export function selectActivity(input: ActivityDecisionInput): ActivityDecision {
   const template = getActivityTemplate(best.activityId);
   const missingResource = firstMissingResource(template, input.availableResources);
   if (missingResource && template.fallbackActivityIds?.length) {
-    const fallback = getActivityTemplate(template.fallbackActivityIds[0]);
-    return fallbackDecision(input, fallback.id, fallback.targetRoom, best.score - 5, `fallback: missing ${missingResource}`);
+    return fallbackDecisionForMissingResource(input, template, best.score, missingResource);
   }
   return best;
 }
@@ -113,6 +112,25 @@ function fallbackDecision(input: ActivityDecisionInput, activityId: string, targ
     score,
     reason
   };
+}
+
+function fallbackDecisionForMissingResource(
+  input: ActivityDecisionInput,
+  template: ActivityTemplate,
+  score: number,
+  missingResource: string
+): ActivityDecision {
+  for (const fallbackId of template.fallbackActivityIds ?? []) {
+    const fallback = getActivityTemplate(fallbackId);
+    const fallbackMissingResource = firstMissingResource(fallback, input.availableResources);
+    if (!fallbackMissingResource) {
+      return fallbackDecision(input, fallback.id, fallback.targetRoom, score - 5, `fallback: missing ${missingResource}`);
+    }
+    if (fallback.fallbackActivityIds?.length) {
+      return fallbackDecisionForMissingResource(input, fallback, score - 5, fallbackMissingResource);
+    }
+  }
+  return fallbackDecision(input, 'idle', input.currentRoom === 'away' ? 'living_room' : input.currentRoom, score - 20, `fallback unavailable: missing ${missingResource}`);
 }
 
 function deterministicJitter(input: string): number {

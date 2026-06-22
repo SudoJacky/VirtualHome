@@ -725,7 +725,7 @@ class Simulator implements VirtualHomeSimulator {
         commitmentPressureByActivity: this.commitmentPressureByActivity(person.id, persona, minuteOfDay)
       });
       if (decision.activityId !== 'wake_up') {
-        const canChooseFood = (morningFoodCandidate || lunchtimeFoodCandidate) && ['prepare_breakfast', 'eat_simple_food', 'eat_meal'].includes(decision.activityId);
+        const canChooseFood = (morningFoodCandidate || lunchtimeFoodCandidate) && ['prepare_breakfast', 'eat_simple_food', 'eat_meal', 'order_takeout'].includes(decision.activityId);
         if (!canChooseFood) {
           continue;
         }

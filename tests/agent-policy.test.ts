@@ -57,11 +57,32 @@ describe('agent policy', () => {
       currentRoom: 'living_room',
       homeMode: 'morning',
       minuteOfDay: 7 * 60,
-      availableResources: { breakfast_food: 0 }
+      availableResources: { breakfast_food: 0, simple_food: 1 }
     });
 
     expect(decision.activityId).toBe('eat_simple_food');
     expect(decision.reason).toContain('fallback');
+  });
+
+  it('uses takeout when cooking ingredients and simple food are unavailable', () => {
+    const decision = selectActivity({
+      personId: 'adult_1',
+      persona: getPersona('adult_1'),
+      needs: { ...baselineNeeds, hunger: 92 },
+      currentActivity: 'idle',
+      currentRoom: 'living_room',
+      homeMode: 'morning',
+      minuteOfDay: 7 * 60,
+      availableResources: {
+        breakfast_food: 0,
+        simple_food: 0,
+        door_access: 1
+      }
+    });
+
+    expect(decision.activityId).toBe('order_takeout');
+    expect(decision.reason).toContain('fallback');
+    expect(decision.reason).toContain('simple_food');
   });
 
   it('uses scheduled commitment pressure when ranking candidate activities', () => {

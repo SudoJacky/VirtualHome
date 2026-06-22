@@ -31,6 +31,7 @@ export function resourcesFromInventory(inventory: HouseholdInventory): Record<st
   return {
     bathroom_sink: 1,
     breakfast_food: inventory.breakfastFoodServings > 0 ? 1 : 0,
+    simple_food: inventory.simpleFoodServings > 0 ? 1 : 0,
     prepared_meal: inventory.preparedMeals > 0 ? 1 : 0,
     door_access: 1,
     study_desk: 1,
@@ -54,6 +55,8 @@ export function applyActivityToInventory(inventory: HouseholdInventory, activity
   } else if (activityId === 'eat_simple_food') {
     next.simpleFoodServings -= 1;
     next.trashBags += 0.05;
+  } else if (activityId === 'order_takeout') {
+    next.trashBags += 0.25;
   } else if (activityId === 'eat_meal') {
     next.preparedMeals -= 1;
     next.dirtyDishes += 4;
