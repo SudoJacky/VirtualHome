@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { getHomeDefinition } from '../catalog';
 import { createSimulator } from '../engine';
 import { advanceInventoryOneDay } from '../world/inventory';
@@ -9,6 +11,38 @@ export interface SimulationEvaluationOptions {
   days?: number;
   seed?: number;
   minutesPerDay?: number;
+}
+
+export function parseEvaluationCliArgs(args: string[]): Required<SimulationEvaluationOptions> {
+  const options: Required<SimulationEvaluationOptions> = {
+    startDate: '2026-07-14',
+    days: 7,
+    seed: 42,
+    minutesPerDay: 24 * 60
+  };
+  for (let index = 0; index < args.length; index += 2) {
+    const key = args[index];
+    const value = args[index + 1];
+    if (!key?.startsWith('--') || value === undefined) {
+      throw new Error(`Invalid evaluation argument near ${key ?? '<empty>'}`);
+    }
+    if (key === '--start-date') {
+      options.startDate = value;
+    } else if (key === '--days') {
+      options.days = positiveInteger(value, key);
+    } else if (key === '--seed') {
+      options.seed = positiveInteger(value, key);
+    } else if (key === '--minutes-per-day') {
+      options.minutesPerDay = positiveInteger(value, key);
+    } else {
+      throw new Error(`Unknown evaluation argument ${key}`);
+    }
+  }
+  return options;
+}
+
+export function createEvaluationCliReport(options: SimulationEvaluationOptions): string {
+  return `${JSON.stringify(runSimulationEvaluation(options), null, 2)}\n`;
 }
 
 export function runSimulationEvaluation(options: SimulationEvaluationOptions): SimulationEvaluationReport {
@@ -97,4 +131,20 @@ function addDays(dateText: string, offset: number): string {
   const date = new Date(`${dateText}T00:00:00.000Z`);
   date.setUTCDate(date.getUTCDate() + offset);
   return date.toISOString().slice(0, 10);
+}
+
+function positiveInteger(value: string, key: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${key} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function isCliEntry(): boolean {
+  return pathToFileURL(resolve(process.argv[1] ?? '')).href === import.meta.url;
+}
+
+if (isCliEntry()) {
+  process.stdout.write(createEvaluationCliReport(parseEvaluationCliArgs(process.argv.slice(2))));
 }

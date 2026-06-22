@@ -2,10 +2,35 @@ import { describe, expect, it } from 'vitest';
 import { getHomeDefinition } from '../src/sim/catalog';
 import { createSimulator } from '../src/sim/engine';
 import { buildEvaluationReport } from '../src/sim/evaluation/metrics';
-import { runSimulationEvaluation } from '../src/sim/evaluation/runEvaluation';
+import { createEvaluationCliReport, parseEvaluationCliArgs, runSimulationEvaluation } from '../src/sim/evaluation/runEvaluation';
 import type { ActivityStartedEvent, ConversationOccurredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent } from '../src/shared/types';
 
 describe('long horizon simulation evaluation', () => {
+  it('formats a JSON evaluation report from CLI arguments', () => {
+    const options = parseEvaluationCliArgs([
+      '--start-date', '2026-07-14',
+      '--days', '1',
+      '--seed', '42',
+      '--minutes-per-day', '60'
+    ]);
+
+    expect(options).toEqual({
+      startDate: '2026-07-14',
+      days: 1,
+      seed: 42,
+      minutesPerDay: 60
+    });
+
+    const output = createEvaluationCliReport(options);
+    const report = JSON.parse(output);
+
+    expect(report.days).toHaveLength(1);
+    expect(report.totalEvents).toBeGreaterThan(0);
+    expect(report.logic.totalChecks).toBeGreaterThan(0);
+    expect(report.sensor.telemetryEvents).toBeGreaterThan(0);
+    expect(report.inference.forecastEvaluation.samples).toBeGreaterThanOrEqual(0);
+  });
+
   it('generates deterministic multi-day quality metrics for a fixed seed', () => {
     const first = runSimulationEvaluation({
       startDate: '2026-07-14',

@@ -10,4 +10,12 @@ describe('package scripts', () => {
 
     expect(packageJson.scripts?.verify).toBe('npm run typecheck && npm test && npm run build');
   });
+
+  it('defines a local long-horizon evaluation command', () => {
+    const packageJson = JSON.parse(readFileSync(path.resolve('package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+
+    expect(packageJson.scripts?.evaluate).toBe('tsx src/sim/evaluation/runEvaluation.ts');
+  });
 });
