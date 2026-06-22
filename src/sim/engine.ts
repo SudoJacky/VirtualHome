@@ -781,9 +781,9 @@ class Simulator implements VirtualHomeSimulator {
 
   private applyBehaviorProfileInteractions(): TwinEvent[] {
     const events: TwinEvent[] = [];
-    events.push(...this.applyHumanActivityLighting());
     events.push(...this.applyCommuterArrivalScene());
     events.push(...this.applySocialCoordination());
+    events.push(...this.applyHumanActivityLighting());
     events.push(...this.applyChildHomeworkFocus());
     events.push(...this.applyRemoteWorkComfort());
     events.push(...this.applyFamilyDinnerReadiness());
@@ -803,6 +803,8 @@ class Simulator implements VirtualHomeSimulator {
         events.push(...this.applyFamilyMealInvitation(decision));
       } else if (decision.ruleId === 'senior_medicine_reminder') {
         events.push(...this.applySeniorMedicineReminder(decision));
+      } else if (decision.ruleId === 'senior_light_support') {
+        events.push(...this.applySeniorLightSupport(decision));
       } else if (decision.ruleId === 'package_pickup_response') {
         events.push(...this.applyPackagePickupResponse(decision));
       } else if (decision.ruleId === 'maintenance_visit_response') {
@@ -872,7 +874,8 @@ class Simulator implements VirtualHomeSimulator {
         deviceMaintenanceScore: this.state.snapshot.worldState.inventory.deviceMaintenanceScore
       },
       externalSignals: {
-        visitorAtDoor: this.isVisitorAtDoor()
+        visitorAtDoor: this.isVisitorAtDoor(),
+        seniorNeedsLight: this.isSeniorWaitingForLightSupport()
       },
       taskPressure: {
         child_1: this.estimateChildTaskPressure()
@@ -887,6 +890,20 @@ class Simulator implements VirtualHomeSimulator {
       doorbell.state.ringing === true &&
       packageSensor?.state.packagePresent !== true &&
       this.state.snapshot.worldState.inventory.packageCount <= 0;
+  }
+
+  private isSeniorWaitingForLightSupport(): boolean {
+    const senior = this.state.snapshot.people.senior_1;
+    if (!senior || senior.location === 'away' || !['reading', 'idle', 'morning_rest'].includes(senior.activity)) {
+      return false;
+    }
+    const minuteOfDay = minuteOfDayFromTime(this.state.snapshot.simClock.currentTime);
+    if (minuteOfDay < 18 * 60 || minuteOfDay > 22 * 60) {
+      return false;
+    }
+    const lightDeviceId = roomLightDevices[senior.location];
+    const lightDevice = lightDeviceId ? this.state.snapshot.devices[lightDeviceId] : undefined;
+    return Boolean(lightDeviceId && lightDevice && lightDevice.state.power !== 'on');
   }
 
   private applyParentHomeworkReminder(decision: SocialDecision): TwinEvent[] {
@@ -1312,6 +1329,58 @@ class Simulator implements VirtualHomeSimulator {
         affectedRoomIds: [decision.targetRoom],
         relatedIntent: 'support_health_routine',
         expectedOutcome: 'Reduce senior health risk while preserving a concrete family interaction trail.'
+      }
+    }));
+    return events;
+  }
+
+  private applySeniorLightSupport(decision: SocialDecision): TwinEvent[] {
+    if (
+      this.state.triggeredRules.has(decision.ruleId) ||
+      !decision.targetRoom ||
+      !decision.targetActivity ||
+      !decision.conversationTopic
+    ) {
+      return [];
+    }
+    const [caregiverId, seniorId] = decision.actorIds;
+    const caregiver = caregiverId ? this.state.snapshot.people[caregiverId] : undefined;
+    const senior = seniorId ? this.state.snapshot.people[seniorId] : undefined;
+    const lightDeviceId = roomLightDevices[decision.targetRoom];
+    const lightDevice = lightDeviceId ? this.state.snapshot.devices[lightDeviceId] : undefined;
+    if (!caregiver || !senior || !lightDeviceId || !lightDevice || caregiver.location === 'away' || senior.location !== decision.targetRoom || lightDevice.state.power === 'on') {
+      return [];
+    }
+
+    this.state.triggeredRules.add(decision.ruleId);
+    const events: TwinEvent[] = [
+      this.createEvent(createConversationDraft({
+        conversationId: `${decision.ruleId}_${this.state.snapshot.simClock.sequence + 1}`,
+        currentTime: this.state.snapshot.simClock.currentTime,
+        speakerId: caregiver.id,
+        listenerIds: [senior.id],
+        topic: decision.conversationTopic,
+        intent: 'support_senior_comfort',
+        roomId: caregiver.location,
+        summary: `${caregiver.id} turns on the room light for ${senior.id}.`,
+        reason: decision.reason
+      }))
+    ];
+    events.push(...this.createRoutedPersonMovedEvents(caregiver.id, decision.targetRoom, decision.targetActivity, decision.reason));
+    events.push(this.setDeviceState(lightDeviceId, { power: 'on', brightness: 56 }, 'social:senior_light_support:room_light'));
+    events.push(this.createEvent({
+      type: 'AutomationTriggered',
+      ruleId: decision.ruleId,
+      explanation: 'A caregiver noticed the senior needed room lighting and turned on the light for them.',
+      actions: ['notice_senior_needs_light', 'move_caregiver_to_room', 'turn_on_room_light_for_senior'],
+      reason: decision.reason,
+      eventExplanation: {
+        why: `${caregiver.id} has senior care responsibility while ${senior.id} is in a dark ${decision.targetRoom}.`,
+        actorIds: [caregiver.id, senior.id],
+        affectedDeviceIds: [lightDeviceId],
+        affectedRoomIds: [decision.targetRoom],
+        relatedIntent: 'support_senior_comfort',
+        expectedOutcome: 'Represent one household member helping another instead of anonymous automatic lighting.'
       }
     }));
     return events;

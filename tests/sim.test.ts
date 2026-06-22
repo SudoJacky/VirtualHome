@@ -1045,6 +1045,46 @@ describe('virtual home simulator MVP', () => {
     ]));
   });
 
+  it('lets a caregiver turn on room lighting for the senior', () => {
+    const simulator = createSimulator({ seed: 1125 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T19:20:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_1.location = 'kitchen';
+    snapshot.people.adult_1.activity = 'cleaning';
+    snapshot.people.adult_2.location = 'away';
+    snapshot.people.adult_2.activity = 'commute';
+    snapshot.people.child_1.location = 'away';
+    snapshot.people.child_1.activity = 'school';
+    snapshot.people.senior_1.location = 'living_room';
+    snapshot.people.senior_1.activity = 'reading';
+    snapshot.devices.living_light_01.state = { ...snapshot.devices.living_light_01.state, power: 'off', brightness: 0 };
+    snapshot.worldState.inventory.packageCount = 0;
+    snapshot.worldState.inventory.medicineDoses = 8;
+    snapshot.worldState.inventory.deviceMaintenanceScore = 8;
+    simulator.restore(snapshot, simulator.getEvents());
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.people.adult_1).toMatchObject({ location: 'living_room', activity: 'support_senior_lighting' });
+    expect(updated.people.senior_1).toMatchObject({ location: 'living_room', activity: 'reading' });
+    expect(updated.devices.living_light_01.state).toMatchObject({ power: 'on', brightness: 56 });
+    expect(events.some((event): event is ConversationOccurredEvent => (
+      event.type === 'ConversationOccurred' &&
+      event.topic === 'senior_light_support' &&
+      event.speakerId === 'adult_1' &&
+      event.listenerIds.includes('senior_1')
+    ))).toBe(true);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'AutomationTriggered',
+        ruleId: 'senior_light_support'
+      })
+    ]));
+  });
+
   it('responds to a visitor at the door by greeting them at the entrance', () => {
     const simulator = createSimulator({ seed: 1123 });
 

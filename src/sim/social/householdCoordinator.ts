@@ -29,6 +29,7 @@ export interface HouseholdSocialContext {
   };
   externalSignals?: {
     visitorAtDoor?: boolean;
+    seniorNeedsLight?: boolean;
   };
   taskPressure: Record<string, number>;
 }
@@ -79,6 +80,10 @@ export function coordinateHousehold(context: HouseholdSocialContext): SocialDeci
   const medicineReminder = createMedicineReminderDecision(context);
   if (medicineReminder) {
     decisions.push(medicineReminder);
+  }
+  const seniorLightSupport = createSeniorLightSupportDecision(context);
+  if (seniorLightSupport) {
+    decisions.push(seniorLightSupport);
   }
   const careCheck = createSeniorCareCheckDecision(context);
   if (careCheck) {
@@ -324,6 +329,30 @@ function createMedicineReminderDecision(context: HouseholdSocialContext): Social
     targetActivity: 'take_medicine',
     conversationTopic: 'medicine_reminder',
     reason: 'social:senior_medicine_reminder'
+  };
+}
+
+function createSeniorLightSupportDecision(context: HouseholdSocialContext): SocialDecision | null {
+  const senior = context.people.senior_1;
+  if (
+    context.externalSignals?.seniorNeedsLight !== true ||
+    !senior ||
+    senior.location === 'away'
+  ) {
+    return null;
+  }
+  const caregiverId = selectSeniorCaregiver(context);
+  if (!caregiverId) {
+    return null;
+  }
+  return {
+    kind: 'care_check',
+    ruleId: 'senior_light_support',
+    actorIds: [caregiverId, 'senior_1'],
+    targetRoom: senior.location,
+    targetActivity: 'support_senior_lighting',
+    conversationTopic: 'senior_light_support',
+    reason: 'social:senior_light_support'
   };
 }
 
