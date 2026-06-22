@@ -142,6 +142,36 @@ describe('sensor model', () => {
     });
   });
 
+  it('suppresses environment telemetry when smoothed readings stay below the report threshold', () => {
+    const profile = withSensorProfileOverrides(getSensorProfile('air_quality_sensor'), {
+      reportOnChangeThreshold: 5,
+      smoothingFactor: 0.4,
+      driftPerDay: 0,
+      dropRate: 0,
+      duplicateRate: 0,
+      delayMs: { kind: 'constant', value: 0 }
+    });
+
+    const observation = observeEnvironmentSensor({
+      deviceId: 'study_co2_01',
+      roomId: 'study',
+      deviceType: 'air_quality_sensor',
+      worldState: {
+        pm25: 12.4,
+        co2: 604
+      },
+      previousObservation: {
+        pm25: 12,
+        co2: 603,
+        lastObservedAt: '2026-06-17T08:00:00+08:00'
+      },
+      currentTime: '2026-06-17T08:01:00+08:00',
+      randomSeed: 51
+    }, profile);
+
+    expect(observation).toBeNull();
+  });
+
   it('marks dropped samples and duplicate reports from profile rates', () => {
     const droppedProfile = withSensorProfileOverrides(getSensorProfile('motion_sensor'), {
       dropRate: 1,

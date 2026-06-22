@@ -188,25 +188,45 @@ export function observeEnvironmentSensor(input: SensorObservationInput, profile:
   };
 
   if ('temperatureC' in input.worldState) {
-    measurements.temperature_c = roundOne(temperatureC);
-    observedState.temperatureC = measurements.temperature_c;
+    addEnvironmentMeasurement(input, profile, measurements, observedState, 'temperatureC', 'temperature_c', roundOne(temperatureC), 25);
   }
   if ('humidityPercent' in input.worldState) {
-    measurements.humidity_percent = roundOne(humidityPercent);
-    observedState.humidityPercent = measurements.humidity_percent;
+    addEnvironmentMeasurement(input, profile, measurements, observedState, 'humidityPercent', 'humidity_percent', roundOne(humidityPercent), 50);
   }
   if (pm25 !== null) {
-    measurements.pm25 = roundOne(pm25);
-    observedState.pm25 = measurements.pm25;
+    addEnvironmentMeasurement(input, profile, measurements, observedState, 'pm25', 'pm25', roundOne(pm25), 0);
   }
   if (co2 !== null) {
-    measurements.co2 = roundOne(co2);
-    observedState.co2 = measurements.co2;
+    addEnvironmentMeasurement(input, profile, measurements, observedState, 'co2', 'co2', roundOne(co2), 0);
+  }
+
+  if (Object.keys(measurements).length === 0) {
+    return null;
   }
 
   return createSensorObservation(input, measurements, profile, {
     noisy: Boolean(profile.driftPerDay) || Object.keys(measurements).length > 0
   }, observedState);
+}
+
+function addEnvironmentMeasurement(
+  input: SensorObservationInput,
+  profile: SensorProfile,
+  measurements: Record<string, number>,
+  observedState: Record<string, number | string>,
+  stateKey: string,
+  measurementName: string,
+  observedValue: number,
+  fallback: number
+): void {
+  const threshold = profile.reportOnChangeThreshold ?? 0;
+  const previousRaw = input.previousObservation?.[stateKey];
+  const previous = numberValue(previousRaw, fallback);
+  if (previousRaw !== undefined && Math.abs(observedValue - previous) < threshold) {
+    return;
+  }
+  measurements[measurementName] = observedValue;
+  observedState[stateKey] = observedValue;
 }
 
 function createSensorObservation(

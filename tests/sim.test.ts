@@ -507,10 +507,11 @@ describe('virtual home simulator MVP', () => {
     const values = simulator.getEvents()
       .filter((event): event is DeviceTelemetryEvent => event.type === 'DeviceTelemetry' && event.deviceId === 'kitchen_temp_01')
       .map((event) => event.measurements.temperature_c);
+    const lastTemperatureTelemetry = Number(values.at(-1));
 
     expect(new Set(values).size).toBeGreaterThan(1);
-    expect(snapshot.devices.kitchen_temp_01.state.temperatureC).toBe(values.at(-1));
-    expect(Math.abs(Number(snapshot.devices.kitchen_temp_01.state.temperatureC) - snapshot.rooms.kitchen.temperatureC)).toBeLessThanOrEqual(0.5);
+    expect(snapshot.devices.kitchen_temp_01.state.temperatureC).toBe(snapshot.rooms.kitchen.temperatureC);
+    expect(Math.abs(lastTemperatureTelemetry - snapshot.rooms.kitchen.temperatureC)).toBeGreaterThanOrEqual(0.2);
   });
 
   it('reports motion through sampled sensor telemetry instead of direct room truth', () => {

@@ -429,15 +429,15 @@ describe('dashboard view model', () => {
 
     expect(powerPoint?.ignored).toEqual([176, 188, 198, 206]);
     expect(powerPoint?.handledNow).toEqual([176, 134, 102, 90]);
-    expect(temperaturePoint?.ignored).toEqual([28.6, 29.1, 29.6, 30]);
-    expect(temperaturePoint?.handledNow).toEqual([28.6, 28.1, 27.4, 26.8]);
+    expect(temperaturePoint?.ignored).toEqual([28.8, 29.3, 29.8, 30.2]);
+    expect(temperaturePoint?.handledNow).toEqual([28.8, 28.3, 27.6, 27]);
     expect(fridge?.forecastModel).toMatchObject({
       kind: 'fridge_thermal_load',
       season: 'summer',
       roomVolumeM3: 42,
       currentPowerW: 176,
       openMinutes: 12,
-      currentTemperatureC: 28.6
+      currentTemperatureC: 28.8
     });
   });
 
