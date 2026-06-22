@@ -435,7 +435,7 @@ function evaluateBehavior(days: EvaluationDayInput[], homeDefinition: HomeDefini
   for (const day of days) {
     const dailyCounts: Record<string, number> = {};
     const previousActivityByPerson = new Map<string, string>();
-    const activeActivities = new Map<string, { activityId: string; startedAt: string }>();
+    const activeActivities = new Map<string, Array<{ activityId: string; startedAt: string }>>();
     const dayKind = isWeekendDate(day.date) ? 'weekend' : 'weekday';
     let dayTransitions = 0;
     for (const event of day.events) {
@@ -455,18 +455,22 @@ function evaluateBehavior(days: EvaluationDayInput[], homeDefinition: HomeDefini
       }
       if (event.type === 'ActivityStarted') {
         activityStarted += 1;
-        activeActivities.set(event.activityId, { activityId: event.activityId, startedAt: event.simTime });
+        const active = activeActivities.get(event.activityId) ?? [];
+        active.push({ activityId: event.activityId, startedAt: event.simTime });
+        activeActivities.set(event.activityId, active);
         if (event.participants.length > 1) {
           jointActivityStarted += 1;
         }
       }
       if (event.type === 'ActivityEnded') {
-        const active = activeActivities.get(event.activityId);
+        const active = activeActivities.get(event.activityId)?.shift();
         if (active) {
           getNumberList(durationMinutesByActivity, event.activityId).push(
             Math.max(0, (Date.parse(event.simTime) - Date.parse(active.startedAt)) / 60000)
           );
-          activeActivities.delete(event.activityId);
+          if (activeActivities.get(event.activityId)?.length === 0) {
+            activeActivities.delete(event.activityId);
+          }
         }
       }
     }
