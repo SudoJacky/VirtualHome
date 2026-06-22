@@ -494,6 +494,96 @@ describe('long horizon simulation evaluation', () => {
     expect(report.inference.downstreamUtility.featureCoverageRatio).toBeLessThanOrEqual(1);
   });
 
+  it('reports synthetic-to-real downstream validation gap when real observation samples are provided', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    const eveningSnapshot = structuredClone(snapshot);
+    eveningSnapshot.homeState.mode = 'evening_home';
+    const morningSnapshot = structuredClone(snapshot);
+    morningSnapshot.homeState.mode = 'morning';
+    const leakTelemetry: DeviceTelemetryEvent = {
+      id: 'real_leak_observation',
+      runId: 'run_real_validation',
+      type: 'DeviceTelemetry',
+      ts: snapshot.simClock.currentTime,
+      simTime: snapshot.simClock.currentTime,
+      homeId: snapshot.homeId,
+      scenarioId: snapshot.scenarioId,
+      sequence: 1,
+      sourceLayer: 'sensor',
+      lineage: {
+        eventTime: snapshot.simClock.currentTime,
+        ingestTime: snapshot.simClock.currentTime,
+        sourceLayer: 'sensor',
+        causeEventIds: [],
+        episodeId: 'sensor:water_leak_01',
+        observability: 'ml_observation',
+        quality: { confidence: 0.96 },
+        schemaVersion: 1,
+        behaviorModelVersion: 'test'
+      },
+      roomId: 'bathroom',
+      deviceId: 'water_leak_01',
+      deviceType: 'water_leak_sensor',
+      measurements: {
+        leak_detected: true,
+        confidence: 0.96
+      }
+    };
+
+    const report = buildEvaluationReport({
+      days: [{
+        date: '2026-06-17',
+        events: [],
+        finalSnapshot: snapshot,
+        forecastSamples: [
+          {
+            currentTime: '2026-06-17T08:00:00+08:00',
+            eventsUntilNow: [],
+            truthByHorizon: [{ horizonMinutes: 60, snapshot: morningSnapshot }]
+          },
+          {
+            currentTime: '2026-06-17T19:00:00+08:00',
+            eventsUntilNow: [],
+            truthByHorizon: [{ horizonMinutes: 60, snapshot: eveningSnapshot }]
+          },
+          {
+            currentTime: '2026-06-17T19:00:00+08:00',
+            eventsUntilNow: [],
+            truthByHorizon: [{ horizonMinutes: 60, snapshot: eveningSnapshot }]
+          }
+        ]
+      }],
+      homeDefinition: getHomeDefinition(),
+      realWorldValidationSamples: [{
+        currentTime: '2026-06-17T02:15:00+08:00',
+        eventsUntilNow: [leakTelemetry],
+        truth: {
+          homeMode: 'alert',
+          risks: {
+            fridge_left_open: false,
+            network_impact: false,
+            stove_unattended: false,
+            senior_no_activity: false,
+            water_leak: true
+          }
+        }
+      }]
+    });
+
+    expect(report.inference.downstreamUtility.realWorldValidation).toMatchObject({
+      samples: 1,
+      homeModeTop1Accuracy: expect.any(Number),
+      averageRiskBrierScore: expect.any(Number),
+      featureCoverageRatio: expect.any(Number)
+    });
+    expect(report.inference.downstreamUtility.syntheticToRealGap).toMatchObject({
+      homeModeAccuracyGap: expect.any(Number),
+      riskBrierScoreGap: expect.any(Number)
+    });
+  });
+
   it('scores water leak forecasts in risk calibration metrics', () => {
     const simulator = createSimulator({ seed: 42 });
     simulator.startScenario('night_water_leak');
