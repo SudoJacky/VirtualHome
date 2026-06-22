@@ -578,4 +578,21 @@ describe('sensor model', () => {
       lastObservedAt: '2026-06-17T18:02:00+08:00'
     });
   });
+
+  it('defines water flow as a numeric sensor profile with delay and drift', () => {
+    const profile = getSensorProfile('water_flow_sensor');
+
+    expect(profile).toMatchObject({
+      deviceType: 'water_flow_sensor',
+      reportOnChangeThreshold: expect.any(Number),
+      delayMs: expect.objectContaining({
+        kind: expect.any(String)
+      }),
+      duplicateRate: expect.any(Number),
+      dropRate: expect.any(Number),
+      driftPerDay: expect.any(Number),
+      smoothingFactor: expect.any(Number)
+    });
+    expect(profile.reportOnChangeThreshold).toBeGreaterThan(0);
+  });
 });

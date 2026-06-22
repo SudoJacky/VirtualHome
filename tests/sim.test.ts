@@ -729,6 +729,34 @@ describe('virtual home simulator MVP', () => {
     });
   });
 
+  it('reports bathroom water flow through delayed sensor telemetry', () => {
+    const simulator = createSimulator({ seed: 339 });
+
+    simulator.startScenario('night_water_leak');
+    const events = simulator.advanceMinutes(3);
+    const flowTelemetry = events.find((event): event is DeviceTelemetryEvent => (
+      event.type === 'DeviceTelemetry' &&
+      event.deviceId === 'bathroom_water_01' &&
+      typeof event.measurements.flow_l_min === 'number' &&
+      event.measurements.flow_l_min > 0
+    ));
+
+    expect(flowTelemetry).toMatchObject({
+      sourceLayer: 'sensor',
+      measurements: {
+        flow_l_min: expect.any(Number)
+      },
+      lineage: expect.objectContaining({
+        sourceLayer: 'sensor',
+        observability: 'ml_observation',
+        quality: expect.objectContaining({
+          delayedMs: expect.any(Number)
+        })
+      })
+    });
+    expect(flowTelemetry?.lineage.ingestTime).not.toBe(flowTelemetry?.lineage.eventTime);
+  });
+
   it('uses autonomous agent policy to prevent unreasonable daytime sleep persistence', () => {
     const simulator = createSimulator({ seed: 515 });
 

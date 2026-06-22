@@ -2558,8 +2558,28 @@ class Simulator implements VirtualHomeSimulator {
         const totalL = this.round((Number(state.totalL) || 0) + flowLMin);
         state.flowLMin = flowLMin;
         state.totalL = totalL;
-        measurements.flow_l_min = flowLMin;
-        measurements.total_l = totalL;
+        sensorObservation = observeNumericSensor({
+          deviceId: device.id,
+          roomId: device.roomId,
+          deviceType: device.type,
+          worldState: {
+            flowLMin
+          },
+          previousObservation: this.state.sensorObservations.get(device.id),
+          currentTime: this.state.snapshot.simClock.currentTime,
+          randomSeed: this.state.random.getState()
+        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }), {
+          worldKey: 'flowLMin',
+          measurementName: 'flow_l_min',
+          noiseAmplitude: 0.04
+        });
+        if (!sensorObservation) {
+          continue;
+        }
+        Object.assign(measurements, sensorObservation.event.measurements);
+        if (typeof measurements.flow_l_min === 'number') {
+          state.flowLMin = measurements.flow_l_min;
+        }
       } else if (device.type === 'soil_moisture_sensor') {
         const sprinklerOn = this.state.snapshot.devices.sprinkler_01.state.valveOpen === true;
         const moisturePercent = this.round(this.clamp((Number(state.moisturePercent) || 38) + (sprinklerOn ? 0.55 : -0.03) + this.state.random.range(-0.04, 0.04), 20, 75));

@@ -111,6 +111,18 @@ const sensorProfiles: Record<string, SensorProfile> = {
     dropRate: 0.002,
     cooldownSec: 0
   },
+  water_flow_sensor: {
+    deviceType: 'water_flow_sensor',
+    samplingIntervalSec: 10,
+    reportOnChangeThreshold: 0.15,
+    falsePositiveRate: 0,
+    falseNegativeRate: 0,
+    delayMs: { kind: 'uniform', min: 80, max: 900 },
+    duplicateRate: 0.008,
+    dropRate: 0.006,
+    driftPerDay: 0.03,
+    smoothingFactor: 0.65
+  },
   sleep_sensor: {
     deviceType: 'sleep_sensor',
     samplingIntervalSec: 60,
