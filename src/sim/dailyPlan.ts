@@ -9,6 +9,7 @@ export type Season = 'spring' | 'summer' | 'autumn' | 'winter';
 export interface DailyScenarioOptions {
   date: string;
   seed?: number;
+  externalContext?: ExternalContext;
 }
 
 interface CalendarProfile {
@@ -20,10 +21,12 @@ interface CalendarProfile {
   holidayName: string | null;
   schoolDay: boolean;
   workday: boolean;
+  weatherCondition: ExternalContext['weather']['condition'];
+  precipitationMm: number;
 }
 
 export function generateDailyScenario(options: DailyScenarioOptions): ScenarioDefinition {
-  const externalContext = createExternalContext({ date: options.date, seed: options.seed ?? seedFromDate(options.date) });
+  const externalContext = options.externalContext ?? createExternalContext({ date: options.date, seed: options.seed ?? seedFromDate(options.date) });
   const calendar = createCalendarProfile(externalContext);
   const random = new SeededRandom(options.seed ?? seedFromDate(options.date));
   const routineKind = calendar.workday && calendar.schoolDay ? 'weekday' : 'non_workday';
@@ -118,6 +121,7 @@ function createWeekendSteps(calendar: CalendarProfile, random: SeededRandom, wak
   const cleaningMinute = wakeMinute + jitter(random, 115, 18);
   const outingMinute = 14 * 60 + jitter(random, 20, 45);
   const returnMinute = 17 * 60 + jitter(random, 20, 45);
+  const rainyDay = isRainyDay(calendar);
 
   return [
     step(wakeMinute, [
@@ -142,18 +146,29 @@ function createWeekendSteps(calendar: CalendarProfile, random: SeededRandom, wak
       move('adult_2', 'study', 'tidying'),
       device('living_light_01', { power: 'on', brightness: 72 }, 'routine:weekend_cleaning')
     ]),
-    step(outingMinute, [
-      move('adult_1', 'away', 'family_outing'),
-      move('adult_2', 'away', 'family_outing'),
-      move('child_1', 'away', 'family_outing'),
-      device('door_lock_01', { locked: true }, 'routine:family_outing')
-    ]),
-    step(returnMinute, [
-      mode('evening_home'),
-      move('adult_1', 'living_room', 'returned_home'),
-      move('adult_2', 'living_room', 'returned_home'),
-      move('child_1', 'child_bedroom', 'playing')
-    ])
+    ...(rainyDay
+      ? [
+          step(outingMinute, [
+            move('adult_1', 'living_room', 'rainy_day_indoor_play'),
+            move('adult_2', 'living_room', 'rainy_day_indoor_play'),
+            move('child_1', 'living_room', 'rainy_day_indoor_play'),
+            device('tv_01', { power: 'on', app: 'family_game', volume: 12 }, 'weather:rainy_day:indoor_activity')
+          ])
+        ]
+      : [
+          step(outingMinute, [
+            move('adult_1', 'away', 'family_outing'),
+            move('adult_2', 'away', 'family_outing'),
+            move('child_1', 'away', 'family_outing'),
+            device('door_lock_01', { locked: true }, 'routine:family_outing')
+          ]),
+          step(returnMinute, [
+            mode('evening_home'),
+            move('adult_1', 'living_room', 'returned_home'),
+            move('adult_2', 'living_room', 'returned_home'),
+            move('child_1', 'child_bedroom', 'playing')
+          ])
+        ])
   ];
 }
 
@@ -250,8 +265,14 @@ function createCalendarProfile(externalContext: ExternalContext): CalendarProfil
     dayOfWeek: calendar.dayOfWeek,
     holidayName: calendar.holidayName,
     schoolDay: calendar.schoolDay,
-    workday: calendar.workday
+    workday: calendar.workday,
+    weatherCondition: externalContext.weather.condition,
+    precipitationMm: externalContext.weather.precipitationMm
   };
+}
+
+function isRainyDay(calendar: CalendarProfile): boolean {
+  return calendar.weatherCondition === 'heavy_rain' || calendar.precipitationMm >= 10;
 }
 
 function seasonClimate(season: Season): Record<string, number> {

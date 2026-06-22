@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { generateDailyScenario } from '../src/sim/dailyPlan';
+import { createExternalContext } from '../src/sim/externalContext';
 
 describe('calendar-driven daily plan generation', () => {
   it('generates a reproducible weekday routine from date and seed', () => {
@@ -59,5 +60,26 @@ describe('calendar-driven daily plan generation', () => {
     expect(summer.steps.some((step) => step.actions.some((action) => action.kind === 'setDevice' && action.deviceId === 'sprinkler_01' && action.state.valveOpen === true))).toBe(true);
     expect(winter.steps.some((step) => step.actions.some((action) => action.kind === 'setDevice' && action.deviceId === 'sprinkler_01' && action.state.valveOpen === true))).toBe(false);
     expect(winter.steps.some((step) => step.actions.some((action) => action.kind === 'setDevice' && action.deviceId === 'living_light_01' && Number(action.state.brightness ?? 0) >= 70))).toBe(true);
+  });
+
+  it('uses weather context to replace rainy weekend outings with indoor activity', () => {
+    const heavyRain = createExternalContext({
+      date: '2026-07-18',
+      seed: 42,
+      overrides: { weatherCondition: 'heavy_rain' }
+    });
+
+    const plan = generateDailyScenario({ date: '2026-07-18', seed: 42, externalContext: heavyRain });
+    const moveActivities = plan.steps.flatMap((step) => step.actions)
+      .filter((action) => action.kind === 'movePerson')
+      .map((action) => action.activity);
+
+    expect(moveActivities).not.toContain('family_outing');
+    expect(moveActivities).toContain('rainy_day_indoor_play');
+    expect(plan.calendar).toMatchObject({
+      date: '2026-07-18',
+      weatherCondition: 'heavy_rain',
+      precipitationMm: 18
+    });
   });
 });
