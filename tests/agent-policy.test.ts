@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { selectActivity } from '../src/sim/agents/agentPolicy';
 import { getPersona } from '../src/sim/personas/defaultFamily';
 import type { NeedState } from '../src/sim/agents/needs';
+import { createInitialInventory, resourcesFromInventory } from '../src/sim/world/inventory';
 
 const baselineNeeds: NeedState = {
   sleepiness: 20,
@@ -102,5 +103,38 @@ describe('agent policy', () => {
 
     expect(decision.activityId).toBe('gardening');
     expect(decision.reason).toContain('commitment');
+  });
+
+  it('raises laundry priority when dirty laundry accumulates', () => {
+    const lowLaundryDecision = selectActivity({
+      personId: 'adult_1',
+      persona: getPersona('adult_1'),
+      needs: { ...baselineNeeds, taskPressure: 72, stress: 24 },
+      currentActivity: 'idle',
+      currentRoom: 'bathroom',
+      homeMode: 'evening_home',
+      minuteOfDay: 19 * 60,
+      availableResources: resourcesFromInventory(createInitialInventory({
+        dirtyLaundryKg: 0.8,
+        dirtyDishes: 0
+      }))
+    });
+    const highLaundryDecision = selectActivity({
+      personId: 'adult_1',
+      persona: getPersona('adult_1'),
+      needs: { ...baselineNeeds, taskPressure: 72, stress: 24 },
+      currentActivity: 'idle',
+      currentRoom: 'bathroom',
+      homeMode: 'evening_home',
+      minuteOfDay: 19 * 60,
+      availableResources: resourcesFromInventory(createInitialInventory({
+        dirtyLaundryKg: 7.2,
+        dirtyDishes: 0
+      }))
+    });
+
+    expect(lowLaundryDecision.activityId).not.toBe('laundry_cycle');
+    expect(highLaundryDecision.activityId).toBe('laundry_cycle');
+    expect(highLaundryDecision.score).toBeGreaterThan(lowLaundryDecision.score);
   });
 });

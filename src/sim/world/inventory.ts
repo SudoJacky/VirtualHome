@@ -37,9 +37,9 @@ export function resourcesFromInventory(inventory: HouseholdInventory): Record<st
     study_desk: 1,
     homework_materials: 1,
     tv_01: 1,
-    dirty_laundry: inventory.dirtyLaundryKg >= 3 ? 1 : 0,
-    clean_dishes: inventory.dirtyDishes >= 4 ? 1 : 0,
-    medicine: inventory.medicineDoses > 0 ? 1 : 0,
+    dirty_laundry: inventory.dirtyLaundryKg >= 1 ? inventory.dirtyLaundryKg : 0,
+    clean_dishes: inventory.dirtyDishes >= 4 ? inventory.dirtyDishes : 0,
+    medicine: inventory.medicineDoses,
     cleaning_supplies: 1,
     garden_access: 1,
     pet_food: 1

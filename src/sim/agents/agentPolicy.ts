@@ -57,10 +57,11 @@ function decisionForTemplate(input: ActivityDecisionInput, template: ActivityTem
   const environmentFit = input.homeMode === 'sleeping' && template.id !== 'sleep' ? -40 : 0;
   const missingResource = firstMissingResource(template, input.availableResources);
   const resourceAvailability = missingResource ? template.fallbackActivityIds?.length ? -10 : -100 : 8;
+  const resourceUrgency = scoreResourceUrgency(input, template);
   const movementCost = input.currentRoom === 'away' || input.currentRoom === template.targetRoom ? 0 : -6;
   const interruptionCost = input.currentActivity === 'sleeping' && template.id !== 'wake_up' && input.minuteOfDay < 8 * 60 ? -22 : 0;
   const boundedRandomness = deterministicJitter(`${input.personId}:${template.id}:${Math.floor(input.minuteOfDay / 30)}`);
-  const score = goalPriority + needRelief + habitPreference + commitmentPressure * 0.5 + environmentFit + resourceAvailability + movementCost + interruptionCost + boundedRandomness;
+  const score = goalPriority + needRelief + habitPreference + commitmentPressure * 0.5 + environmentFit + resourceAvailability + resourceUrgency + movementCost + interruptionCost + boundedRandomness;
   return {
     personId: input.personId,
     activityId: template.id,
@@ -95,8 +96,22 @@ function scoreNeedRelief(needs: NeedState, template: ActivityTemplate): number {
 function scoreHabit(persona: PersonaProfile, template: ActivityTemplate, minuteOfDay: number): number {
   const roomAffinity = persona.primaryRooms.includes(template.targetRoom) ? 8 : 0;
   const roleAffinity = template.goals.some((goal) => persona.careResponsibilities.includes(goal)) ? 12 : 0;
+  const choreAffinity = template.goals.includes('chore') ? persona.chorePreference * 12 : 0;
   const chronotypeBonus = persona.chronotype === 'early' && minuteOfDay < 9 * 60 ? 4 : persona.chronotype === 'late' && minuteOfDay > 20 * 60 ? 4 : 0;
-  return roomAffinity + roleAffinity + chronotypeBonus;
+  return roomAffinity + roleAffinity + choreAffinity + chronotypeBonus;
+}
+
+function scoreResourceUrgency(input: ActivityDecisionInput, template: ActivityTemplate): number {
+  if (template.id === 'laundry_cycle') {
+    return Math.min(42, Math.max(0, (input.availableResources.dirty_laundry ?? 0) - 1) * 7);
+  }
+  if (template.id === 'unload_dishwasher') {
+    return Math.min(28, Math.max(0, (input.availableResources.clean_dishes ?? 0) - 4) * 4);
+  }
+  if (template.id === 'take_medicine' && input.persona.role === 'senior') {
+    return (input.availableResources.medicine ?? 0) > 0 ? 8 : 0;
+  }
+  return 0;
 }
 
 function firstMissingResource(template: ActivityTemplate, availableResources: Record<string, number>): string | null {

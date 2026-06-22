@@ -19,9 +19,9 @@ describe('household inventory and resources', () => {
 
     expect(resources.breakfast_food).toBe(0);
     expect(resources.simple_food).toBe(0);
-    expect(resources.dirty_laundry).toBe(1);
-    expect(resources.clean_dishes).toBe(1);
-    expect(resources.medicine).toBe(1);
+    expect(resources.dirty_laundry).toBe(5.2);
+    expect(resources.clean_dishes).toBe(8);
+    expect(resources.medicine).toBe(2);
   });
 
   it('updates inventory when meals, laundry, dishwasher, and medicine activities happen', () => {
