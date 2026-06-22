@@ -76,6 +76,10 @@ export function applyActivityToInventory(inventory: HouseholdInventory, activity
   } else if (activityId === 'take_medicine') {
     next.medicineDoses -= 1;
     next.healthRiskScore -= 12;
+  } else if (activityId === 'refill_medicine') {
+    next.medicineDoses += 14;
+    next.healthRiskScore -= 6;
+    removePendingChore(next, 'medicine_refill');
   }
   return normalizeInventory(next);
 }

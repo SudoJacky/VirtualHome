@@ -9,6 +9,7 @@ describe('activity catalog', () => {
       'remote_work_session',
       'study_homework',
       'take_medicine',
+      'refill_medicine',
       'pet_care'
     ]));
     expect(getActivityTemplate('prepare_breakfast')).toMatchObject({
@@ -17,6 +18,12 @@ describe('activity catalog', () => {
       effects: expect.arrayContaining([
         expect.objectContaining({ need: 'hunger', delta: expect.any(Number) })
       ])
+    });
+    expect(getActivityTemplate('refill_medicine')).toMatchObject({
+      goals: expect.arrayContaining(['health', 'restock']),
+      requiredResources: [{ resourceId: 'door_access', quantity: 1 }],
+      targetRoom: 'entrance',
+      steps: expect.arrayContaining(['order_refill', 'restock_medicine_box'])
     });
   });
 });

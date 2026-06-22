@@ -68,4 +68,18 @@ describe('household inventory and resources', () => {
     expect(secondDay.trashBags).toBeGreaterThan(firstDay.trashBags);
     expect(secondDay.pendingChores).toEqual(expect.arrayContaining(['laundry', 'dishes']));
   });
+
+  it('restocks medicine and clears the refill chore when medicine is replenished', () => {
+    const lowMedicine = createInitialInventory({
+      medicineDoses: 1,
+      healthRiskScore: 48
+    });
+
+    const restocked = applyActivityToInventory(lowMedicine, 'refill_medicine');
+
+    expect(lowMedicine.pendingChores).toContain('medicine_refill');
+    expect(restocked.medicineDoses).toBeGreaterThan(10);
+    expect(restocked.healthRiskScore).toBeLessThan(lowMedicine.healthRiskScore);
+    expect(restocked.pendingChores).not.toContain('medicine_refill');
+  });
 });
