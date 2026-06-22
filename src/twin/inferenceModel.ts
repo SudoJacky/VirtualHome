@@ -277,12 +277,32 @@ function inferHomeMode(
     dinner: minuteOfDay >= 17 * 60 && minuteOfDay < 20 * 60 ? 3.2 : 0.4,
     evening_home: minuteOfDay >= 18 * 60 && minuteOfDay < 22 * 60 ? 2.1 : workday ? severeWeather ? 0.9 : 0.5 : 1.3,
     sleeping: minuteOfDay >= 22 * 60 || minuteOfDay < 6 * 60 ? 3.1 : 0.4,
-    alert: evidence.waterLeakDetected ? 5.5 : evidence.fridgeDoorOpen || evidence.routerOffline ? 1.2 : 0.2
+    alert: alertEvidenceScore(evidence)
   };
-  if (evidence.fridgeDoorOpen || evidence.motionByRoom.kitchen) {
-    scores.dinner += 1.8;
+  const kitchenActivityConfidence = kitchenActivityEvidenceConfidence(evidence);
+  if (kitchenActivityConfidence > 0) {
+    scores.dinner += 1.8 * kitchenActivityConfidence;
   }
   return createBeliefDistribution(scores);
+}
+
+function alertEvidenceScore(evidence: ReturnType<typeof extractObservationEvidence>): number {
+  if (evidence.waterLeakDetected) {
+    return 1.2 + 4.3 * evidence.waterLeakConfidence;
+  }
+  const householdAlertConfidence = Math.max(
+    evidence.fridgeDoorOpen ? evidence.fridgeDoorConfidence : 0,
+    evidence.routerOffline ? evidence.routerOfflineConfidence : 0
+  );
+  return householdAlertConfidence > 0 ? 0.2 + householdAlertConfidence : 0.2;
+}
+
+function kitchenActivityEvidenceConfidence(evidence: ReturnType<typeof extractObservationEvidence>): number {
+  return Math.max(
+    evidence.fridgeDoorOpen ? evidence.fridgeDoorConfidence : 0,
+    evidence.motionByRoom.kitchen ?? 0,
+    (evidence.pm25ByRoom.kitchen ?? 0) >= 35 ? evidence.pm25QualityByRoom.kitchen ?? 1 : 0
+  );
 }
 
 function roomPrior(personId: string, roomId: RoomId, minuteOfDay: number, externalContext: ExternalContext | undefined): number {
