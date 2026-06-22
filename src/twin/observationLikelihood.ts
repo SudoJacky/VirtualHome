@@ -2,6 +2,16 @@ import type { DeviceStateChangedEvent, DeviceTelemetryEvent, RoomId, TwinEvent }
 
 export type AllowedObservationEvent = DeviceTelemetryEvent | DeviceStateChangedEvent;
 
+const sensitiveWorldStateDeviceTypes = new Set([
+  'door_lock',
+  'doorbell_camera',
+  'security_camera',
+  'sleep_sensor',
+  'water_flow_sensor',
+  'water_leak_sensor',
+  'water_valve'
+]);
+
 export interface ObservationEvidence {
   acceptedEvents: AllowedObservationEvent[];
   rejectedEventTypes: string[];
@@ -62,7 +72,7 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
       }
       continue;
     }
-    if (event.type === 'DeviceStateChanged' && event.sourceLayer === 'world') {
+    if (event.type === 'DeviceStateChanged' && event.sourceLayer === 'world' && !sensitiveWorldStateDeviceTypes.has(event.deviceType)) {
       acceptedEvents.push(event);
       activeDeviceRooms[event.roomId] = Math.max(activeDeviceRooms[event.roomId] ?? 0, 0.55);
       if (event.deviceId === 'fridge_01' && event.state.doorOpen === true) {

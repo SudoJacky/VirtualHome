@@ -199,6 +199,31 @@ describe('twin inference model', () => {
     expect(result.people.adult_1.activity.top).not.toBe('cooking');
   });
 
+  it('rejects sensitive world device state as inference input', () => {
+    const sensitiveSleepState: DeviceStateChangedEvent = {
+      ...baseEvent,
+      id: 'state_master_sleep_01',
+      type: 'DeviceStateChanged',
+      sourceLayer: 'world',
+      lineage: { ...baseEvent.lineage, sourceLayer: 'world', observability: 'admin' },
+      roomId: 'master_bedroom',
+      deviceId: 'master_sleep_01',
+      deviceType: 'sleep_sensor',
+      state: { inBed: true, heartRateSimulated: 58 }
+    };
+
+    const result = inferTwinState([sensitiveSleepState], {
+      currentTime: '2026-06-17T10:15:00+08:00',
+      peopleIds: ['senior_1'],
+      rooms: ['master_bedroom', 'living_room', 'bathroom']
+    });
+
+    expect(result.inputSummary.acceptedEventCount).toBe(0);
+    expect(result.inputSummary.rejectedEventTypes).toContain('DeviceStateChanged');
+    expect(result.risks.senior_no_activity.probability).toBeLessThan(0.5);
+    expect(result.risks.senior_no_activity.drivers).not.toContain('master_sleep_01.in_bed');
+  });
+
   it('converts motion and public device observations into probabilistic room and activity beliefs', () => {
     const result = inferTwinState([
       motionEvent('kitchen', 0.91),
