@@ -687,7 +687,11 @@ function evaluateInference(days: EvaluationDayInput[], homeDefinition: HomeDefin
     const inference = inferTwinState(day.events, {
       currentTime: snapshot.simClock.currentTime,
       peopleIds,
-      rooms
+      rooms,
+      externalContext: createExternalContext({
+        date: day.date,
+        seed: snapshot.runContext.seed
+      })
     });
     acceptedObservationEvents += inference.inputSummary.acceptedEventCount;
     rejectedTruthOrControlEvents += inference.inputSummary.rejectedEventTypes
@@ -729,7 +733,11 @@ function evaluateForecastSamples(
       const inference = inferTwinState(sample.eventsUntilNow, {
         currentTime: sample.currentTime,
         peopleIds,
-        rooms
+        rooms,
+        externalContext: createExternalContext({
+          date: day.date,
+          seed: currentSnapshot?.runContext.seed ?? day.finalSnapshot?.runContext.seed ?? 42
+        })
       });
       for (const truth of sample.truthByHorizon) {
         const forecast = inference.forecasts.find((candidate) => candidate.horizonMinutes === truth.horizonMinutes);

@@ -325,6 +325,30 @@ describe('long horizon simulation evaluation', () => {
       .toBeLessThan(withoutObservation.inference.forecastEvaluation.averageRiskBrierScoreByHorizon[15]);
   });
 
+  it('uses holiday calendar context when scoring home mode forecasts', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startDailyScenario({ date: '2026-10-01', seed: 42 });
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-10-01T10:30:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+
+    const report = buildEvaluationReport({
+      days: [{
+        date: '2026-10-01',
+        events: [],
+        finalSnapshot: snapshot,
+        forecastSamples: [{
+          currentTime: snapshot.simClock.currentTime,
+          eventsUntilNow: [],
+          truthByHorizon: [{ horizonMinutes: 15, snapshot }]
+        }]
+      }],
+      homeDefinition: getHomeDefinition()
+    });
+
+    expect(report.inference.forecastEvaluation.homeModeAccuracyByHorizon[15]).toBe(1);
+  });
+
   it('reports topology violations instead of hiding impossible movement', () => {
     const impossibleMove: PersonMovedEvent = {
       id: 'bad_move',
