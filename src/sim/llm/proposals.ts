@@ -183,7 +183,7 @@ export function createLlmProposalCacheKey(input: LlmProposalCacheKeyInput): stri
 export function resolveCachedOrFallbackProposal(input: CachedOrFallbackProposalInput): CachedOrFallbackProposalResult {
   const cacheKey = createLlmProposalCacheKey(input);
   const cached = input.cache?.[cacheKey];
-  if (cached) {
+  if (cached && validateCachedProposalBoundary(cached, input.availableResources)) {
     return {
       source: 'cache',
       cacheKey,
@@ -195,6 +195,15 @@ export function resolveCachedOrFallbackProposal(input: CachedOrFallbackProposalI
     cacheKey,
     proposal: createDeterministicFallbackProposal(input)
   };
+}
+
+function validateCachedProposalBoundary(
+  proposal: LlmProposal,
+  availableResources: Record<string, number>
+): boolean {
+  const parsed = rawProposalSchema.safeParse(proposal);
+  if (!parsed.success) return false;
+  return validateProposalBoundary(parsed.data, availableResources).length === 0;
 }
 
 function validateProposalBoundary(

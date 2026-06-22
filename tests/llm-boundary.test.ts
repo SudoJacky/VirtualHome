@@ -156,4 +156,41 @@ describe('LLM proposal boundary', () => {
     expect(missed.cacheKey).not.toBe(cacheKey);
     expect(missed.proposal).not.toEqual(cachedProposal);
   });
+
+  it('does not replay cached LLM proposals that violate boundary validation', () => {
+    const cacheKey = createLlmProposalCacheKey({
+      purpose: 'weekly_schedule',
+      prompt: 'Create cached weekly schedule',
+      availableResources: { cleaning_supplies: 1 }
+    });
+    const invalidCachedProposal = {
+      ...createDeterministicFallbackProposal({
+        purpose: 'weekly_schedule',
+        seed: 1,
+        prompt: 'Create cached weekly schedule',
+        availableResources: { cleaning_supplies: 1 }
+      }),
+      items: [
+        { id: 'turn-off-stove', type: 'device_command', text: 'Set stove powerW to 0.' }
+      ],
+      requiredResources: [{ resourceId: 'missing_safety_override', quantity: 1 }],
+      safetyTags: ['safety_critical_control']
+    };
+
+    const result = resolveCachedOrFallbackProposal({
+      purpose: 'weekly_schedule',
+      seed: 42,
+      prompt: 'Create cached weekly schedule',
+      availableResources: { cleaning_supplies: 1 },
+      cache: {
+        [cacheKey]: invalidCachedProposal
+      }
+    });
+
+    expect(result.source).toBe('deterministic-fallback');
+    expect(result.cacheKey).toBe(cacheKey);
+    expect(result.proposal).not.toEqual(invalidCachedProposal);
+    expect(result.proposal.items[0].type).toBe('schedule_hint');
+    expect(result.proposal.safetyTags).toEqual([]);
+  });
 });
