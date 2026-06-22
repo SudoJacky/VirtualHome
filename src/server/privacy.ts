@@ -47,12 +47,23 @@ export function projectEventsForPrivacy(events: TwinEvent[], privacy: PrivacyMod
 
   if (privacy === 'ml-observation') {
     return events
-      .filter((event): event is DeviceTelemetryEvent => event.type === 'DeviceTelemetry' && event.sourceLayer === 'sensor')
-      .filter((event) => !isSensitiveDevice(event.deviceType))
+      .filter((event): event is DeviceTelemetryEvent | DeviceStateChangedEvent => (
+        event.type === 'DeviceTelemetry' && event.sourceLayer === 'sensor' ||
+        event.type === 'DeviceStateChanged' && event.sourceLayer === 'world'
+      ))
+      .filter((event) => !isSensitiveDeviceEvent(event))
       .map((event) => {
         const projected = structuredClone(event);
         delete projected.reason;
         delete projected.eventExplanation;
+        if (projected.type === 'DeviceStateChanged') {
+          projected.lineage = {
+            ...projected.lineage,
+            causeEventIds: [],
+            episodeId: `ml-observation:${projected.deviceId}`,
+            observability: 'ml_observation'
+          };
+        }
         return projected;
       });
   }

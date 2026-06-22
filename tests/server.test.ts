@@ -659,6 +659,7 @@ describe('server API', () => {
     const observationEvents = (await server.inject({ method: 'GET', url: '/api/events?limit=100&privacy=ml-observation' })).json() as Array<{
       type: string;
       sourceLayer?: string;
+      deviceId?: string;
       reason?: string;
       eventExplanation?: unknown;
     }>;
@@ -668,8 +669,15 @@ describe('server API', () => {
     expect(observationState.activities).toEqual({});
     expect(observationState.alerts).toEqual({});
     expect(observationEvents.length).toBeGreaterThan(0);
-    expect(observationEvents.every((event) => event.type === 'DeviceTelemetry')).toBe(true);
-    expect(observationEvents.every((event) => event.sourceLayer === 'sensor')).toBe(true);
+    expect(observationEvents.every((event) => (
+      event.type === 'DeviceTelemetry' && event.sourceLayer === 'sensor' ||
+      event.type === 'DeviceStateChanged' && event.sourceLayer === 'world'
+    ))).toBe(true);
+    expect(observationEvents.some((event) => (
+      event.type === 'DeviceStateChanged' &&
+      event.sourceLayer === 'world' &&
+      event.deviceId === 'fridge_01'
+    ))).toBe(true);
     expect(observationEvents.every((event) => event.reason === undefined)).toBe(true);
     expect(observationEvents.every((event) => event.eventExplanation === undefined)).toBe(true);
     expect(serialized).not.toContain('adult_1');
