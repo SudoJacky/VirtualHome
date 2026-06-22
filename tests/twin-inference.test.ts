@@ -131,6 +131,40 @@ describe('twin inference model', () => {
     expect(holiday.people.adult_2.room.probabilities.living_room).toBeGreaterThan(workday.people.adult_2.room.probabilities.living_room);
   });
 
+  it('uses weather context to soften away priors during severe weather', () => {
+    const clear = inferTwinState([], {
+      currentTime: '2026-07-14T10:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'entrance', 'kitchen'],
+      externalContext: createExternalContext({
+        date: '2026-07-14',
+        overrides: {
+          weatherCondition: 'clear',
+          workday: true,
+          schoolDay: true,
+          holidayName: null
+        }
+      })
+    });
+    const heavyRain = inferTwinState([], {
+      currentTime: '2026-07-14T10:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'entrance', 'kitchen'],
+      externalContext: createExternalContext({
+        date: '2026-07-14',
+        overrides: {
+          weatherCondition: 'heavy_rain',
+          workday: true,
+          schoolDay: true,
+          holidayName: null
+        }
+      })
+    });
+
+    expect(clear.homeMode.probabilities.away).toBeGreaterThan(heavyRain.homeMode.probabilities.away);
+    expect(heavyRain.people.adult_1.room.probabilities.living_room).toBeGreaterThan(clear.people.adult_1.room.probabilities.living_room);
+  });
+
   it('rejects truth and control events instead of reading simulator labels', () => {
     const truthEvent: PersonMovedEvent = {
       ...baseEvent,

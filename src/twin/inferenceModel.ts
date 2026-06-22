@@ -158,12 +158,13 @@ function inferHomeMode(
   externalContext: ExternalContext | undefined
 ): BeliefDistribution<InferredHomeMode> {
   const workday = isWorkday(externalContext);
+  const severeWeather = isSevereWeather(externalContext);
   const scores: Record<InferredHomeMode, number> = {
     morning: minuteOfDay >= 6 * 60 && minuteOfDay < 10 * 60 ? 2.5 : 0.5,
     breakfast: minuteOfDay >= 6 * 60 && minuteOfDay < 9 * 60 ? 2.2 : 0.4,
-    away: minuteOfDay >= 9 * 60 && minuteOfDay < 16 * 60 ? workday ? 2.4 : 0.6 : 0.5,
+    away: minuteOfDay >= 9 * 60 && minuteOfDay < 16 * 60 ? workday ? severeWeather ? 1.6 : 2.4 : 0.6 : 0.5,
     dinner: minuteOfDay >= 17 * 60 && minuteOfDay < 20 * 60 ? 3.2 : 0.4,
-    evening_home: minuteOfDay >= 18 * 60 && minuteOfDay < 22 * 60 ? 2.1 : workday ? 0.5 : 1.3,
+    evening_home: minuteOfDay >= 18 * 60 && minuteOfDay < 22 * 60 ? 2.1 : workday ? severeWeather ? 0.9 : 0.5 : 1.3,
     sleeping: minuteOfDay >= 22 * 60 || minuteOfDay < 6 * 60 ? 3.1 : 0.4,
     alert: evidence.waterLeakDetected ? 5.5 : evidence.fridgeDoorOpen || evidence.routerOffline ? 1.2 : 0.2
   };
@@ -175,6 +176,7 @@ function inferHomeMode(
 
 function roomPrior(personId: string, roomId: RoomId, minuteOfDay: number, externalContext: ExternalContext | undefined): number {
   const workday = isWorkday(externalContext);
+  const severeWeather = isSevereWeather(externalContext);
   if (minuteOfDay >= 22 * 60 || minuteOfDay < 6 * 60) {
     if (personId === 'child_1' && roomId === 'child_bedroom') return 3;
     if (personId !== 'child_1' && roomId === 'master_bedroom') return 3;
@@ -188,12 +190,20 @@ function roomPrior(personId: string, roomId: RoomId, minuteOfDay: number, extern
   if (personId === 'adult_2' && roomId === 'study' && minuteOfDay >= 9 * 60 && minuteOfDay < 18 * 60 && workday) {
     return 2.4;
   }
+  if (severeWeather && minuteOfDay >= 9 * 60 && minuteOfDay < 18 * 60 && roomId === 'living_room') {
+    return workday ? 1.5 : 2;
+  }
   if (!workday && minuteOfDay >= 9 * 60 && minuteOfDay < 18 * 60 && roomId === 'living_room') return 1.8;
   return 1;
 }
 
 function isWorkday(externalContext: ExternalContext | undefined): boolean {
   return externalContext?.calendar.workday ?? true;
+}
+
+function isSevereWeather(externalContext: ExternalContext | undefined): boolean {
+  const condition = externalContext?.weather.condition;
+  return condition === 'heavy_rain' || condition === 'hot' || condition === 'cold';
 }
 
 function minuteOfDayFromTime(time: string): number {
