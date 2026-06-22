@@ -6,6 +6,14 @@ const roomIdSchema = {
   type: 'string',
   enum: ['entrance', 'living_room', 'kitchen', 'dining_room', 'master_bedroom', 'child_bedroom', 'study', 'bathroom', 'garden']
 };
+const eventSourceLayerSchema = {
+  type: 'string',
+  enum: ['truth', 'world', 'sensor', 'inference', 'control']
+};
+const eventObservabilitySchema = {
+  type: 'string',
+  enum: ['private', 'admin', 'ml_observation', 'public']
+};
 const idempotencyKeySchema = {
   type: 'string',
   minLength: 1,
@@ -46,9 +54,39 @@ const twinSnapshotSchema: JsonSchema = {
   }
 };
 
+const eventLineageSchema: JsonSchema = {
+  type: 'object',
+  required: ['eventTime', 'ingestTime', 'sourceLayer', 'causeEventIds', 'episodeId', 'observability', 'quality', 'schemaVersion', 'behaviorModelVersion'],
+  properties: {
+    eventTime: isoDateTimeSchema,
+    ingestTime: isoDateTimeSchema,
+    sourceLayer: eventSourceLayerSchema,
+    causeEventIds: {
+      type: 'array',
+      items: stringSchema
+    },
+    episodeId: stringSchema,
+    parentEpisodeId: stringSchema,
+    observability: eventObservabilitySchema,
+    quality: {
+      type: 'object',
+      properties: {
+        delayedMs: { type: 'number', minimum: 0 },
+        dropped: { type: 'boolean' },
+        duplicated: { type: 'boolean' },
+        outOfOrder: { type: 'boolean' },
+        noisy: { type: 'boolean' },
+        confidence: { type: 'number', minimum: 0, maximum: 1 }
+      }
+    },
+    schemaVersion: { type: 'integer', minimum: 1 },
+    behaviorModelVersion: stringSchema
+  }
+};
+
 const twinEventBaseSchema: JsonSchema = {
   type: 'object',
-  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence'],
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'sourceLayer', 'lineage'],
   properties: {
     id: stringSchema,
     runId: stringSchema,
@@ -58,9 +96,73 @@ const twinEventBaseSchema: JsonSchema = {
     homeId: stringSchema,
     scenarioId: stringSchema,
     sequence: { type: 'integer', minimum: 1 },
+    sourceLayer: eventSourceLayerSchema,
+    lineage: { $ref: '#/components/schemas/EventLineage' },
     reason: stringSchema
   },
   additionalProperties: true
+};
+
+const deviceTelemetryEventSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'sourceLayer', 'lineage', 'roomId', 'deviceId', 'deviceType', 'measurements'],
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    type: { type: 'string', enum: ['DeviceTelemetry'] },
+    ts: isoDateTimeSchema,
+    simTime: isoDateTimeSchema,
+    homeId: stringSchema,
+    scenarioId: stringSchema,
+    sequence: { type: 'integer', minimum: 1 },
+    sourceLayer: { type: 'string', enum: ['sensor'] },
+    lineage: { $ref: '#/components/schemas/EventLineage' },
+    reason: stringSchema,
+    roomId: roomIdSchema,
+    deviceId: stringSchema,
+    deviceType: stringSchema,
+    measurements: {
+      type: 'object',
+      additionalProperties: {
+        anyOf: [
+          { type: 'number' },
+          { type: 'boolean' }
+        ]
+      }
+    }
+  }
+};
+
+const deviceStateChangedEventSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'sourceLayer', 'lineage', 'roomId', 'deviceId', 'deviceType', 'state'],
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    type: { type: 'string', enum: ['DeviceStateChanged'] },
+    ts: isoDateTimeSchema,
+    simTime: isoDateTimeSchema,
+    homeId: stringSchema,
+    scenarioId: stringSchema,
+    sequence: { type: 'integer', minimum: 1 },
+    sourceLayer: { type: 'string', enum: ['world'] },
+    lineage: { $ref: '#/components/schemas/EventLineage' },
+    reason: stringSchema,
+    roomId: roomIdSchema,
+    deviceId: stringSchema,
+    deviceType: stringSchema,
+    state: {
+      type: 'object',
+      additionalProperties: {
+        anyOf: [
+          stringSchema,
+          { type: 'number' },
+          { type: 'boolean' },
+          { type: 'null' }
+        ]
+      }
+    }
+  }
 };
 
 const abnormalityInjectedEventSchema: JsonSchema = {
@@ -153,6 +255,8 @@ const externalInteractionOccurredEventSchema: JsonSchema = {
 
 const twinEventSchema: JsonSchema = {
   anyOf: [
+    { $ref: '#/components/schemas/DeviceTelemetryEvent' },
+    { $ref: '#/components/schemas/DeviceStateChangedEvent' },
     { $ref: '#/components/schemas/AbnormalityInjectedEvent' },
     { $ref: '#/components/schemas/AlertStatusChangedEvent' },
     { $ref: '#/components/schemas/ObjectMovedEvent' },
@@ -905,6 +1009,9 @@ export function buildOpenApiDocument(): Record<string, unknown> {
       schemas: {
         TwinSnapshot: twinSnapshotSchema,
         TwinEvent: twinEventSchema,
+        EventLineage: eventLineageSchema,
+        DeviceTelemetryEvent: deviceTelemetryEventSchema,
+        DeviceStateChangedEvent: deviceStateChangedEventSchema,
         AbnormalityInjectedEvent: abnormalityInjectedEventSchema,
         AlertStatusChangedEvent: alertStatusChangedEventSchema,
         ObjectMovedEvent: objectMovedEventSchema,
