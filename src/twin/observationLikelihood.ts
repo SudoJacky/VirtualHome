@@ -21,6 +21,8 @@ export interface ObservationEvidence {
   co2QualityByRoom: Partial<Record<RoomId, number>>;
   pm25ByRoom: Partial<Record<RoomId, number>>;
   pm25QualityByRoom: Partial<Record<RoomId, number>>;
+  waterFlowByRoom: Partial<Record<RoomId, number>>;
+  waterFlowQualityByRoom: Partial<Record<RoomId, number>>;
   droppedObservationEvents: number;
   observationQuality: number;
   fridgeDoorOpen: boolean;
@@ -44,6 +46,8 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
   const co2QualityByRoom: Partial<Record<RoomId, number>> = {};
   const pm25ByRoom: Partial<Record<RoomId, number>> = {};
   const pm25QualityByRoom: Partial<Record<RoomId, number>> = {};
+  const waterFlowByRoom: Partial<Record<RoomId, number>> = {};
+  const waterFlowQualityByRoom: Partial<Record<RoomId, number>> = {};
   let droppedObservationEvents = 0;
   let fridgeDoorOpen = false;
   let fridgeDoorConfidence = 0;
@@ -88,6 +92,13 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
         if (pm25 >= (pm25ByRoom[event.roomId] ?? 0)) {
           pm25ByRoom[event.roomId] = pm25;
           pm25QualityByRoom[event.roomId] = measurementConfidence(event, 0.8) * observationQualityWeight(event);
+        }
+      }
+      if (typeof event.measurements.flow_l_min === 'number') {
+        const flow = Number(event.measurements.flow_l_min);
+        if (flow > 0 && flow >= (waterFlowByRoom[event.roomId] ?? 0)) {
+          waterFlowByRoom[event.roomId] = flow;
+          waterFlowQualityByRoom[event.roomId] = measurementConfidence(event, 0.8) * observationQualityWeight(event);
         }
       }
       if (event.measurements.online === false) {
@@ -149,6 +160,8 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
     co2QualityByRoom,
     pm25ByRoom,
     pm25QualityByRoom,
+    waterFlowByRoom,
+    waterFlowQualityByRoom,
     droppedObservationEvents,
     observationQuality: acceptedEvents.length > 0
       ? Math.max(0.45, 1 - droppedObservationEvents / acceptedEvents.length * 0.55)
@@ -172,7 +185,8 @@ export function roomEvidenceScore(roomId: RoomId, evidence: ObservationEvidence)
     (evidence.activeDeviceRooms[roomId] ?? 0) * 2 +
     (roomId === 'master_bedroom' && evidence.sleepSensorInBed ? 4.4 : 0) +
     co2OccupancyScore(evidence.co2ByRoom[roomId]) * (evidence.co2QualityByRoom[roomId] ?? 1) +
-    pm25ActivityScore(evidence.pm25ByRoom[roomId]) * (evidence.pm25QualityByRoom[roomId] ?? 1)
+    pm25ActivityScore(evidence.pm25ByRoom[roomId]) * (evidence.pm25QualityByRoom[roomId] ?? 1) +
+    waterFlowActivityScore(evidence.waterFlowByRoom[roomId]) * (evidence.waterFlowQualityByRoom[roomId] ?? 1)
   ) * evidence.observationQuality;
 }
 
@@ -189,6 +203,13 @@ function pm25ActivityScore(pm25?: number): number {
   if (pm25 >= 55) return 2.4;
   if (pm25 >= 35) return 1.4;
   return 0;
+}
+
+function waterFlowActivityScore(flow?: number): number {
+  if (flow === undefined) return 0;
+  if (flow >= 4) return 4.6;
+  if (flow >= 1.2) return 2.8;
+  return 1.2;
 }
 
 function measurementConfidence(event: DeviceTelemetryEvent, fallback: number): number {

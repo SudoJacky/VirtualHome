@@ -142,6 +142,7 @@ function explainRoomBelief(
   if (evidence.activeDeviceRooms[roomId] !== undefined) reasons.push(`observation:${roomId}_device_state`);
   if (evidence.co2ByRoom[roomId] !== undefined) reasons.push(`observation:${roomId}_co2`);
   if (evidence.pm25ByRoom[roomId] !== undefined) reasons.push(`observation:${roomId}_pm25`);
+  if (evidence.waterFlowByRoom[roomId] !== undefined) reasons.push(`observation:${roomId}_water_flow`);
   if (roomId === 'master_bedroom' && evidence.sleepSensorInBed) reasons.push('observation:sleep_sensor_in_bed');
   if (reasons.length === 0) {
     if (minuteOfDay >= 22 * 60 || minuteOfDay < 6 * 60) reasons.push('time_prior:sleep_window');
@@ -169,6 +170,9 @@ function explainActivityBelief(
   }
   if (activity === 'sleeping_or_resting' && roomId === 'master_bedroom' && evidence.sleepSensorInBed) {
     reasons.push('observation:sleep_sensor_in_bed');
+  }
+  if (activity === 'bathroom_or_hygiene' && roomId === 'bathroom' && (evidence.waterFlowByRoom.bathroom ?? 0) > 0) {
+    reasons.push('observation:bathroom_water_flow');
   }
   if (reasons.length === 0) {
     reasons.push(minuteOfDay >= 22 * 60 || minuteOfDay < 6 * 60 ? 'time_prior:sleep_window' : 'time_prior:daily_routine');
@@ -243,6 +247,7 @@ function inferPersonActivity(
     meal_prep_or_kitchen_visit: roomId === 'kitchen' ? 2.6 : 0.6,
     household_leisure: minuteOfDay >= 18 * 60 && minuteOfDay < 22 * 60 ? 2.2 : 0.8,
     remote_work_or_study: roomId === 'study' ? 2.4 : 0.5,
+    bathroom_or_hygiene: roomId === 'bathroom' ? 2.5 : 0.4,
     away_or_unknown: 0.8
   };
   if (roomId === 'kitchen' && evidence.fridgeDoorOpen) {
@@ -259,6 +264,9 @@ function inferPersonActivity(
   }
   if (roomId === 'master_bedroom' && evidence.sleepSensorInBed) {
     scores.sleeping_or_resting += 4.4;
+  }
+  if (roomId === 'bathroom' && (evidence.waterFlowByRoom.bathroom ?? 0) > 0) {
+    scores.bathroom_or_hygiene += 3.4 * (evidence.waterFlowQualityByRoom.bathroom ?? 1);
   }
   return createBeliefDistribution(scores);
 }

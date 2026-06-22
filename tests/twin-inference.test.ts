@@ -601,6 +601,53 @@ describe('twin inference model', () => {
       .toBeLessThan(clean.people.adult_1.activity.probabilities.meal_prep_or_kitchen_visit);
   });
 
+  it('uses water flow telemetry to infer bathroom occupancy and hygiene activity', () => {
+    const result = inferTwinState([
+      telemetryEvent('bathroom_water_01', 'water_flow_sensor', 'bathroom', { flow_l_min: 4.8, confidence: 0.9 })
+    ], {
+      currentTime: '2026-06-17T07:20:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'bathroom', 'kitchen']
+    });
+
+    expect(result.inputSummary.acceptedEventCount).toBe(1);
+    expect(result.people.adult_1.room.top).toBe('bathroom');
+    expect(result.people.adult_1.activity.top).toBe('bathroom_or_hygiene');
+    expect(result.explanations.people.adult_1.room).toContain('observation:bathroom_water_flow');
+    expect(result.explanations.people.adult_1.activity).toContain('observation:bathroom_water_flow');
+    expect(JSON.stringify(result.explanations.people.adult_1)).not.toContain('truth');
+    expect(JSON.stringify(result.explanations.people.adult_1)).not.toContain('control');
+  });
+
+  it('reduces bathroom and hygiene confidence when water flow telemetry is low quality', () => {
+    const clean = inferTwinState([
+      telemetryEvent('bathroom_water_01', 'water_flow_sensor', 'bathroom', { flow_l_min: 4.8, confidence: 0.9 })
+    ], {
+      currentTime: '2026-06-17T07:20:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'bathroom', 'kitchen']
+    });
+    const degraded = inferTwinState([
+      telemetryEvent(
+        'bathroom_water_01',
+        'water_flow_sensor',
+        'bathroom',
+        { flow_l_min: 4.8, confidence: 0.9 },
+        { delayedMs: 12 * 60 * 1000, noisy: true, confidence: 0.4 }
+      )
+    ], {
+      currentTime: '2026-06-17T07:20:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'bathroom', 'kitchen']
+    });
+
+    expect(degraded.people.adult_1.room.top).toBe('bathroom');
+    expect(degraded.people.adult_1.room.confidence).toBeLessThan(clean.people.adult_1.room.confidence);
+    expect(degraded.people.adult_1.activity.top).toBe('bathroom_or_hygiene');
+    expect(degraded.people.adult_1.activity.probabilities.bathroom_or_hygiene)
+      .toBeLessThan(clean.people.adult_1.activity.probabilities.bathroom_or_hygiene);
+  });
+
   it('raises senior wellness and leak risks from sensor telemetry without truth labels', () => {
     const result = inferTwinState([
       telemetryEvent('master_sleep_01', 'sleep_sensor', 'master_bedroom', { in_bed: true, confidence: 0.96 }),
