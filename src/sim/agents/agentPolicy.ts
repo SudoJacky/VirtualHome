@@ -97,8 +97,9 @@ function scoreHabit(persona: PersonaProfile, template: ActivityTemplate, minuteO
   const roomAffinity = persona.primaryRooms.includes(template.targetRoom) ? 8 : 0;
   const roleAffinity = template.goals.some((goal) => persona.careResponsibilities.includes(goal)) ? 12 : 0;
   const choreAffinity = template.goals.includes('chore') ? persona.chorePreference * 12 : 0;
+  const mealAffinity = scoreMealAffinity(persona, template);
   const chronotypeBonus = persona.chronotype === 'early' && minuteOfDay < 9 * 60 ? 4 : persona.chronotype === 'late' && minuteOfDay > 20 * 60 ? 4 : 0;
-  return roomAffinity + roleAffinity + choreAffinity + chronotypeBonus;
+  return roomAffinity + roleAffinity + choreAffinity + mealAffinity + chronotypeBonus;
 }
 
 function scoreResourceUrgency(input: ActivityDecisionInput, template: ActivityTemplate): number {
@@ -110,6 +111,19 @@ function scoreResourceUrgency(input: ActivityDecisionInput, template: ActivityTe
   }
   if (template.id === 'take_medicine' && input.persona.role === 'senior') {
     return (input.availableResources.medicine ?? 0) > 0 ? 8 : 0;
+  }
+  return 0;
+}
+
+function scoreMealAffinity(persona: PersonaProfile, template: ActivityTemplate): number {
+  if (template.id === 'prepare_breakfast') {
+    return persona.mealRegularity * 18;
+  }
+  if (template.id === 'eat_meal') {
+    return persona.mealRegularity * 12;
+  }
+  if (template.id === 'eat_simple_food' || template.id === 'order_takeout') {
+    return (1 - persona.mealRegularity) * 6;
   }
   return 0;
 }

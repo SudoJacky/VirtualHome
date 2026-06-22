@@ -137,4 +137,41 @@ describe('agent policy', () => {
     expect(highLaundryDecision.activityId).toBe('laundry_cycle');
     expect(highLaundryDecision.score).toBeGreaterThan(lowLaundryDecision.score);
   });
+
+  it('raises cooking priority for personas with stronger meal regularity', () => {
+    const lowMealRegularity = {
+      ...getPersona('adult_1'),
+      mealRegularity: 0.18
+    };
+    const highMealRegularity = {
+      ...getPersona('adult_1'),
+      mealRegularity: 0.94
+    };
+    const sharedInput = {
+      personId: 'adult_1',
+      needs: { ...baselineNeeds, hunger: 68, taskPressure: 8, stress: 10 },
+      currentActivity: 'idle',
+      currentRoom: 'kitchen' as const,
+      homeMode: 'morning' as const,
+      minuteOfDay: 7 * 60,
+      availableResources: {
+        breakfast_food: 1,
+        simple_food: 1,
+        prepared_meal: 0,
+        door_access: 1
+      }
+    };
+
+    const lowDecision = selectActivity({
+      ...sharedInput,
+      persona: lowMealRegularity
+    });
+    const highDecision = selectActivity({
+      ...sharedInput,
+      persona: highMealRegularity
+    });
+
+    expect(highDecision.activityId).toBe('prepare_breakfast');
+    expect(highDecision.score).toBeGreaterThan(lowDecision.score);
+  });
 });
