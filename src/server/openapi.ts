@@ -605,7 +605,7 @@ const twinSocketHeartbeatMessageSchema: JsonSchema = {
 
 const deviceValueEventSchema: JsonSchema = {
   type: 'object',
-  required: ['id', 'sourceEventId', 'sourceEventType', 'runId', 'sequence', 'ts', 'simTime', 'homeId', 'scenarioId', 'roomId', 'deviceId', 'deviceType', 'field', 'value'],
+  required: ['id', 'sourceEventId', 'sourceEventType', 'runId', 'sequence', 'ts', 'simTime', 'homeId', 'roomId', 'deviceId', 'deviceType', 'field', 'value'],
   properties: {
     id: stringSchema,
     sourceEventId: stringSchema,
@@ -615,7 +615,6 @@ const deviceValueEventSchema: JsonSchema = {
     ts: isoDateTimeSchema,
     simTime: isoDateTimeSchema,
     homeId: stringSchema,
-    scenarioId: stringSchema,
     roomId: roomIdSchema,
     deviceId: stringSchema,
     deviceType: stringSchema,

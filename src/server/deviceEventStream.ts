@@ -9,7 +9,6 @@ export interface DeviceValueEvent {
   ts: string;
   simTime: string;
   homeId: string;
-  scenarioId: string;
   roomId: string;
   deviceId: string;
   deviceType: string;
@@ -56,7 +55,6 @@ function deviceValueEvent(
     ts: event.ts,
     simTime: event.simTime,
     homeId: event.homeId,
-    scenarioId: event.scenarioId,
     roomId: event.roomId,
     deviceId: event.deviceId,
     deviceType: event.deviceType,

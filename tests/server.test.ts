@@ -682,6 +682,7 @@ describe('server API', () => {
     expect(JSON.stringify(update.events)).not.toContain('eventExplanation');
     expect(JSON.stringify(update.events)).not.toContain('reason');
     expect(JSON.stringify(update.events)).not.toContain('activity');
+    expect(JSON.stringify(update.events)).not.toContain('scenarioId');
     expect(JSON.stringify(update.events)).not.toContain('PersonMoved');
     expect(JSON.stringify(update.events)).not.toContain('ScenarioControl');
 
