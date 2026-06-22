@@ -1108,6 +1108,7 @@ describe('virtual home simulator MVP', () => {
       family_phone: 'living_room'
     };
     simulator.restore(snapshot, simulator.getEvents());
+    const beforeFetch = simulator.getSnapshot();
     const events = simulator.advanceMinutes(1);
     const updated = simulator.getSnapshot();
 
@@ -1128,6 +1129,16 @@ describe('virtual home simulator MVP', () => {
         activity: 'bring_family_phone'
       })
     ]));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'ObjectMoved',
+        objectId: 'family_phone',
+        from: 'living_room',
+        to: 'garden',
+        carriedByPersonId: 'adult_1',
+        sourceLayer: 'world'
+      })
+    ]));
     expect(events.some((event): event is ConversationOccurredEvent => (
       event.type === 'ConversationOccurred' &&
       event.topic === 'senior_phone_fetch' &&
@@ -1140,6 +1151,10 @@ describe('virtual home simulator MVP', () => {
         ruleId: 'senior_phone_fetch'
       })
     ]));
+
+    const replayed = createSimulator({ seed: 1126 });
+    replayed.restore(beforeFetch, events);
+    expect(replayed.getSnapshot().worldState.objectLocations.family_phone).toBe('garden');
   });
 
   it('responds to a visitor at the door by greeting them at the entrance', () => {

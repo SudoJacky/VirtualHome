@@ -250,6 +250,14 @@ export interface PersonMovedEvent extends BaseTwinEvent {
   travelMinutes?: number;
 }
 
+export interface ObjectMovedEvent extends BaseTwinEvent {
+  type: 'ObjectMoved';
+  objectId: string;
+  from: RoomId;
+  to: RoomId;
+  carriedByPersonId?: string;
+}
+
 export interface ActivityStartedEvent extends BaseTwinEvent {
   type: 'ActivityStarted';
   activityId: string;
@@ -333,6 +341,7 @@ export type TwinEvent =
   | DeviceTelemetryEvent
   | DeviceStateChangedEvent
   | PersonMovedEvent
+  | ObjectMovedEvent
   | ActivityStartedEvent
   | ActivityEndedEvent
   | ConversationOccurredEvent

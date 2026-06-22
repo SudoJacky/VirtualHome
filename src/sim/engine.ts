@@ -27,6 +27,7 @@ import type {
   EventObservability,
   EventSourceLayer,
   HomeMode,
+  ObjectMovedEvent,
   PersonMovedEvent,
   RoomId,
   ScenarioControlEvent,
@@ -1441,6 +1442,7 @@ class Simulator implements VirtualHomeSimulator {
 
     events.push(...this.createRoutedPersonMovedEvents(caregiver.id, phoneLocation, 'fetch_family_phone', decision.reason));
     events.push(...this.createRoutedPersonMovedEvents(caregiver.id, decision.targetRoom, decision.targetActivity, decision.reason));
+    events.push(this.moveObject('family_phone', phoneLocation, decision.targetRoom, caregiver.id, decision.reason));
     this.state.snapshot.worldState.objectLocations.family_phone = decision.targetRoom;
     events.push(this.createEvent({
       type: 'AutomationTriggered',
@@ -2718,6 +2720,17 @@ class Simulator implements VirtualHomeSimulator {
     });
   }
 
+  private moveObject(objectId: string, from: RoomId, to: RoomId, carriedByPersonId: string | undefined, reason: string): ObjectMovedEvent {
+    return this.createEvent({
+      type: 'ObjectMoved',
+      objectId,
+      from,
+      to,
+      ...(carriedByPersonId ? { carriedByPersonId } : {}),
+      reason
+    });
+  }
+
   private createTimedPersonMovedEvent(personId: string, from: RoomId | 'away', to: RoomId | 'away', activity: string, reason: string, travelMinutes: number): PersonMovedEvent {
     if (travelMinutes > 0) {
       for (let minute = 0; minute < travelMinutes; minute += 1) {
@@ -3147,6 +3160,9 @@ function replayEventsOntoSnapshot(snapshot: TwinSnapshot, events: TwinEvent[]): 
         }
         break;
       }
+      case 'ObjectMoved':
+        snapshot.worldState.objectLocations[event.objectId] = event.to;
+        break;
       case 'ActivityStarted':
         snapshot.activities[event.activityId] = {
           activityId: event.activityId,
@@ -3623,7 +3639,7 @@ function inferEventSourceLayer(event: Omit<TwinEvent, 'id' | 'runId' | 'ts' | 's
   if (event.type === 'DeviceTelemetry') {
     return 'sensor';
   }
-  if (event.type === 'DeviceStateChanged') {
+  if (event.type === 'DeviceStateChanged' || event.type === 'ObjectMoved') {
     return 'world';
   }
   return 'inference';
