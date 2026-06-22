@@ -16,13 +16,32 @@ describe('household objects and affordances', () => {
     expect(objectsByRoom(objects, 'kitchen').map((object) => object.id)).toEqual(expect.arrayContaining([
       'kitchen_fridge',
       'pantry_food',
-      'dirty_dishes'
+      'dirty_dishes',
+      'kitchen_cabinet'
+    ]));
+    expect(objectsByRoom(objects, 'living_room').map((object) => object.id)).toEqual(expect.arrayContaining([
+      'living_sofa',
+      'family_phone'
+    ]));
+    expect(objectsByRoom(objects, 'bathroom').map((object) => object.id)).toEqual(expect.arrayContaining([
+      'bathroom_sink',
+      'bathtub',
+      'clothing_pile'
+    ]));
+    expect(objectsByRoom(objects, 'entrance').map((object) => object.id)).toEqual(expect.arrayContaining([
+      'front_door',
+      'hallway_passage'
     ]));
     expect(objectsWithAffordance(objects, 'sleep').map((object) => object.id)).toContain('master_bed');
     expect(getAffordancesForActivity('prepare_breakfast').map((affordance) => affordance.objectId)).toEqual(expect.arrayContaining([
       'kitchen_fridge',
       'stove_fixture',
-      'pantry_food'
+      'pantry_food',
+      'kitchen_cabinet'
+    ]));
+    expect(getAffordancesForActivity('bathroom_routine').map((affordance) => affordance.objectId)).toEqual(expect.arrayContaining([
+      'bathroom_sink',
+      'bathtub'
     ]));
   });
 });
