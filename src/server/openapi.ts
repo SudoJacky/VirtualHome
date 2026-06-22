@@ -126,11 +126,37 @@ const objectMovedEventSchema: JsonSchema = {
   }
 };
 
+const externalInteractionOccurredEventSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'runId', 'type', 'simTime', 'homeId', 'scenarioId', 'sequence', 'interactionId', 'actorKind', 'purpose', 'roomId', 'status', 'relatedDeviceIds'],
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    type: { type: 'string', enum: ['ExternalInteractionOccurred'] },
+    ts: isoDateTimeSchema,
+    simTime: isoDateTimeSchema,
+    homeId: stringSchema,
+    scenarioId: stringSchema,
+    sequence: { type: 'integer', minimum: 1 },
+    reason: stringSchema,
+    interactionId: stringSchema,
+    actorKind: { type: 'string', enum: ['courier', 'visitor', 'repair'] },
+    purpose: stringSchema,
+    roomId: roomIdSchema,
+    status: { type: 'string', enum: ['detected', 'acknowledged', 'completed', 'scheduled'] },
+    relatedDeviceIds: {
+      type: 'array',
+      items: stringSchema
+    }
+  }
+};
+
 const twinEventSchema: JsonSchema = {
   anyOf: [
     { $ref: '#/components/schemas/AbnormalityInjectedEvent' },
     { $ref: '#/components/schemas/AlertStatusChangedEvent' },
     { $ref: '#/components/schemas/ObjectMovedEvent' },
+    { $ref: '#/components/schemas/ExternalInteractionOccurredEvent' },
     twinEventBaseSchema
   ]
 };
@@ -882,6 +908,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         AbnormalityInjectedEvent: abnormalityInjectedEventSchema,
         AlertStatusChangedEvent: alertStatusChangedEventSchema,
         ObjectMovedEvent: objectMovedEventSchema,
+        ExternalInteractionOccurredEvent: externalInteractionOccurredEventSchema,
         HomeDefinition: homeDefinitionSchema,
         DeviceAccessRecord: deviceAccessRecordSchema,
         DeviceCapability: deviceCapabilitySchema,

@@ -117,12 +117,16 @@ describe('server API', () => {
     expect(document.components.schemas).toHaveProperty('AbnormalityInjectedEvent');
     expect(document.components.schemas).toHaveProperty('AlertStatusChangedEvent');
     expect(document.components.schemas).toHaveProperty('ObjectMovedEvent');
+    expect(document.components.schemas).toHaveProperty('ExternalInteractionOccurredEvent');
     expect(document.components.schemas).toHaveProperty('TwinSocketUpdateMessage');
     expect(document.components.schemas).toHaveProperty('TwinSocketHeartbeatMessage');
     expect(document.components.schemas.TwinEvent.anyOf).toContainEqual({ $ref: '#/components/schemas/AlertStatusChangedEvent' });
     expect(document.components.schemas.TwinEvent.anyOf).toContainEqual({ $ref: '#/components/schemas/ObjectMovedEvent' });
+    expect(document.components.schemas.TwinEvent.anyOf).toContainEqual({ $ref: '#/components/schemas/ExternalInteractionOccurredEvent' });
     expect(document.components.schemas.ObjectMovedEvent.required).toEqual(expect.arrayContaining(['type', 'objectId', 'from', 'to']));
     expect(document.components.schemas.ObjectMovedEvent.properties.carriedByPersonId).toEqual({ type: 'string' });
+    expect(document.components.schemas.ExternalInteractionOccurredEvent.required).toEqual(expect.arrayContaining(['type', 'interactionId', 'actorKind', 'purpose', 'roomId', 'status']));
+    expect(document.components.schemas.ExternalInteractionOccurredEvent.properties.actorKind.enum).toEqual(['courier', 'visitor', 'repair']);
     expect(document.components.schemas.AbnormalityInjectedEvent.required).toEqual(expect.arrayContaining(['type', 'kind', 'affectedEntities']));
     expect(document.components.schemas.AbnormalityInjectedEvent.properties.kind.enum).toEqual([
       'door_left_open',
