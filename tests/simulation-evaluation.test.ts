@@ -346,13 +346,59 @@ describe('long horizon simulation evaluation', () => {
     expect(report.sensor.petMotionFalsePositiveRatio).toBeGreaterThanOrEqual(0);
     expect(report.sensor.petMotionFalsePositiveRatio).toBeLessThanOrEqual(1);
     expect(report.sensor.droppedEvents).toBeGreaterThanOrEqual(0);
+    expect(report.sensor.outOfOrderEvents).toBeGreaterThanOrEqual(0);
     expect(report.sensor.qualityRatios).toMatchObject({
       delayed: expect.any(Number),
       noisy: expect.any(Number),
       duplicated: expect.any(Number),
-      dropped: expect.any(Number)
+      dropped: expect.any(Number),
+      outOfOrder: expect.any(Number)
     });
     expect(Object.values(report.sensor.qualityRatios).every((ratio) => ratio >= 0 && ratio <= 1)).toBe(true);
+  });
+
+  it('reports out-of-order telemetry in sensor quality metrics', () => {
+    const staleContact: DeviceTelemetryEvent = {
+      id: 'stale_contact',
+      runId: 'run_sensor_quality',
+      type: 'DeviceTelemetry',
+      ts: '2026-06-17T08:01:00+08:00',
+      simTime: '2026-06-17T08:01:00+08:00',
+      homeId: 'default_home',
+      scenarioId: 'weekday_normal',
+      sequence: 1,
+      sourceLayer: 'sensor',
+      lineage: {
+        eventTime: '2026-06-17T08:00:00+08:00',
+        ingestTime: '2026-06-17T08:01:00+08:00',
+        sourceLayer: 'sensor',
+        causeEventIds: [],
+        episodeId: 'sensor:fridge_01',
+        observability: 'ml_observation',
+        quality: {
+          delayedMs: 60000,
+          outOfOrder: true,
+          confidence: 0.72
+        },
+        schemaVersion: 1,
+        behaviorModelVersion: 'test'
+      },
+      roomId: 'kitchen',
+      deviceId: 'fridge_01',
+      deviceType: 'fridge',
+      measurements: {
+        contact_open: false,
+        confidence: 0.72
+      }
+    };
+
+    const report = buildEvaluationReport({
+      days: [{ date: '2026-06-17', events: [staleContact], finalSnapshot: null }],
+      homeDefinition: getHomeDefinition()
+    });
+
+    expect(report.sensor.outOfOrderEvents).toBe(1);
+    expect(report.sensor.qualityRatios.outOfOrder).toBe(1);
   });
 
   it('reports downstream utility metrics from a synthetic observation-trained baseline', () => {

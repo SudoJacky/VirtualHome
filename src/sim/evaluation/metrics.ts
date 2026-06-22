@@ -117,11 +117,13 @@ export interface SimulationEvaluationReport {
     noisyEvents: number;
     duplicatedEvents: number;
     droppedEvents: number;
+    outOfOrderEvents: number;
     qualityRatios: {
       delayed: number;
       noisy: number;
       duplicated: number;
       dropped: number;
+      outOfOrder: number;
     };
   };
   inference: {
@@ -620,6 +622,7 @@ function evaluateSensor(events: TwinEvent[]): SimulationEvaluationReport['sensor
   let noisyEvents = 0;
   let duplicatedEvents = 0;
   let droppedEvents = 0;
+  let outOfOrderEvents = 0;
   let motionPositiveEvents = 0;
   let petMotionFalsePositiveEvents = 0;
 
@@ -636,6 +639,7 @@ function evaluateSensor(events: TwinEvent[]): SimulationEvaluationReport['sensor
     if (event.lineage.quality.noisy) noisyEvents += 1;
     if (event.lineage.quality.duplicated) duplicatedEvents += 1;
     if (event.lineage.quality.dropped) droppedEvents += 1;
+    if (event.lineage.quality.outOfOrder) outOfOrderEvents += 1;
     if (event.deviceType === 'motion_sensor' && event.measurements.motion === true) {
       motionPositiveEvents += 1;
       if (Number(event.measurements.confidence ?? 1) <= 0.5) {
@@ -667,11 +671,13 @@ function evaluateSensor(events: TwinEvent[]): SimulationEvaluationReport['sensor
     noisyEvents,
     duplicatedEvents,
     droppedEvents,
+    outOfOrderEvents,
     qualityRatios: {
       delayed: telemetry.length > 0 ? roundRatio(delayedEvents / telemetry.length) : 0,
       noisy: telemetry.length > 0 ? roundRatio(noisyEvents / telemetry.length) : 0,
       duplicated: telemetry.length > 0 ? roundRatio(duplicatedEvents / telemetry.length) : 0,
-      dropped: telemetry.length > 0 ? roundRatio(droppedEvents / telemetry.length) : 0
+      dropped: telemetry.length > 0 ? roundRatio(droppedEvents / telemetry.length) : 0,
+      outOfOrder: telemetry.length > 0 ? roundRatio(outOfOrderEvents / telemetry.length) : 0
     }
   };
 }
