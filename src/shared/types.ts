@@ -191,6 +191,7 @@ export interface EventLineage {
     delayedMs?: number;
     dropped?: boolean;
     duplicated?: boolean;
+    outOfOrder?: boolean;
     noisy?: boolean;
     confidence?: number;
   };

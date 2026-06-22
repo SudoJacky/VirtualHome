@@ -280,6 +280,56 @@ describe('sensor model', () => {
     });
   });
 
+  it('can emit an out-of-order stale contact report after a newer contact change', () => {
+    const profile = withSensorProfileOverrides(getSensorProfile('contact_sensor'), {
+      falsePositiveRate: 0,
+      falseNegativeRate: 0,
+      dropRate: 0,
+      duplicateRate: 0,
+      outOfOrderRate: 1,
+      delayMs: { kind: 'constant', value: 0 }
+    });
+
+    const observation = observeContactSensor({
+      deviceId: 'fridge_01',
+      roomId: 'kitchen',
+      deviceType: 'fridge',
+      worldState: {
+        contactOpen: true
+      },
+      previousObservation: {
+        contactOpen: false,
+        lastObservedAt: '2026-06-17T08:00:00+08:00'
+      },
+      currentTime: '2026-06-17T08:01:00+08:00',
+      randomSeed: 24
+    }, profile);
+
+    expect(observation?.event).toMatchObject({
+      measurements: {
+        contact_open: true
+      },
+      lineage: {
+        eventTime: '2026-06-17T08:01:00+08:00',
+        ingestTime: '2026-06-17T08:01:00+08:00'
+      }
+    });
+    expect(observation?.additionalEvents).toHaveLength(1);
+    expect(observation?.additionalEvents?.[0]).toMatchObject({
+      measurements: {
+        contact_open: false
+      },
+      lineage: {
+        eventTime: '2026-06-17T08:00:00+08:00',
+        ingestTime: '2026-06-17T08:01:00+08:00',
+        quality: {
+          outOfOrder: true,
+          delayedMs: 60000
+        }
+      }
+    });
+  });
+
   it('does not report unchanged contact state after an initial observation', () => {
     const profile = withSensorProfileOverrides(getSensorProfile('contact_sensor'), {
       falsePositiveRate: 0,

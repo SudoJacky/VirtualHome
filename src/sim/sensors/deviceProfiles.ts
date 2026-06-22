@@ -10,6 +10,7 @@ export interface SensorProfile {
   falseNegativeRate: number;
   delayMs: DistributionSpec;
   duplicateRate: number;
+  outOfOrderRate?: number;
   dropRate: number;
   driftPerDay?: number;
   offlineSensitivity?: number;
@@ -37,6 +38,7 @@ const sensorProfiles: Record<string, SensorProfile> = {
     falseNegativeRate: 0.01,
     delayMs: { kind: 'uniform', min: 40, max: 550 },
     duplicateRate: 0.03,
+    outOfOrderRate: 0.01,
     dropRate: 0.005,
     cooldownSec: 0
   },

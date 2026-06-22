@@ -81,13 +81,24 @@ export function observeContactSensor(input: SensorObservationInput, profile: Sen
     confidence
   };
 
-  return createSensorObservation(input, measurements, profile, {
+  const observation = createSensorObservation(input, measurements, profile, {
     noisy,
     confidence
   }, {
     contactOpen,
     lastObservedAt: input.currentTime
   });
+  const staleEvent = createOutOfOrderContactEvent(input, profile, contactOpen);
+  if (!staleEvent || observation.event.measurements.sample_dropped === true) {
+    return observation;
+  }
+  return {
+    ...observation,
+    additionalEvents: [
+      ...(observation.additionalEvents ?? []),
+      staleEvent
+    ]
+  };
 }
 
 export function observeBinarySensor(input: SensorObservationInput, profile: SensorProfile, options: BinarySensorOptions): SensorObservation | null {
@@ -296,6 +307,50 @@ export function createSensorTelemetry(
       quality: {
         ...(delayedMs > 0 ? { delayedMs } : {}),
         ...quality
+      },
+      schemaVersion: 1,
+      behaviorModelVersion: 'engine-v1'
+    }
+  };
+}
+
+function createOutOfOrderContactEvent(
+  input: SensorObservationInput,
+  profile: SensorProfile,
+  contactOpen: boolean
+): SensorObservation['event'] | null {
+  if (
+    typeof input.previousObservation?.contactOpen !== 'boolean' ||
+    typeof input.previousObservation.lastObservedAt !== 'string' ||
+    input.previousObservation.contactOpen === contactOpen ||
+    !probabilityHit(profile.outOfOrderRate ?? 0, input.randomSeed, `${input.deviceId}:contact:out-of-order:${input.currentTime}`)
+  ) {
+    return null;
+  }
+
+  const staleEventTime = input.previousObservation.lastObservedAt;
+  const delayedMs = Math.max(0, Date.parse(input.currentTime) - Date.parse(staleEventTime));
+  return {
+    type: 'DeviceTelemetry',
+    roomId: input.roomId,
+    deviceId: input.deviceId,
+    deviceType: input.deviceType,
+    measurements: {
+      contact_open: input.previousObservation.contactOpen,
+      confidence: 0.72
+    },
+    sourceLayer: 'sensor',
+    lineage: {
+      eventTime: staleEventTime,
+      ingestTime: input.currentTime,
+      sourceLayer: 'sensor',
+      causeEventIds: [],
+      episodeId: `sensor:${input.deviceId}`,
+      observability: 'ml_observation',
+      quality: {
+        delayedMs,
+        outOfOrder: true,
+        confidence: 0.72
       },
       schemaVersion: 1,
       behaviorModelVersion: 'engine-v1'
