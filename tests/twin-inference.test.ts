@@ -549,4 +549,37 @@ describe('twin inference model', () => {
     expect(degraded.risks.water_leak.probability).toBeLessThan(clean.risks.water_leak.probability);
     expect(degraded.risks.water_leak.probability).toBeGreaterThan(0.5);
   });
+
+  it('reduces risk probabilities when appliance and wellness telemetry is low quality', () => {
+    const clean = inferTwinState([
+      telemetryEvent('router_01', 'router', 'study', { online: false, confidence: 0.96 }),
+      telemetryEvent('stove_01', 'stove', 'kitchen', { power_w: 1180, confidence: 0.96 }),
+      telemetryEvent('master_sleep_01', 'sleep_sensor', 'master_bedroom', { in_bed: true, confidence: 0.96 })
+    ], {
+      currentTime: '2026-06-17T10:15:00+08:00',
+      peopleIds: ['senior_1'],
+      rooms: ['master_bedroom', 'kitchen', 'study']
+    });
+    const degradedQuality = {
+      delayedMs: 12 * 60 * 1000,
+      noisy: true,
+      confidence: 0.4
+    };
+    const degraded = inferTwinState([
+      telemetryEvent('router_01', 'router', 'study', { online: false, confidence: 0.96 }, degradedQuality),
+      telemetryEvent('stove_01', 'stove', 'kitchen', { power_w: 1180, confidence: 0.96 }, degradedQuality),
+      telemetryEvent('master_sleep_01', 'sleep_sensor', 'master_bedroom', { in_bed: true, confidence: 0.96 }, degradedQuality)
+    ], {
+      currentTime: '2026-06-17T10:15:00+08:00',
+      peopleIds: ['senior_1'],
+      rooms: ['master_bedroom', 'kitchen', 'study']
+    });
+
+    expect(degraded.risks.network_impact.probability).toBeLessThan(clean.risks.network_impact.probability);
+    expect(degraded.risks.stove_unattended.probability).toBeLessThan(clean.risks.stove_unattended.probability);
+    expect(degraded.risks.senior_no_activity.probability).toBeLessThan(clean.risks.senior_no_activity.probability);
+    expect(degraded.risks.network_impact.drivers).toContain('router_01.online=false');
+    expect(degraded.risks.stove_unattended.drivers).toContain('stove_01.powerW');
+    expect(degraded.risks.senior_no_activity.drivers).toContain('master_sleep_01.in_bed');
+  });
 });

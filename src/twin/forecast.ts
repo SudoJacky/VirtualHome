@@ -16,15 +16,21 @@ export interface TwinStateForecast {
 export function createAnomalyRisks(input: {
   fridgeDoorOpen: boolean;
   routerOffline: boolean;
+  routerOfflineConfidence?: number;
   stovePowerW: number;
+  stovePowerConfidence?: number;
   kitchenMotionConfidence: number;
   noRecentMotionInSleepingHours: boolean;
   morningSleepSensorInBed: boolean;
+  sleepSensorConfidence?: number;
   waterLeakDetected: boolean;
   waterLeakConfidence?: number;
 }): Record<string, AnomalyRisk> {
   const stoveOn = input.stovePowerW >= 800;
   const stoveUnattended = stoveOn && input.kitchenMotionConfidence < 0.2;
+  const routerOfflineConfidence = clamp01(input.routerOfflineConfidence ?? 1);
+  const stovePowerConfidence = clamp01(input.stovePowerConfidence ?? 1);
+  const sleepSensorConfidence = clamp01(input.sleepSensorConfidence ?? 1);
   const waterLeakConfidence = clamp01(input.waterLeakConfidence ?? 1);
   return {
     fridge_left_open: {
@@ -32,11 +38,15 @@ export function createAnomalyRisks(input: {
       drivers: input.fridgeDoorOpen ? ['fridge_01.doorOpen'] : ['prior']
     },
     network_impact: {
-      probability: input.routerOffline ? 0.84 : 0.1,
+      probability: input.routerOffline ? weightedProbability(0.45, 0.84, routerOfflineConfidence) : 0.1,
       drivers: input.routerOffline ? ['router_01.online=false'] : ['prior']
     },
     stove_unattended: {
-      probability: stoveUnattended ? 0.86 : stoveOn ? 0.42 : 0.08,
+      probability: stoveUnattended
+        ? weightedProbability(0.5, 0.86, stovePowerConfidence)
+        : stoveOn
+          ? weightedProbability(0.28, 0.42, stovePowerConfidence)
+          : 0.08,
       drivers: stoveUnattended
         ? ['stove_01.powerW', 'no_kitchen_motion_observation']
         : stoveOn
@@ -44,7 +54,9 @@ export function createAnomalyRisks(input: {
           : ['prior']
     },
     senior_no_activity: {
-      probability: input.morningSleepSensorInBed ? 0.78 : input.noRecentMotionInSleepingHours ? 0.48 : 0.16,
+      probability: input.morningSleepSensorInBed
+        ? weightedProbability(0.4, 0.78, sleepSensorConfidence)
+        : input.noRecentMotionInSleepingHours ? 0.48 : 0.16,
       drivers: input.morningSleepSensorInBed
         ? ['master_sleep_01.in_bed', 'morning_activity_prior']
         : input.noRecentMotionInSleepingHours

@@ -23,8 +23,11 @@ export interface ObservationEvidence {
   observationQuality: number;
   fridgeDoorOpen: boolean;
   routerOffline: boolean;
+  routerOfflineConfidence: number;
   stovePowerW: number;
+  stovePowerConfidence: number;
   sleepSensorInBed: boolean;
+  sleepSensorConfidence: number;
   waterLeakDetected: boolean;
   waterLeakConfidence: number;
 }
@@ -39,8 +42,11 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
   let droppedObservationEvents = 0;
   let fridgeDoorOpen = false;
   let routerOffline = false;
+  let routerOfflineConfidence = 0;
   let stovePowerW = 0;
+  let stovePowerConfidence = 0;
   let sleepSensorInBed = false;
+  let sleepSensorConfidence = 0;
   let waterLeakDetected = false;
   let waterLeakConfidence = 0;
 
@@ -65,12 +71,24 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
       }
       if (event.measurements.online === false) {
         routerOffline = true;
+        routerOfflineConfidence = Math.max(
+          routerOfflineConfidence,
+          measurementConfidence(event, 0.8) * observationQualityWeight(event)
+        );
       }
       if (typeof event.measurements.power_w === 'number') {
         stovePowerW = Math.max(stovePowerW, Number(event.measurements.power_w));
+        stovePowerConfidence = Math.max(
+          stovePowerConfidence,
+          measurementConfidence(event, 0.8) * observationQualityWeight(event)
+        );
       }
       if (event.measurements.in_bed === true && event.deviceId === 'master_sleep_01') {
         sleepSensorInBed = true;
+        sleepSensorConfidence = Math.max(
+          sleepSensorConfidence,
+          measurementConfidence(event, 0.8) * observationQualityWeight(event)
+        );
       }
       if (event.measurements.leak_detected === true) {
         waterLeakDetected = true;
@@ -89,9 +107,11 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
       }
       if (event.deviceId === 'router_01' && event.state.online === false) {
         routerOffline = true;
+        routerOfflineConfidence = Math.max(routerOfflineConfidence, 1);
       }
       if (event.deviceId === 'stove_01') {
         stovePowerW = Math.max(stovePowerW, Number(event.state.powerW ?? 0));
+        stovePowerConfidence = Math.max(stovePowerConfidence, 1);
       }
       continue;
     }
@@ -111,8 +131,11 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
       : 1,
     fridgeDoorOpen,
     routerOffline,
+    routerOfflineConfidence,
     stovePowerW,
+    stovePowerConfidence,
     sleepSensorInBed,
+    sleepSensorConfidence,
     waterLeakDetected,
     waterLeakConfidence
   };
