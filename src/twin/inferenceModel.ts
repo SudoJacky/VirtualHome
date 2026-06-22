@@ -47,7 +47,9 @@ export function inferTwinState(events: TwinEvent[], options: TwinInferenceOption
     routerOffline: evidence.routerOffline,
     stovePowerW: evidence.stovePowerW,
     kitchenMotionConfidence: evidence.motionByRoom.kitchen ?? 0,
-    noRecentMotionInSleepingHours: minuteOfDay >= 22 * 60 && Object.keys(evidence.motionByRoom).length === 0
+    noRecentMotionInSleepingHours: minuteOfDay >= 22 * 60 && Object.keys(evidence.motionByRoom).length === 0,
+    morningSleepSensorInBed: minuteOfDay >= 9 * 60 && minuteOfDay < 12 * 60 && evidence.sleepSensorInBed,
+    waterLeakDetected: evidence.waterLeakDetected
   });
 
   return {
@@ -106,7 +108,7 @@ function inferHomeMode(
     dinner: minuteOfDay >= 17 * 60 && minuteOfDay < 20 * 60 ? 3.2 : 0.4,
     evening_home: minuteOfDay >= 18 * 60 && minuteOfDay < 22 * 60 ? 2.1 : 0.5,
     sleeping: minuteOfDay >= 22 * 60 || minuteOfDay < 6 * 60 ? 3.1 : 0.4,
-    alert: evidence.fridgeDoorOpen || evidence.routerOffline ? 1.2 : 0.2
+    alert: evidence.waterLeakDetected ? 5.5 : evidence.fridgeDoorOpen || evidence.routerOffline ? 1.2 : 0.2
   };
   if (evidence.fridgeDoorOpen || evidence.motionByRoom.kitchen) {
     scores.dinner += 1.8;

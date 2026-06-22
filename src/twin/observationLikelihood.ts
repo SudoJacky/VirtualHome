@@ -12,6 +12,8 @@ export interface ObservationEvidence {
   fridgeDoorOpen: boolean;
   routerOffline: boolean;
   stovePowerW: number;
+  sleepSensorInBed: boolean;
+  waterLeakDetected: boolean;
 }
 
 export function extractObservationEvidence(events: TwinEvent[]): ObservationEvidence {
@@ -23,6 +25,8 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
   let fridgeDoorOpen = false;
   let routerOffline = false;
   let stovePowerW = 0;
+  let sleepSensorInBed = false;
+  let waterLeakDetected = false;
 
   for (const event of events) {
     if (event.type === 'DeviceTelemetry' && event.sourceLayer === 'sensor') {
@@ -33,6 +37,18 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
       }
       if (event.measurements.motion === true) {
         motionByRoom[event.roomId] = Math.max(motionByRoom[event.roomId] ?? 0, Number(event.measurements.confidence ?? 0.65));
+      }
+      if (event.measurements.online === false) {
+        routerOffline = true;
+      }
+      if (typeof event.measurements.power_w === 'number') {
+        stovePowerW = Math.max(stovePowerW, Number(event.measurements.power_w));
+      }
+      if (event.measurements.in_bed === true && event.deviceId === 'master_sleep_01') {
+        sleepSensorInBed = true;
+      }
+      if (event.measurements.leak_detected === true) {
+        waterLeakDetected = true;
       }
       continue;
     }
@@ -64,7 +80,9 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
       : 1,
     fridgeDoorOpen,
     routerOffline,
-    stovePowerW
+    stovePowerW,
+    sleepSensorInBed,
+    waterLeakDetected
   };
 }
 

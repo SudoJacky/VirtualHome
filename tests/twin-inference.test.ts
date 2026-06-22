@@ -55,6 +55,25 @@ function droppedSampleEvent(roomId: RoomId): DeviceTelemetryEvent {
   };
 }
 
+function telemetryEvent(
+  deviceId: string,
+  deviceType: string,
+  roomId: RoomId,
+  measurements: DeviceTelemetryEvent['measurements']
+): DeviceTelemetryEvent {
+  return {
+    ...baseEvent,
+    id: `telemetry_${deviceId}`,
+    type: 'DeviceTelemetry',
+    sourceLayer: 'sensor',
+    lineage: { ...baseEvent.lineage, sourceLayer: 'sensor', observability: 'ml_observation' },
+    roomId,
+    deviceId,
+    deviceType,
+    measurements
+  };
+}
+
 function deviceStateEvent(deviceId: string, roomId: RoomId, state: DeviceStateChangedEvent['state']): DeviceStateChangedEvent {
   return {
     ...baseEvent,
@@ -203,5 +222,52 @@ describe('twin inference model', () => {
     expect(degraded.inputSummary.droppedObservationEvents).toBe(1);
     expect(degraded.people.adult_1.room.top).toBe('kitchen');
     expect(degraded.people.adult_1.room.confidence).toBeLessThan(clean.people.adult_1.room.confidence);
+  });
+
+  it('uses non-motion sensor telemetry for appliance and connectivity risks', () => {
+    const result = inferTwinState([
+      telemetryEvent('router_01', 'router', 'study', { online: false, confidence: 0.96 }),
+      telemetryEvent('stove_01', 'stove', 'kitchen', { power_w: 1180 })
+    ], {
+      currentTime: '2026-06-17T18:30:00+08:00',
+      peopleIds: ['adult_2'],
+      rooms: ['study', 'kitchen', 'living_room']
+    });
+
+    expect(result.inputSummary.acceptedEventCount).toBe(2);
+    expect(result.risks.network_impact).toMatchObject({
+      probability: expect.any(Number),
+      drivers: expect.arrayContaining(['router_01.online=false'])
+    });
+    expect(result.risks.network_impact.probability).toBeGreaterThan(0.75);
+    expect(result.risks.stove_unattended).toMatchObject({
+      probability: expect.any(Number),
+      drivers: expect.arrayContaining(['stove_01.powerW'])
+    });
+    expect(result.risks.stove_unattended.probability).toBeGreaterThan(0.75);
+  });
+
+  it('raises senior wellness and leak risks from sensor telemetry without truth labels', () => {
+    const result = inferTwinState([
+      telemetryEvent('master_sleep_01', 'sleep_sensor', 'master_bedroom', { in_bed: true, confidence: 0.96 }),
+      telemetryEvent('water_leak_01', 'water_leak_sensor', 'bathroom', { leak_detected: true, confidence: 0.96 })
+    ], {
+      currentTime: '2026-06-17T10:15:00+08:00',
+      peopleIds: ['senior_1'],
+      rooms: ['master_bedroom', 'bathroom', 'living_room']
+    });
+
+    expect(result.inputSummary.acceptedEventCount).toBe(2);
+    expect(result.risks.senior_no_activity).toMatchObject({
+      probability: expect.any(Number),
+      drivers: expect.arrayContaining(['master_sleep_01.in_bed'])
+    });
+    expect(result.risks.senior_no_activity.probability).toBeGreaterThan(0.7);
+    expect(result.risks.water_leak).toMatchObject({
+      probability: expect.any(Number),
+      drivers: expect.arrayContaining(['water_leak_01.leak_detected'])
+    });
+    expect(result.risks.water_leak.probability).toBeGreaterThan(0.8);
+    expect(result.homeMode.top).toBe('alert');
   });
 });

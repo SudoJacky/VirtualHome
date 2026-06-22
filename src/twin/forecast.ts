@@ -18,6 +18,8 @@ export function createAnomalyRisks(input: {
   stovePowerW: number;
   kitchenMotionConfidence: number;
   noRecentMotionInSleepingHours: boolean;
+  morningSleepSensorInBed: boolean;
+  waterLeakDetected: boolean;
 }): Record<string, AnomalyRisk> {
   const stoveOn = input.stovePowerW >= 800;
   const stoveUnattended = stoveOn && input.kitchenMotionConfidence < 0.2;
@@ -39,8 +41,16 @@ export function createAnomalyRisks(input: {
           : ['prior']
     },
     senior_no_activity: {
-      probability: input.noRecentMotionInSleepingHours ? 0.48 : 0.16,
-      drivers: input.noRecentMotionInSleepingHours ? ['sleeping_hour_prior', 'no_motion_observation'] : ['prior']
+      probability: input.morningSleepSensorInBed ? 0.78 : input.noRecentMotionInSleepingHours ? 0.48 : 0.16,
+      drivers: input.morningSleepSensorInBed
+        ? ['master_sleep_01.in_bed', 'morning_activity_prior']
+        : input.noRecentMotionInSleepingHours
+          ? ['sleeping_hour_prior', 'no_motion_observation']
+          : ['prior']
+    },
+    water_leak: {
+      probability: input.waterLeakDetected ? 0.92 : 0.05,
+      drivers: input.waterLeakDetected ? ['water_leak_01.leak_detected'] : ['prior']
     }
   };
 }
