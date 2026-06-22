@@ -61,7 +61,8 @@ export function inferTwinState(events: TwinEvent[], options: TwinInferenceOption
     kitchenMotionConfidence: evidence.motionByRoom.kitchen ?? 0,
     noRecentMotionInSleepingHours: minuteOfDay >= 22 * 60 && Object.keys(evidence.motionByRoom).length === 0,
     morningSleepSensorInBed: minuteOfDay >= 9 * 60 && minuteOfDay < 12 * 60 && evidence.sleepSensorInBed,
-    waterLeakDetected: evidence.waterLeakDetected
+    waterLeakDetected: evidence.waterLeakDetected,
+    waterLeakConfidence: evidence.waterLeakConfidence
   });
 
   return {

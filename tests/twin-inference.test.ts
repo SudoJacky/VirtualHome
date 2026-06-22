@@ -23,13 +23,17 @@ const baseEvent = {
   }
 };
 
-function motionEvent(roomId: RoomId, confidence: number): DeviceTelemetryEvent {
+function motionEvent(
+  roomId: RoomId,
+  confidence: number,
+  quality: DeviceTelemetryEvent['lineage']['quality'] = {}
+): DeviceTelemetryEvent {
   return {
     ...baseEvent,
     id: `motion_${roomId}`,
     type: 'DeviceTelemetry',
     sourceLayer: 'sensor',
-    lineage: { ...baseEvent.lineage, sourceLayer: 'sensor', observability: 'ml_observation' },
+    lineage: { ...baseEvent.lineage, sourceLayer: 'sensor', observability: 'ml_observation', quality },
     roomId,
     deviceId: `${roomId}_motion_01`,
     deviceType: 'motion_sensor',
@@ -60,14 +64,15 @@ function telemetryEvent(
   deviceId: string,
   deviceType: string,
   roomId: RoomId,
-  measurements: DeviceTelemetryEvent['measurements']
+  measurements: DeviceTelemetryEvent['measurements'],
+  quality: DeviceTelemetryEvent['lineage']['quality'] = {}
 ): DeviceTelemetryEvent {
   return {
     ...baseEvent,
     id: `telemetry_${deviceId}`,
     type: 'DeviceTelemetry',
     sourceLayer: 'sensor',
-    lineage: { ...baseEvent.lineage, sourceLayer: 'sensor', observability: 'ml_observation' },
+    lineage: { ...baseEvent.lineage, sourceLayer: 'sensor', observability: 'ml_observation', quality },
     roomId,
     deviceId,
     deviceType,
@@ -416,6 +421,29 @@ describe('twin inference model', () => {
     expect(degraded.people.adult_1.room.confidence).toBeLessThan(clean.people.adult_1.room.confidence);
   });
 
+  it('reduces belief confidence when motion observations are low quality', () => {
+    const clean = inferTwinState([motionEvent('kitchen', 0.91)], {
+      currentTime: '2026-06-17T18:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'kitchen', 'child_bedroom']
+    });
+    const degraded = inferTwinState([
+      motionEvent('kitchen', 0.91, {
+        delayedMs: 10 * 60 * 1000,
+        noisy: true,
+        duplicated: true,
+        confidence: 0.35
+      })
+    ], {
+      currentTime: '2026-06-17T18:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'kitchen', 'child_bedroom']
+    });
+
+    expect(degraded.people.adult_1.room.top).toBe('kitchen');
+    expect(degraded.people.adult_1.room.confidence).toBeLessThan(clean.people.adult_1.room.confidence);
+  });
+
   it('uses non-motion sensor telemetry for appliance and connectivity risks', () => {
     const result = inferTwinState([
       telemetryEvent('router_01', 'router', 'study', { online: false, confidence: 0.96 }),
@@ -493,5 +521,32 @@ describe('twin inference model', () => {
     });
     expect(result.risks.water_leak.probability).toBeGreaterThan(0.8);
     expect(result.homeMode.top).toBe('alert');
+  });
+
+  it('reduces alert risk when leak telemetry is low quality', () => {
+    const clean = inferTwinState([
+      telemetryEvent('water_leak_01', 'water_leak_sensor', 'bathroom', { leak_detected: true, confidence: 0.96 })
+    ], {
+      currentTime: '2026-06-17T10:15:00+08:00',
+      peopleIds: ['senior_1'],
+      rooms: ['master_bedroom', 'bathroom', 'living_room']
+    });
+    const degraded = inferTwinState([
+      telemetryEvent(
+        'water_leak_01',
+        'water_leak_sensor',
+        'bathroom',
+        { leak_detected: true, confidence: 0.96 },
+        { delayedMs: 12 * 60 * 1000, noisy: true, confidence: 0.4 }
+      )
+    ], {
+      currentTime: '2026-06-17T10:15:00+08:00',
+      peopleIds: ['senior_1'],
+      rooms: ['master_bedroom', 'bathroom', 'living_room']
+    });
+
+    expect(degraded.risks.water_leak.drivers).toContain('water_leak_01.leak_detected');
+    expect(degraded.risks.water_leak.probability).toBeLessThan(clean.risks.water_leak.probability);
+    expect(degraded.risks.water_leak.probability).toBeGreaterThan(0.5);
   });
 });

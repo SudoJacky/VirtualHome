@@ -21,9 +21,11 @@ export function createAnomalyRisks(input: {
   noRecentMotionInSleepingHours: boolean;
   morningSleepSensorInBed: boolean;
   waterLeakDetected: boolean;
+  waterLeakConfidence?: number;
 }): Record<string, AnomalyRisk> {
   const stoveOn = input.stovePowerW >= 800;
   const stoveUnattended = stoveOn && input.kitchenMotionConfidence < 0.2;
+  const waterLeakConfidence = clamp01(input.waterLeakConfidence ?? 1);
   return {
     fridge_left_open: {
       probability: input.fridgeDoorOpen ? 0.82 : 0.12,
@@ -50,10 +52,19 @@ export function createAnomalyRisks(input: {
           : ['prior']
     },
     water_leak: {
-      probability: input.waterLeakDetected ? 0.92 : 0.05,
+      probability: input.waterLeakDetected ? weightedProbability(0.55, 0.92, waterLeakConfidence) : 0.05,
       drivers: input.waterLeakDetected ? ['water_leak_01.leak_detected'] : ['prior']
     }
   };
+}
+
+function weightedProbability(floor: number, ceiling: number, confidence: number): number {
+  return floor + (ceiling - floor) * clamp01(confidence);
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
 }
 
 export function createStateForecasts(

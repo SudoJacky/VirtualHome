@@ -26,6 +26,7 @@ export interface ObservationEvidence {
   stovePowerW: number;
   sleepSensorInBed: boolean;
   waterLeakDetected: boolean;
+  waterLeakConfidence: number;
 }
 
 export function extractObservationEvidence(events: TwinEvent[]): ObservationEvidence {
@@ -41,6 +42,7 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
   let stovePowerW = 0;
   let sleepSensorInBed = false;
   let waterLeakDetected = false;
+  let waterLeakConfidence = 0;
 
   for (const event of events) {
     if (event.type === 'DeviceTelemetry' && event.sourceLayer === 'sensor') {
@@ -50,7 +52,10 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
         continue;
       }
       if (event.measurements.motion === true) {
-        motionByRoom[event.roomId] = Math.max(motionByRoom[event.roomId] ?? 0, Number(event.measurements.confidence ?? 0.65));
+        motionByRoom[event.roomId] = Math.max(
+          motionByRoom[event.roomId] ?? 0,
+          measurementConfidence(event, 0.65) * observationQualityWeight(event)
+        );
       }
       if (typeof event.measurements.co2 === 'number') {
         co2ByRoom[event.roomId] = Math.max(co2ByRoom[event.roomId] ?? 0, Number(event.measurements.co2));
@@ -69,6 +74,10 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
       }
       if (event.measurements.leak_detected === true) {
         waterLeakDetected = true;
+        waterLeakConfidence = Math.max(
+          waterLeakConfidence,
+          measurementConfidence(event, 0.8) * observationQualityWeight(event)
+        );
       }
       continue;
     }
@@ -104,7 +113,8 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
     routerOffline,
     stovePowerW,
     sleepSensorInBed,
-    waterLeakDetected
+    waterLeakDetected,
+    waterLeakConfidence
   };
 }
 
@@ -131,4 +141,26 @@ function pm25ActivityScore(pm25?: number): number {
   if (pm25 >= 55) return 2.4;
   if (pm25 >= 35) return 1.4;
   return 0;
+}
+
+function measurementConfidence(event: DeviceTelemetryEvent, fallback: number): number {
+  const confidence = typeof event.measurements.confidence === 'number' ? event.measurements.confidence : fallback;
+  return clamp01(Number(confidence));
+}
+
+function observationQualityWeight(event: DeviceTelemetryEvent): number {
+  const quality = event.lineage.quality;
+  let weight = typeof quality.confidence === 'number' ? clamp01(quality.confidence) : 1;
+  if (quality.noisy) weight *= 0.7;
+  if (quality.duplicated) weight *= 0.8;
+  if (quality.outOfOrder) weight *= 0.65;
+  if (typeof quality.delayedMs === 'number' && quality.delayedMs > 60_000) {
+    weight *= Math.max(0.45, 1 - (quality.delayedMs - 60_000) / (15 * 60_000) * 0.55);
+  }
+  return Math.max(0.15, Math.min(1, weight));
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
 }
