@@ -763,7 +763,8 @@ function riskBrierScore(risks: Record<string, number>, snapshot: TwinSnapshot): 
     fridge_left_open: snapshot.devices.fridge_01?.state.doorOpen === true,
     network_impact: snapshot.devices.router_01?.state.online === false,
     stove_unattended: Number(snapshot.devices.stove_01?.state.powerW ?? 0) >= 800 && !snapshot.rooms.kitchen?.humanOccupancy,
-    senior_no_activity: snapshot.alerts.senior_no_activity_001?.status === 'active'
+    senior_no_activity: snapshot.alerts.senior_no_activity_001?.status === 'active',
+    water_leak: snapshot.devices.water_leak_01?.state.leakDetected === true
   };
   const entries = Object.entries(truth);
   if (entries.length === 0) {

@@ -3,7 +3,7 @@ import { getHomeDefinition } from '../src/sim/catalog';
 import { createSimulator } from '../src/sim/engine';
 import { buildEvaluationReport } from '../src/sim/evaluation/metrics';
 import { runSimulationEvaluation } from '../src/sim/evaluation/runEvaluation';
-import type { ActivityStartedEvent, ConversationOccurredEvent, DeviceStateChangedEvent, PersonMovedEvent } from '../src/shared/types';
+import type { ActivityStartedEvent, ConversationOccurredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent } from '../src/shared/types';
 
 describe('long horizon simulation evaluation', () => {
   it('generates deterministic multi-day quality metrics for a fixed seed', () => {
@@ -258,6 +258,71 @@ describe('long horizon simulation evaluation', () => {
       dropped: expect.any(Number)
     });
     expect(Object.values(report.sensor.qualityRatios).every((ratio) => ratio >= 0 && ratio <= 1)).toBe(true);
+  });
+
+  it('scores water leak forecasts in risk calibration metrics', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('night_water_leak');
+    simulator.advanceMinutes(3);
+    const leakTruth = simulator.getSnapshot();
+    const leakTelemetry: DeviceTelemetryEvent = {
+      id: 'leak_observation',
+      runId: leakTruth.runId,
+      type: 'DeviceTelemetry',
+      ts: leakTruth.simClock.currentTime,
+      simTime: leakTruth.simClock.currentTime,
+      homeId: leakTruth.homeId,
+      scenarioId: leakTruth.scenarioId,
+      sequence: leakTruth.simClock.sequence + 1,
+      sourceLayer: 'sensor',
+      lineage: {
+        eventTime: leakTruth.simClock.currentTime,
+        ingestTime: leakTruth.simClock.currentTime,
+        sourceLayer: 'sensor',
+        causeEventIds: [],
+        episodeId: 'sensor:water_leak_01',
+        observability: 'ml_observation',
+        quality: { confidence: 0.96 },
+        schemaVersion: 1,
+        behaviorModelVersion: 'test'
+      },
+      roomId: 'bathroom',
+      deviceId: 'water_leak_01',
+      deviceType: 'water_leak_sensor',
+      measurements: {
+        leak_detected: true,
+        confidence: 0.96
+      }
+    };
+    const withoutObservation = buildEvaluationReport({
+      days: [{
+        date: '2026-06-17',
+        events: [],
+        finalSnapshot: leakTruth,
+        forecastSamples: [{
+          currentTime: leakTruth.simClock.currentTime,
+          eventsUntilNow: [],
+          truthByHorizon: [{ horizonMinutes: 15, snapshot: leakTruth }]
+        }]
+      }],
+      homeDefinition: getHomeDefinition()
+    });
+    const withObservation = buildEvaluationReport({
+      days: [{
+        date: '2026-06-17',
+        events: [leakTelemetry],
+        finalSnapshot: leakTruth,
+        forecastSamples: [{
+          currentTime: leakTruth.simClock.currentTime,
+          eventsUntilNow: [leakTelemetry],
+          truthByHorizon: [{ horizonMinutes: 15, snapshot: leakTruth }]
+        }]
+      }],
+      homeDefinition: getHomeDefinition()
+    });
+
+    expect(withObservation.inference.forecastEvaluation.averageRiskBrierScoreByHorizon[15])
+      .toBeLessThan(withoutObservation.inference.forecastEvaluation.averageRiskBrierScoreByHorizon[15]);
   });
 
   it('reports topology violations instead of hiding impossible movement', () => {
