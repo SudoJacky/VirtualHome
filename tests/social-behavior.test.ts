@@ -267,6 +267,30 @@ describe('household social behavior model', () => {
     ]));
   });
 
+  it('coordinates a caregiver fetching the family phone for the senior', () => {
+    const context = baseSocialContext();
+    context.currentTime = '2026-06-17T16:20:00+08:00';
+    context.people.adult_1 = { location: 'kitchen', activity: 'cleaning', available: true };
+    context.people.adult_2 = { location: 'away', activity: 'commute', available: false };
+    context.people.senior_1 = { location: 'garden', activity: 'needs_phone', available: true };
+    context.externalSignals = {
+      seniorNeedsPhone: true
+    };
+
+    const decisions = coordinateHousehold(context);
+
+    expect(decisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'care_check',
+        ruleId: 'senior_phone_fetch',
+        actorIds: ['adult_1', 'senior_1'],
+        targetRoom: 'garden',
+        targetActivity: 'bring_family_phone',
+        conversationTopic: 'senior_phone_fetch'
+      })
+    ]));
+  });
+
   it('coordinates a visitor greeting when the doorbell rings without a package', () => {
     const context = baseSocialContext();
     context.currentTime = '2026-06-17T19:10:00+08:00';

@@ -12,6 +12,7 @@ import { advanceNeeds, applyActivityEffectsToNeeds, createInitialNeeds, type Nee
 import { commitmentPressureAtMinute, createDailyCommitments } from './agents/scheduler';
 import { getPersona } from './personas/defaultFamily';
 import { applyActivityToInventory, createInitialInventory, resourcesFromInventory } from './world/inventory';
+import { getDefaultHouseholdObjects } from './world/objects';
 import { createConversationDraft } from './social/conversationEvents';
 import { coordinateHousehold, type HouseholdSocialContext, type SocialDecision } from './social/householdCoordinator';
 import type {
@@ -177,6 +178,7 @@ class Simulator implements VirtualHomeSimulator {
     const catalog = createCatalogFromHomeDefinition(this.homeDefinition);
     const activeScenario = getScenarioForSnapshot(snapshot);
     const restoredSnapshot = structuredClone(snapshot);
+    restoredSnapshot.worldState.objectLocations ??= createInitialObjectLocations();
     const restoredEvents = structuredClone(events);
     const replayedEvents = restoredEvents.filter((event) => event.runId === snapshot.runId && event.sequence > snapshot.simClock.sequence);
     replayEventsOntoSnapshot(restoredSnapshot, replayedEvents);
@@ -452,7 +454,8 @@ class Simulator implements VirtualHomeSimulator {
       activities: {},
       alerts: {},
       worldState: {
-        inventory: createInitialInventory()
+        inventory: createInitialInventory(),
+        objectLocations: createInitialObjectLocations()
       }
     };
   }
@@ -805,6 +808,8 @@ class Simulator implements VirtualHomeSimulator {
         events.push(...this.applySeniorMedicineReminder(decision));
       } else if (decision.ruleId === 'senior_light_support') {
         events.push(...this.applySeniorLightSupport(decision));
+      } else if (decision.ruleId === 'senior_phone_fetch') {
+        events.push(...this.applySeniorPhoneFetch(decision));
       } else if (decision.ruleId === 'package_pickup_response') {
         events.push(...this.applyPackagePickupResponse(decision));
       } else if (decision.ruleId === 'maintenance_visit_response') {
@@ -875,7 +880,8 @@ class Simulator implements VirtualHomeSimulator {
       },
       externalSignals: {
         visitorAtDoor: this.isVisitorAtDoor(),
-        seniorNeedsLight: this.isSeniorWaitingForLightSupport()
+        seniorNeedsLight: this.isSeniorWaitingForLightSupport(),
+        seniorNeedsPhone: this.isSeniorWaitingForPhoneSupport()
       },
       taskPressure: {
         child_1: this.estimateChildTaskPressure()
@@ -904,6 +910,15 @@ class Simulator implements VirtualHomeSimulator {
     const lightDeviceId = roomLightDevices[senior.location];
     const lightDevice = lightDeviceId ? this.state.snapshot.devices[lightDeviceId] : undefined;
     return Boolean(lightDeviceId && lightDevice && lightDevice.state.power !== 'on');
+  }
+
+  private isSeniorWaitingForPhoneSupport(): boolean {
+    const senior = this.state.snapshot.people.senior_1;
+    if (!senior || senior.location === 'away' || senior.activity !== 'needs_phone') {
+      return false;
+    }
+    const phoneLocation = this.state.snapshot.worldState.objectLocations.family_phone ?? 'living_room';
+    return phoneLocation !== senior.location;
   }
 
   private applyParentHomeworkReminder(decision: SocialDecision): TwinEvent[] {
@@ -1381,6 +1396,65 @@ class Simulator implements VirtualHomeSimulator {
         affectedRoomIds: [decision.targetRoom],
         relatedIntent: 'support_senior_comfort',
         expectedOutcome: 'Represent one household member helping another instead of anonymous automatic lighting.'
+      }
+    }));
+    return events;
+  }
+
+  private applySeniorPhoneFetch(decision: SocialDecision): TwinEvent[] {
+    if (
+      this.state.triggeredRules.has(decision.ruleId) ||
+      !decision.targetRoom ||
+      !decision.targetActivity ||
+      !decision.conversationTopic
+    ) {
+      return [];
+    }
+    const [caregiverId, seniorId] = decision.actorIds;
+    const caregiver = caregiverId ? this.state.snapshot.people[caregiverId] : undefined;
+    const senior = seniorId ? this.state.snapshot.people[seniorId] : undefined;
+    const phoneLocation = this.state.snapshot.worldState.objectLocations.family_phone ?? 'living_room';
+    if (
+      !caregiver ||
+      !senior ||
+      caregiver.location === 'away' ||
+      senior.location !== decision.targetRoom ||
+      phoneLocation === decision.targetRoom
+    ) {
+      return [];
+    }
+
+    this.state.triggeredRules.add(decision.ruleId);
+    const events: TwinEvent[] = [
+      this.createEvent(createConversationDraft({
+        conversationId: `${decision.ruleId}_${this.state.snapshot.simClock.sequence + 1}`,
+        currentTime: this.state.snapshot.simClock.currentTime,
+        speakerId: caregiver.id,
+        listenerIds: [senior.id],
+        topic: decision.conversationTopic,
+        intent: 'support_senior_comfort',
+        roomId: caregiver.location,
+        summary: `${caregiver.id} fetches the family phone for ${senior.id}.`,
+        reason: decision.reason
+      }))
+    ];
+
+    events.push(...this.createRoutedPersonMovedEvents(caregiver.id, phoneLocation, 'fetch_family_phone', decision.reason));
+    events.push(...this.createRoutedPersonMovedEvents(caregiver.id, decision.targetRoom, decision.targetActivity, decision.reason));
+    this.state.snapshot.worldState.objectLocations.family_phone = decision.targetRoom;
+    events.push(this.createEvent({
+      type: 'AutomationTriggered',
+      ruleId: decision.ruleId,
+      explanation: 'A caregiver fetched the family phone and brought it to the senior.',
+      actions: ['notice_senior_needs_phone', 'move_caregiver_to_family_phone', 'bring_family_phone_to_senior'],
+      reason: decision.reason,
+      eventExplanation: {
+        why: `${caregiver.id} has senior care responsibility while ${senior.id} needs the family phone in ${decision.targetRoom}.`,
+        actorIds: [caregiver.id, senior.id],
+        affectedDeviceIds: [],
+        affectedRoomIds: Array.from(new Set([phoneLocation, decision.targetRoom])),
+        relatedIntent: 'support_senior_comfort',
+        expectedOutcome: 'Represent one household member fetching an object for another with concrete movement and object state.'
       }
     }));
     return events;
@@ -3234,6 +3308,11 @@ function restoreSensorObservations(events: TwinEvent[], runId: string, sequence:
   return observations;
 }
 
+function createInitialObjectLocations(): Record<string, RoomId> {
+  return Object.fromEntries(getDefaultHouseholdObjects()
+    .map((object) => [object.id, object.roomId]));
+}
+
 function createRuntimePersonNeeds(snapshot: TwinSnapshot): Map<string, NeedState> {
   const needs = new Map<string, NeedState>();
   for (const person of Object.values(snapshot.people)) {
@@ -3391,6 +3470,15 @@ function createBehaviorContext(
       intent: 'check_on_senior',
       attentionTarget: 'senior_1',
       energy: 58
+    };
+  }
+
+  if (activity === 'fetch_family_phone' || activity === 'bring_family_phone') {
+    return {
+      routinePhase: 'care_response',
+      intent: 'support_senior_comfort',
+      attentionTarget: 'family_phone',
+      energy: 56
     };
   }
 

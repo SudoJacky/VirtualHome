@@ -1085,6 +1085,63 @@ describe('virtual home simulator MVP', () => {
     ]));
   });
 
+  it('lets a caregiver fetch the family phone for the senior', () => {
+    const simulator = createSimulator({ seed: 1126 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T16:20:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_1.location = 'kitchen';
+    snapshot.people.adult_1.activity = 'cleaning';
+    snapshot.people.adult_2.location = 'away';
+    snapshot.people.adult_2.activity = 'commute';
+    snapshot.people.child_1.location = 'away';
+    snapshot.people.child_1.activity = 'school';
+    snapshot.people.senior_1.location = 'garden';
+    snapshot.people.senior_1.activity = 'needs_phone';
+    snapshot.worldState.inventory.packageCount = 0;
+    snapshot.worldState.inventory.medicineDoses = 8;
+    snapshot.worldState.inventory.deviceMaintenanceScore = 8;
+    snapshot.worldState.objectLocations = {
+      ...snapshot.worldState.objectLocations,
+      family_phone: 'living_room'
+    };
+    simulator.restore(snapshot, simulator.getEvents());
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.people.adult_1).toMatchObject({ location: 'garden', activity: 'bring_family_phone' });
+    expect(updated.people.senior_1).toMatchObject({ location: 'garden', activity: 'needs_phone' });
+    expect(updated.worldState.objectLocations.family_phone).toBe('garden');
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'PersonMoved',
+        personId: 'adult_1',
+        to: 'living_room',
+        activity: 'fetch_family_phone'
+      }),
+      expect.objectContaining({
+        type: 'PersonMoved',
+        personId: 'adult_1',
+        to: 'garden',
+        activity: 'bring_family_phone'
+      })
+    ]));
+    expect(events.some((event): event is ConversationOccurredEvent => (
+      event.type === 'ConversationOccurred' &&
+      event.topic === 'senior_phone_fetch' &&
+      event.speakerId === 'adult_1' &&
+      event.listenerIds.includes('senior_1')
+    ))).toBe(true);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'AutomationTriggered',
+        ruleId: 'senior_phone_fetch'
+      })
+    ]));
+  });
+
   it('responds to a visitor at the door by greeting them at the entrance', () => {
     const simulator = createSimulator({ seed: 1123 });
 

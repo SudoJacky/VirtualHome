@@ -173,6 +173,7 @@ export interface TwinSnapshot {
   alerts: Record<string, AlertState>;
   worldState: {
     inventory: HouseholdInventoryState;
+    objectLocations: Record<string, RoomId>;
   };
 }
 

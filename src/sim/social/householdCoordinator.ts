@@ -30,6 +30,7 @@ export interface HouseholdSocialContext {
   externalSignals?: {
     visitorAtDoor?: boolean;
     seniorNeedsLight?: boolean;
+    seniorNeedsPhone?: boolean;
   };
   taskPressure: Record<string, number>;
 }
@@ -84,6 +85,10 @@ export function coordinateHousehold(context: HouseholdSocialContext): SocialDeci
   const seniorLightSupport = createSeniorLightSupportDecision(context);
   if (seniorLightSupport) {
     decisions.push(seniorLightSupport);
+  }
+  const seniorPhoneFetch = createSeniorPhoneFetchDecision(context);
+  if (seniorPhoneFetch) {
+    decisions.push(seniorPhoneFetch);
   }
   const careCheck = createSeniorCareCheckDecision(context);
   if (careCheck) {
@@ -353,6 +358,30 @@ function createSeniorLightSupportDecision(context: HouseholdSocialContext): Soci
     targetActivity: 'support_senior_lighting',
     conversationTopic: 'senior_light_support',
     reason: 'social:senior_light_support'
+  };
+}
+
+function createSeniorPhoneFetchDecision(context: HouseholdSocialContext): SocialDecision | null {
+  const senior = context.people.senior_1;
+  if (
+    context.externalSignals?.seniorNeedsPhone !== true ||
+    !senior ||
+    senior.location === 'away'
+  ) {
+    return null;
+  }
+  const caregiverId = selectSeniorCaregiver(context);
+  if (!caregiverId) {
+    return null;
+  }
+  return {
+    kind: 'care_check',
+    ruleId: 'senior_phone_fetch',
+    actorIds: [caregiverId, 'senior_1'],
+    targetRoom: senior.location,
+    targetActivity: 'bring_family_phone',
+    conversationTopic: 'senior_phone_fetch',
+    reason: 'social:senior_phone_fetch'
   };
 }
 
