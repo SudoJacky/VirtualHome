@@ -807,6 +807,8 @@ class Simulator implements VirtualHomeSimulator {
         events.push(...this.applyPackagePickupResponse(decision));
       } else if (decision.ruleId === 'maintenance_visit_response') {
         events.push(...this.applyMaintenanceVisitResponse(decision));
+      } else if (decision.ruleId === 'visitor_greeting_response') {
+        events.push(...this.applyVisitorGreetingResponse(decision));
       } else if (decision.ruleId === 'household_chore_assignment') {
         events.push(...this.applyHouseholdChoreAssignment(decision));
       } else if (decision.ruleId === 'shared_resource_contention') {
@@ -867,10 +869,22 @@ class Simulator implements VirtualHomeSimulator {
         unfinishedChores: this.state.snapshot.worldState.inventory.unfinishedChores,
         deviceMaintenanceScore: this.state.snapshot.worldState.inventory.deviceMaintenanceScore
       },
+      externalSignals: {
+        visitorAtDoor: this.isVisitorAtDoor()
+      },
       taskPressure: {
         child_1: this.estimateChildTaskPressure()
       }
     };
+  }
+
+  private isVisitorAtDoor(): boolean {
+    const doorbell = this.state.snapshot.devices.doorbell_camera_01;
+    const packageSensor = this.state.snapshot.devices.package_sensor_01;
+    return doorbell?.state.motion === true &&
+      doorbell.state.ringing === true &&
+      packageSensor?.state.packagePresent !== true &&
+      this.state.snapshot.worldState.inventory.packageCount <= 0;
   }
 
   private applyParentHomeworkReminder(decision: SocialDecision): TwinEvent[] {
@@ -1022,6 +1036,53 @@ class Simulator implements VirtualHomeSimulator {
       })
     ];
     return events;
+  }
+
+  private applyVisitorGreetingResponse(decision: SocialDecision): TwinEvent[] {
+    if (
+      this.state.triggeredRules.has(decision.ruleId) ||
+      !decision.targetRoom ||
+      !decision.targetActivity ||
+      !this.isVisitorAtDoor()
+    ) {
+      return [];
+    }
+    const actorId = decision.actorIds[0];
+    const actor = actorId ? this.state.snapshot.people[actorId] : undefined;
+    if (!actor || actor.location === 'away') {
+      return [];
+    }
+
+    this.state.triggeredRules.add(decision.ruleId);
+    return [
+      this.createEvent({
+        type: 'ExternalInteractionOccurred',
+        interactionId: `${decision.ruleId}_${this.state.snapshot.simClock.sequence + 1}`,
+        actorKind: 'visitor',
+        purpose: 'visitor_arrival',
+        roomId: 'entrance',
+        status: 'completed',
+        relatedDeviceIds: ['doorbell_camera_01'],
+        reason: decision.reason
+      }),
+      ...this.createRoutedPersonMovedEvents(actor.id, decision.targetRoom, decision.targetActivity, decision.reason),
+      this.setDeviceState('doorbell_camera_01', { motion: false, ringing: false }, 'social:visitor_greeting_response:acknowledged'),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: decision.ruleId,
+        explanation: 'A visitor was detected at the door and an available household member greeted them at the entrance.',
+        actions: ['acknowledge_visitor_arrival', 'move_household_member_to_entrance', 'clear_doorbell_signal'],
+        reason: decision.reason,
+        eventExplanation: {
+          why: `${actor.id} is available while the doorbell camera reports a ringing visitor without a package.`,
+          actorIds: [actor.id],
+          affectedDeviceIds: ['doorbell_camera_01'],
+          affectedRoomIds: ['entrance'],
+          relatedIntent: 'greet_visitor',
+          expectedOutcome: 'Represent a visitor arrival as concrete household coordination rather than a passive camera event.'
+        }
+      })
+    ];
   }
 
   private applyHouseholdChoreAssignment(decision: SocialDecision): TwinEvent[] {

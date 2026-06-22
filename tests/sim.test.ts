@@ -981,6 +981,41 @@ describe('virtual home simulator MVP', () => {
     ]));
   });
 
+  it('responds to a visitor at the door by greeting them at the entrance', () => {
+    const simulator = createSimulator({ seed: 1123 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T19:10:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_1.location = 'living_room';
+    snapshot.people.adult_1.activity = 'reading';
+    snapshot.people.adult_2.location = 'away';
+    snapshot.people.adult_2.activity = 'commute';
+    snapshot.worldState.inventory.packageCount = 0;
+    snapshot.worldState.inventory.deviceMaintenanceScore = 8;
+    snapshot.devices.package_sensor_01.state = { ...snapshot.devices.package_sensor_01.state, packagePresent: false, weightKg: 0 };
+    snapshot.devices.doorbell_camera_01.state = { ...snapshot.devices.doorbell_camera_01.state, motion: true, ringing: true };
+    simulator.restore(snapshot, simulator.getEvents());
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.people.adult_1).toMatchObject({ location: 'entrance', activity: 'greet_visitor' });
+    expect(updated.devices.doorbell_camera_01.state).toMatchObject({ motion: true, ringing: false });
+    expect(events.some((event): event is ExternalInteractionOccurredEvent => (
+      event.type === 'ExternalInteractionOccurred' &&
+      event.actorKind === 'visitor' &&
+      event.purpose === 'visitor_arrival' &&
+      event.roomId === 'entrance'
+    ))).toBe(true);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'AutomationTriggered',
+        ruleId: 'visitor_greeting_response'
+      })
+    ]));
+  });
+
   it('assigns dirty dish cleanup as a household chore and reduces backlog', () => {
     const simulator = createSimulator({ seed: 1222 });
 

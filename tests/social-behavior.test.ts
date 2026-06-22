@@ -222,6 +222,30 @@ describe('household social behavior model', () => {
     ]));
   });
 
+  it('coordinates a visitor greeting when the doorbell rings without a package', () => {
+    const context = baseSocialContext();
+    context.currentTime = '2026-06-17T19:10:00+08:00';
+    context.people.adult_1 = { location: 'living_room', activity: 'reading', available: true };
+    context.people.adult_2 = { location: 'away', activity: 'commute', available: false };
+    context.householdBacklog.packageCount = 0;
+    context.externalSignals = {
+      visitorAtDoor: true
+    };
+
+    const decisions = coordinateHousehold(context);
+
+    expect(decisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'external_response',
+        ruleId: 'visitor_greeting_response',
+        actorIds: ['adult_1'],
+        targetRoom: 'entrance',
+        targetActivity: 'greet_visitor',
+        conversationTopic: 'visitor_arrival'
+      })
+    ]));
+  });
+
   it('does not assign chores to the child when homework pressure is high', () => {
     const context = baseSocialContext();
     context.currentTime = '2026-06-17T17:30:00+08:00';
