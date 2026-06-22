@@ -631,6 +631,30 @@ describe('virtual home simulator MVP', () => {
     });
   });
 
+  it('reports router latency changes through connectivity sensor telemetry', () => {
+    const simulator = createSimulator({ seed: 338 });
+
+    simulator.startScenario('weekday_normal');
+    simulator.commandDevice('router_01', 'restart');
+    const events = simulator.advanceMinutes(1);
+    const latencyTelemetry = events.find((event): event is DeviceTelemetryEvent => (
+      event.type === 'DeviceTelemetry' &&
+      event.deviceId === 'router_01' &&
+      typeof event.measurements.latency_ms === 'number'
+    ));
+
+    expect(latencyTelemetry).toMatchObject({
+      sourceLayer: 'sensor',
+      measurements: {
+        latency_ms: expect.any(Number)
+      },
+      lineage: expect.objectContaining({
+        sourceLayer: 'sensor',
+        observability: 'ml_observation'
+      })
+    });
+  });
+
   it('reports appliance power draw through power meter telemetry', () => {
     const simulator = createSimulator({ seed: 330 });
 
