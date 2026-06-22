@@ -63,7 +63,8 @@ export function inferTwinState(events: TwinEvent[], options: TwinInferenceOption
     homeMode,
     risks,
     forecasts: createStateForecasts(homeMode, risks, {
-      homeModeByHorizon: createHomeModeForecasts(minuteOfDay, evidence)
+      homeModeByHorizon: createHomeModeForecasts(minuteOfDay, evidence),
+      peopleByHorizon: createPeopleForecasts(options.peopleIds, options.rooms, minuteOfDay, evidence)
     })
   };
 }
@@ -77,6 +78,35 @@ function createHomeModeForecasts(
     30: inferHomeMode(addMinutesOfDay(minuteOfDay, 30), evidence),
     60: inferHomeMode(addMinutesOfDay(minuteOfDay, 60), evidence)
   };
+}
+
+function createPeopleForecasts(
+  peopleIds: string[],
+  rooms: RoomId[],
+  minuteOfDay: number,
+  evidence: ReturnType<typeof extractObservationEvidence>
+): Partial<Record<15 | 30 | 60, Record<string, PersonInferenceBelief>>> {
+  return {
+    15: inferPeopleAtMinute(peopleIds, rooms, addMinutesOfDay(minuteOfDay, 15), evidence),
+    30: inferPeopleAtMinute(peopleIds, rooms, addMinutesOfDay(minuteOfDay, 30), evidence),
+    60: inferPeopleAtMinute(peopleIds, rooms, addMinutesOfDay(minuteOfDay, 60), evidence)
+  };
+}
+
+function inferPeopleAtMinute(
+  peopleIds: string[],
+  rooms: RoomId[],
+  minuteOfDay: number,
+  evidence: ReturnType<typeof extractObservationEvidence>
+): Record<string, PersonInferenceBelief> {
+  return Object.fromEntries(peopleIds.map((personId) => {
+    const room = inferPersonRoom(personId, rooms, minuteOfDay, evidence);
+    return [personId, {
+      personId,
+      room,
+      activity: inferPersonActivity(room.top, minuteOfDay, evidence)
+    }];
+  }));
 }
 
 function inferPersonRoom(

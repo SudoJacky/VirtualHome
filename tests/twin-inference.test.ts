@@ -184,6 +184,24 @@ describe('twin inference model', () => {
     expect(sixtyMinute?.homeMode.probabilities.away).toBeGreaterThan(fifteenMinute?.homeMode.probabilities.away ?? 1);
   });
 
+  it('forecasts future person room and activity distributions by horizon', () => {
+    const result = inferTwinState([], {
+      currentTime: '2026-06-17T17:10:00+08:00',
+      peopleIds: ['adult_2'],
+      rooms: ['living_room', 'study', 'kitchen']
+    });
+
+    const fifteenMinute = result.forecasts.find((forecast) => forecast.horizonMinutes === 15);
+    const sixtyMinute = result.forecasts.find((forecast) => forecast.horizonMinutes === 60);
+
+    expect(fifteenMinute?.people.adult_2.room.probabilities.study)
+      .toBeGreaterThan(sixtyMinute?.people.adult_2.room.probabilities.study ?? 1);
+    expect(sixtyMinute?.people.adult_2.room.probabilities.living_room)
+      .toBeGreaterThan(fifteenMinute?.people.adult_2.room.probabilities.living_room ?? 1);
+    expect(fifteenMinute?.people.adult_2.activity.probabilities.remote_work_or_study)
+      .toBeGreaterThan(sixtyMinute?.people.adult_2.activity.probabilities.remote_work_or_study ?? 1);
+  });
+
   it('flags unattended stove risk from public device state and missing kitchen motion', () => {
     const result = inferTwinState([
       deviceStateEvent('stove_01', 'kitchen', { powerW: 1300, level: 7 })

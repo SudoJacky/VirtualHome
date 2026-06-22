@@ -1,5 +1,5 @@
 import type { BeliefDistribution } from './beliefState';
-import type { InferredHomeMode } from './inferenceModel';
+import type { InferredHomeMode, PersonInferenceBelief } from './inferenceModel';
 
 export interface AnomalyRisk {
   probability: number;
@@ -9,6 +9,7 @@ export interface AnomalyRisk {
 export interface TwinStateForecast {
   horizonMinutes: 15 | 30 | 60;
   homeMode: BeliefDistribution<InferredHomeMode>;
+  people: Record<string, PersonInferenceBelief>;
   risks: Record<string, number>;
 }
 
@@ -60,11 +61,13 @@ export function createStateForecasts(
   risks: Record<string, AnomalyRisk>,
   options: {
     homeModeByHorizon?: Partial<Record<15 | 30 | 60, BeliefDistribution<InferredHomeMode>>>;
+    peopleByHorizon?: Partial<Record<15 | 30 | 60, Record<string, PersonInferenceBelief>>>;
   } = {}
 ): TwinStateForecast[] {
   return [15, 30, 60].map((horizonMinutes) => ({
     horizonMinutes: horizonMinutes as 15 | 30 | 60,
     homeMode: options.homeModeByHorizon?.[horizonMinutes as 15 | 30 | 60] ?? homeMode,
+    people: options.peopleByHorizon?.[horizonMinutes as 15 | 30 | 60] ?? {},
     risks: Object.fromEntries(Object.entries(risks).map(([riskId, risk]) => [
       riskId,
       Math.min(0.99, risk.probability + horizonMinutes / 60 * 0.12)
