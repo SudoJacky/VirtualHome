@@ -134,6 +134,13 @@ export interface SimulationEvaluationReport {
       homeModeAccuracyByHorizon: Record<ForecastHorizonMinutes, number>;
       averageRiskBrierScoreByHorizon: Record<ForecastHorizonMinutes, number>;
     };
+    downstreamUtility: {
+      trainExamples: number;
+      holdoutExamples: number;
+      homeModeTop1Accuracy: number;
+      averageRiskBrierScore: number;
+      featureCoverageRatio: number;
+    };
   };
 }
 
@@ -710,7 +717,8 @@ function evaluateInference(days: EvaluationDayInput[], homeDefinition: HomeDefin
     personRoomTop1Accuracy: samples > 0 ? top1Hits / samples : 0,
     acceptedObservationEvents,
     rejectedTruthOrControlEvents,
-    forecastEvaluation: evaluateForecastSamples(days, homeDefinition)
+    forecastEvaluation: evaluateForecastSamples(days, homeDefinition),
+    downstreamUtility: evaluateDownstreamUtility(days)
   };
 }
 
@@ -764,6 +772,180 @@ function evaluateForecastSamples(
       samplesByHorizon[horizon] > 0 ? roundRatio(brierTotalByHorizon[horizon] / samplesByHorizon[horizon]) : 0
     ])) as Record<ForecastHorizonMinutes, number>
   };
+}
+
+interface DownstreamUtilityExample {
+  featureKey: string;
+  homeMode: string;
+  risks: Record<string, boolean>;
+}
+
+interface DownstreamUtilityBucket {
+  samples: number;
+  homeModes: Record<string, number>;
+  riskPositiveCounts: Record<string, number>;
+}
+
+const downstreamRiskIds = ['fridge_left_open', 'network_impact', 'stove_unattended', 'senior_no_activity', 'water_leak'] as const;
+
+function evaluateDownstreamUtility(days: EvaluationDayInput[]): SimulationEvaluationReport['inference']['downstreamUtility'] {
+  const examples = createDownstreamUtilityExamples(days);
+  if (examples.length < 2) {
+    return {
+      trainExamples: examples.length,
+      holdoutExamples: 0,
+      homeModeTop1Accuracy: 0,
+      averageRiskBrierScore: 0,
+      featureCoverageRatio: 0
+    };
+  }
+
+  const splitIndex = Math.max(1, Math.floor(examples.length * 2 / 3));
+  const train = examples.slice(0, splitIndex);
+  const holdout = examples.slice(splitIndex);
+  const model = trainDownstreamUtilityBaseline(train);
+  let homeModeHits = 0;
+  let coveredFeatures = 0;
+  let brierTotal = 0;
+  let brierSamples = 0;
+
+  for (const example of holdout) {
+    const prediction = predictDownstreamUtility(model, example.featureKey);
+    if (prediction.featureCovered) {
+      coveredFeatures += 1;
+    }
+    if (prediction.homeMode === example.homeMode) {
+      homeModeHits += 1;
+    }
+    for (const riskId of downstreamRiskIds) {
+      const actual = example.risks[riskId] === true ? 1 : 0;
+      const probability = prediction.risks[riskId] ?? 0;
+      brierTotal += (probability - actual) ** 2;
+      brierSamples += 1;
+    }
+  }
+
+  return {
+    trainExamples: train.length,
+    holdoutExamples: holdout.length,
+    homeModeTop1Accuracy: holdout.length > 0 ? roundRatio(homeModeHits / holdout.length) : 0,
+    averageRiskBrierScore: brierSamples > 0 ? roundRatio(brierTotal / brierSamples) : 0,
+    featureCoverageRatio: holdout.length > 0 ? roundRatio(coveredFeatures / holdout.length) : 0
+  };
+}
+
+function createDownstreamUtilityExamples(days: EvaluationDayInput[]): DownstreamUtilityExample[] {
+  return days.flatMap((day) => (day.forecastSamples ?? []).flatMap((sample) => {
+    const truth = sample.truthByHorizon.find((candidate) => candidate.horizonMinutes === 60) ?? sample.truthByHorizon[0];
+    if (!truth) {
+      return [];
+    }
+    return [{
+      featureKey: createObservationFeatureKey(sample.currentTime, sample.eventsUntilNow),
+      homeMode: truth.snapshot.homeState.mode,
+      risks: riskTruthLabels(truth.snapshot)
+    }];
+  }));
+}
+
+function trainDownstreamUtilityBaseline(examples: DownstreamUtilityExample[]): {
+  buckets: Map<string, DownstreamUtilityBucket>;
+  prior: DownstreamUtilityBucket;
+} {
+  const buckets = new Map<string, DownstreamUtilityBucket>();
+  const prior = createDownstreamUtilityBucket();
+  for (const example of examples) {
+    updateDownstreamUtilityBucket(prior, example);
+    const bucket = buckets.get(example.featureKey) ?? createDownstreamUtilityBucket();
+    updateDownstreamUtilityBucket(bucket, example);
+    buckets.set(example.featureKey, bucket);
+  }
+  return { buckets, prior };
+}
+
+function predictDownstreamUtility(
+  model: ReturnType<typeof trainDownstreamUtilityBaseline>,
+  featureKey: string
+): {
+  featureCovered: boolean;
+  homeMode: string;
+  risks: Record<string, number>;
+} {
+  const bucket = model.buckets.get(featureKey);
+  const source = bucket ?? model.prior;
+  return {
+    featureCovered: bucket !== undefined,
+    homeMode: topCount(source.homeModes),
+    risks: Object.fromEntries(downstreamRiskIds.map((riskId) => [
+      riskId,
+      source.samples > 0 ? (source.riskPositiveCounts[riskId] ?? 0) / source.samples : 0
+    ]))
+  };
+}
+
+function createDownstreamUtilityBucket(): DownstreamUtilityBucket {
+  return {
+    samples: 0,
+    homeModes: {},
+    riskPositiveCounts: Object.fromEntries(downstreamRiskIds.map((riskId) => [riskId, 0]))
+  };
+}
+
+function updateDownstreamUtilityBucket(bucket: DownstreamUtilityBucket, example: DownstreamUtilityExample): void {
+  bucket.samples += 1;
+  increment(bucket.homeModes, example.homeMode);
+  for (const riskId of downstreamRiskIds) {
+    if (example.risks[riskId]) {
+      increment(bucket.riskPositiveCounts, riskId);
+    }
+  }
+}
+
+function createObservationFeatureKey(currentTime: string, events: TwinEvent[]): string {
+  const features = new Set<string>([`time:${timeBucket(currentTime)}`]);
+  for (const event of events) {
+    if (event.type === 'DeviceTelemetry' && event.sourceLayer === 'sensor') {
+      features.add(`sensor:${event.deviceType}`);
+      features.add(`room:${event.roomId}`);
+      if (event.measurements.motion === true) features.add(`motion:${event.roomId}`);
+      if (event.measurements.online === false) features.add('router:offline');
+      if (event.measurements.leak_detected === true) features.add('leak:detected');
+      if (Number(event.measurements.power_w ?? 0) >= 400) features.add('stove:active');
+      if (Number(event.measurements.co2 ?? 0) >= 900) features.add(`co2:${event.roomId}`);
+      if (Number(event.measurements.pm25 ?? 0) >= 35) features.add(`pm25:${event.roomId}`);
+    } else if (event.type === 'DeviceStateChanged' && event.sourceLayer === 'world') {
+      features.add(`world:${event.deviceType}`);
+      features.add(`room:${event.roomId}`);
+      if (event.deviceId === 'fridge_01' && event.state.doorOpen === true) features.add('fridge:open');
+      if (event.deviceId === 'router_01' && event.state.online === false) features.add('router:offline');
+      if (event.deviceId === 'stove_01' && Number(event.state.powerW ?? 0) >= 400) features.add('stove:active');
+    }
+  }
+  return [...features].sort().join('|');
+}
+
+function riskTruthLabels(snapshot: TwinSnapshot): Record<string, boolean> {
+  return {
+    fridge_left_open: snapshot.devices.fridge_01?.state.doorOpen === true,
+    network_impact: snapshot.devices.router_01?.state.online === false,
+    stove_unattended: Number(snapshot.devices.stove_01?.state.powerW ?? 0) >= 800 && !snapshot.rooms.kitchen?.humanOccupancy,
+    senior_no_activity: snapshot.alerts.senior_no_activity_001?.status === 'active',
+    water_leak: snapshot.devices.water_leak_01?.state.leakDetected === true
+  };
+}
+
+function timeBucket(time: string): string {
+  const minute = minuteOfDayFromTime(time);
+  if (minute < 6 * 60) return 'night';
+  if (minute < 10 * 60) return 'morning';
+  if (minute < 17 * 60) return 'day';
+  if (minute < 22 * 60) return 'evening';
+  return 'night';
+}
+
+function topCount(counts: Record<string, number>): string {
+  return Object.entries(counts)
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0] ?? 'unknown';
 }
 
 function riskBrierScore(risks: Record<string, number>, snapshot: TwinSnapshot): number {

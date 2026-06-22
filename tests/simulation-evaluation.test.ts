@@ -355,6 +355,31 @@ describe('long horizon simulation evaluation', () => {
     expect(Object.values(report.sensor.qualityRatios).every((ratio) => ratio >= 0 && ratio <= 1)).toBe(true);
   });
 
+  it('reports downstream utility metrics from a synthetic observation-trained baseline', () => {
+    const report = runSimulationEvaluation({
+      startDate: '2026-07-14',
+      days: 3,
+      seed: 42,
+      minutesPerDay: 240
+    });
+
+    expect(report.inference.downstreamUtility).toMatchObject({
+      trainExamples: expect.any(Number),
+      holdoutExamples: expect.any(Number),
+      homeModeTop1Accuracy: expect.any(Number),
+      averageRiskBrierScore: expect.any(Number),
+      featureCoverageRatio: expect.any(Number)
+    });
+    expect(report.inference.downstreamUtility.trainExamples).toBeGreaterThan(0);
+    expect(report.inference.downstreamUtility.holdoutExamples).toBeGreaterThan(0);
+    expect(report.inference.downstreamUtility.homeModeTop1Accuracy).toBeGreaterThanOrEqual(0);
+    expect(report.inference.downstreamUtility.homeModeTop1Accuracy).toBeLessThanOrEqual(1);
+    expect(report.inference.downstreamUtility.averageRiskBrierScore).toBeGreaterThanOrEqual(0);
+    expect(report.inference.downstreamUtility.averageRiskBrierScore).toBeLessThanOrEqual(1);
+    expect(report.inference.downstreamUtility.featureCoverageRatio).toBeGreaterThanOrEqual(0);
+    expect(report.inference.downstreamUtility.featureCoverageRatio).toBeLessThanOrEqual(1);
+  });
+
   it('scores water leak forecasts in risk calibration metrics', () => {
     const simulator = createSimulator({ seed: 42 });
     simulator.startScenario('night_water_leak');
