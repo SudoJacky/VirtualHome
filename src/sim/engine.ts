@@ -1908,22 +1908,49 @@ class Simulator implements VirtualHomeSimulator {
   }
 
   private syncSecurityCameras(): TwinEvent[] {
-    const events: TwinEvent[] = [];
-    const entranceRoom = this.state.snapshot.rooms.entrance;
-    const gardenRoom = this.state.snapshot.rooms.garden;
-    const doorbellEvent = this.setDeviceStateIfChanged('doorbell_camera_01', {
-      motion: entranceRoom.motionDetected,
-      ringing: false
-    }, `ambient:camera:${entranceRoom.humanOccupancy ? 'human' : 'pet_motion'}:entrance`);
-    if (doorbellEvent) {
-      events.push(doorbellEvent);
+    return [
+      ...this.syncSecurityCameraMotion('doorbell_camera_01', 'entrance'),
+      ...this.syncSecurityCameraMotion('garden_camera_01', 'garden')
+    ];
+  }
+
+  private syncSecurityCameraMotion(deviceId: 'doorbell_camera_01' | 'garden_camera_01', roomId: RoomId): TwinEvent[] {
+    const room = this.state.snapshot.rooms[roomId];
+    const observation = observeMotionSensor({
+      deviceId,
+      roomId,
+      deviceType: this.state.snapshot.devices[deviceId].type,
+      worldState: {
+        humanOccupancy: room.humanOccupancy,
+        petOccupancy: room.people.some((personId) => this.state.snapshot.people[personId]?.kind === 'pet'),
+        motionDetected: room.motionDetected
+      },
+      previousObservation: this.state.sensorObservations.get(deviceId),
+      currentTime: this.state.snapshot.simClock.currentTime,
+      randomSeed: this.state.random.getState()
+    }, getSensorProfile(this.state.snapshot.devices[deviceId].type));
+
+    if (!observation) {
+      return [];
     }
-    const gardenEvent = this.setDeviceStateIfChanged('garden_camera_01', {
-      motion: gardenRoom.motionDetected,
-      recording: gardenRoom.motionDetected
-    }, `ambient:camera:${gardenRoom.humanOccupancy ? 'human' : 'pet_motion'}:garden`);
-    if (gardenEvent) {
-      events.push(gardenEvent);
+
+    this.state.sensorObservations.set(deviceId, observation.observedState);
+    const events: TwinEvent[] = [this.createTelemetryEventFromObservation(observation)];
+    for (const additionalEvent of observation.additionalEvents ?? []) {
+      events.push(this.createEvent(additionalEvent));
+    }
+
+    const motion = observation.event.measurements.motion;
+    if (typeof motion !== 'boolean') {
+      return events;
+    }
+
+    const patch: Record<string, string | number | boolean | null> = deviceId === 'doorbell_camera_01'
+      ? { motion, ringing: false }
+      : { motion, recording: motion };
+    const stateEvent = this.setDeviceStateIfChanged(deviceId, patch, `sensor:camera:${motion ? 'motion' : 'clear'}:${roomId}`);
+    if (stateEvent) {
+      events.push(stateEvent);
     }
     return events;
   }

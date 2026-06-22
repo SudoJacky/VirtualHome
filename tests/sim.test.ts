@@ -185,7 +185,13 @@ describe('virtual home simulator MVP', () => {
     expect(snapshot.rooms[petRoomId].people).toContain('pet_1');
     expect(snapshot.rooms[petRoomId].humanOccupancy).toBe(false);
     expect(snapshot.rooms[petRoomId].motionDetected).toBe(true);
-    expect(events.some((event) => event.type === 'DeviceStateChanged' && event.reason?.includes('pet_motion'))).toBe(true);
+    expect(events.some((event): event is DeviceTelemetryEvent => (
+      event.type === 'DeviceTelemetry' &&
+      event.sourceLayer === 'sensor' &&
+      event.measurements.motion === true &&
+      event.lineage.quality.noisy === true &&
+      Number(event.measurements.confidence) <= 0.42
+    ))).toBe(true);
   });
 
   it('pauses garden watering when the pet enters the sprinkler zone', () => {
@@ -458,6 +464,53 @@ describe('virtual home simulator MVP', () => {
 
     expect(randomEvents(first)).toEqual(randomEvents(second));
     expect(first.getSnapshot().devices).toEqual(second.getSnapshot().devices);
+  });
+
+  it('drives security camera motion from sensor observations instead of ambient truth mirroring', () => {
+    const simulator = createSimulator({ seed: 2031 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T09:10:00+08:00';
+    snapshot.people.adult_1.location = 'entrance';
+    snapshot.people.adult_1.activity = 'arriving_home';
+    snapshot.devices.doorbell_camera_01.state = { ...snapshot.devices.doorbell_camera_01.state, motion: false, ringing: false };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    const events = simulator.advanceMinutes(1);
+    const doorbellTelemetry = events.find((event): event is DeviceTelemetryEvent => (
+      event.type === 'DeviceTelemetry' &&
+      event.deviceId === 'doorbell_camera_01' &&
+      event.sourceLayer === 'sensor'
+    ));
+    const doorbellState = events.find((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'doorbell_camera_01' &&
+      event.reason?.startsWith('sensor:camera:') === true
+    ));
+
+    expect(doorbellTelemetry).toMatchObject({
+      measurements: {
+        motion: expect.any(Boolean),
+        confidence: expect.any(Number)
+      },
+      lineage: {
+        sourceLayer: 'sensor',
+        observability: 'ml_observation'
+      }
+    });
+    if (!doorbellTelemetry) {
+      throw new Error('Expected doorbell camera sensor telemetry');
+    }
+    const observedMotion = doorbellTelemetry.measurements.motion;
+    if (typeof observedMotion !== 'boolean') {
+      throw new Error('Expected boolean doorbell camera motion telemetry');
+    }
+    expect(events.some((event) => event.type === 'DeviceStateChanged' && event.reason?.startsWith('ambient:camera:'))).toBe(false);
+    expect(doorbellState?.state).toMatchObject({
+      motion: observedMotion,
+      ringing: false
+    });
   });
 
   it('continues deterministically after restoring from a checkpoint with replayed events', () => {

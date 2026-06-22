@@ -496,6 +496,27 @@ describe('sensor model', () => {
     });
   });
 
+  it('defines privacy-sensitive camera motion profiles separately from room motion sensors', () => {
+    const doorbellProfile = getSensorProfile('doorbell_camera');
+    const gardenCameraProfile = getSensorProfile('security_camera');
+    const roomMotionProfile = getSensorProfile('motion_sensor');
+
+    expect(doorbellProfile).toMatchObject({
+      deviceType: 'doorbell_camera',
+      falsePositiveRate: expect.any(Number),
+      falseNegativeRate: expect.any(Number),
+      cooldownSec: expect.any(Number)
+    });
+    expect(gardenCameraProfile).toMatchObject({
+      deviceType: 'security_camera',
+      falsePositiveRate: expect.any(Number),
+      falseNegativeRate: expect.any(Number),
+      cooldownSec: expect.any(Number)
+    });
+    expect(doorbellProfile.delayMs).not.toEqual(roomMotionProfile.delayMs);
+    expect(gardenCameraProfile.falsePositiveRate).toBeGreaterThan(roomMotionProfile.falsePositiveRate);
+  });
+
   it('reports numeric sensor changes after smoothing and threshold checks', () => {
     const profile = withSensorProfileOverrides(getSensorProfile('power_meter'), {
       reportOnChangeThreshold: 8,

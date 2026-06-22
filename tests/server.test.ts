@@ -713,6 +713,7 @@ describe('server API', () => {
       type: string;
       sourceLayer?: string;
       deviceId?: string;
+      deviceType?: string;
       reason?: string;
       eventExplanation?: unknown;
     }>;
@@ -731,6 +732,8 @@ describe('server API', () => {
       event.sourceLayer === 'world' &&
       event.deviceId === 'fridge_01'
     ))).toBe(true);
+    expect(observationEvents.some((event) => event.deviceId === 'doorbell_camera_01' || event.deviceId === 'garden_camera_01')).toBe(false);
+    expect(observationEvents.some((event) => event.deviceType === 'doorbell_camera' || event.deviceType === 'security_camera')).toBe(false);
     expect(observationEvents.every((event) => event.reason === undefined)).toBe(true);
     expect(observationEvents.every((event) => event.eventExplanation === undefined)).toBe(true);
     expect(serialized).not.toContain('adult_1');

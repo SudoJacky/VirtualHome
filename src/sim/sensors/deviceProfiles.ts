@@ -30,6 +30,28 @@ const sensorProfiles: Record<string, SensorProfile> = {
     dropRate: 0.01,
     cooldownSec: 90
   },
+  doorbell_camera: {
+    deviceType: 'doorbell_camera',
+    samplingIntervalSec: 300,
+    reportOnChangeThreshold: 1,
+    falsePositiveRate: 0.06,
+    falseNegativeRate: 0.08,
+    delayMs: { kind: 'uniform', min: 180, max: 1400 },
+    duplicateRate: 0.008,
+    dropRate: 0.008,
+    cooldownSec: 300
+  },
+  security_camera: {
+    deviceType: 'security_camera',
+    samplingIntervalSec: 300,
+    reportOnChangeThreshold: 1,
+    falsePositiveRate: 0.12,
+    falseNegativeRate: 0.07,
+    delayMs: { kind: 'uniform', min: 220, max: 1800 },
+    duplicateRate: 0.008,
+    dropRate: 0.01,
+    cooldownSec: 300
+  },
   contact_sensor: {
     deviceType: 'contact_sensor',
     samplingIntervalSec: 5,

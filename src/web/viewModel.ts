@@ -872,6 +872,9 @@ function createTelemetrySeries(events: TwinEvent[]): DashboardModel['telemetrySe
     if (event.type !== 'DeviceTelemetry') {
       continue;
     }
+    if (event.deviceType === 'doorbell_camera' || event.deviceType === 'security_camera') {
+      continue;
+    }
     for (const [metric, value] of Object.entries(event.measurements)) {
       if (typeof value !== 'number') {
         continue;
@@ -1992,7 +1995,11 @@ function createControlRecords(events: TwinEvent[]): ControlRecord[] {
       continue;
     }
 
-    if (event.type !== 'DeviceStateChanged' || event.reason?.startsWith('ambient:')) {
+    if (
+      event.type !== 'DeviceStateChanged' ||
+      event.reason?.startsWith('ambient:') ||
+      event.reason?.startsWith('sensor:camera:')
+    ) {
       continue;
     }
 
