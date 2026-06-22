@@ -105,6 +105,58 @@ describe('agent policy', () => {
     expect(decision.reason).toContain('commitment');
   });
 
+  it('uses family requests and active resource conflicts when ranking candidate activities', () => {
+    const requestedDecision = selectActivity({
+      personId: 'adult_1',
+      persona: getPersona('adult_1'),
+      needs: { ...baselineNeeds, hunger: 30, socialNeed: 76, taskPressure: 18 },
+      currentActivity: 'idle',
+      currentRoom: 'living_room',
+      homeMode: 'evening_home',
+      minuteOfDay: 18 * 60,
+      availableResources: {
+        prepared_meal: 1,
+        tv_01: 1
+      },
+      familyRequestByActivity: {
+        eat_meal: 90
+      }
+    });
+    const unconflictedDecision = selectActivity({
+      personId: 'adult_1',
+      persona: getPersona('adult_1'),
+      needs: { ...baselineNeeds, stress: 92, taskPressure: 12, hunger: 18 },
+      currentActivity: 'idle',
+      currentRoom: 'living_room',
+      homeMode: 'evening_home',
+      minuteOfDay: 18 * 60,
+      availableResources: {
+        tv_01: 1
+      }
+    });
+    const conflictedDecision = selectActivity({
+      personId: 'adult_1',
+      persona: getPersona('adult_1'),
+      needs: { ...baselineNeeds, stress: 92, taskPressure: 12, hunger: 18 },
+      currentActivity: 'idle',
+      currentRoom: 'living_room',
+      homeMode: 'evening_home',
+      minuteOfDay: 18 * 60,
+      availableResources: {
+        tv_01: 1
+      },
+      resourceConflictByResource: {
+        tv_01: 95
+      }
+    });
+
+    expect(requestedDecision.activityId).toBe('eat_meal');
+    expect(requestedDecision.reason).toContain('family');
+    expect(unconflictedDecision.activityId).toBe('watch_tv');
+    expect(conflictedDecision.activityId).not.toBe('watch_tv');
+    expect(unconflictedDecision.score).toBeGreaterThan(conflictedDecision.score);
+  });
+
   it('raises laundry priority when dirty laundry accumulates', () => {
     const lowLaundryDecision = selectActivity({
       personId: 'adult_1',

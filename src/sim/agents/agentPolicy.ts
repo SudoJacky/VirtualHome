@@ -13,6 +13,8 @@ export interface ActivityDecisionInput {
   minuteOfDay: number;
   availableResources: Record<string, number>;
   commitmentPressureByActivity?: Record<string, number>;
+  familyRequestByActivity?: Record<string, number>;
+  resourceConflictByResource?: Record<string, number>;
 }
 
 export interface ActivityDecision {
@@ -54,20 +56,28 @@ function decisionForTemplate(input: ActivityDecisionInput, template: ActivityTem
   const needRelief = scoreNeedRelief(input.needs, template);
   const habitPreference = scoreHabit(input.persona, template, input.minuteOfDay);
   const commitmentPressure = input.commitmentPressureByActivity?.[template.id] ?? 0;
+  const familyRequest = input.familyRequestByActivity?.[template.id] ?? 0;
   const environmentFit = input.homeMode === 'sleeping' && template.id !== 'sleep' ? -40 : 0;
   const missingResource = firstMissingResource(template, input.availableResources);
   const resourceAvailability = missingResource ? template.fallbackActivityIds?.length ? -10 : -100 : 8;
   const resourceUrgency = scoreResourceUrgency(input, template);
   const movementCost = input.currentRoom === 'away' || input.currentRoom === template.targetRoom ? 0 : -6;
   const interruptionCost = input.currentActivity === 'sleeping' && template.id !== 'wake_up' && input.minuteOfDay < 8 * 60 ? -22 : 0;
+  const conflictCost = scoreConflictCost(input, template);
   const boundedRandomness = deterministicJitter(`${input.personId}:${template.id}:${Math.floor(input.minuteOfDay / 30)}`);
-  const score = goalPriority + needRelief + habitPreference + commitmentPressure * 0.5 + environmentFit + resourceAvailability + resourceUrgency + movementCost + interruptionCost + boundedRandomness;
+  const score = goalPriority + needRelief + habitPreference + commitmentPressure * 0.5 + familyRequest * 0.45 + environmentFit + resourceAvailability + resourceUrgency + movementCost + interruptionCost + conflictCost + boundedRandomness;
+  const reasonParts = [
+    commitmentPressure > 0 ? `commitment:${Math.round(commitmentPressure)}` : '',
+    familyRequest > 0 ? `family:${Math.round(familyRequest)}` : '',
+    conflictCost < 0 ? `conflict:${Math.round(conflictCost * 10) / 10}` : '',
+    `score:${Math.round(score * 10) / 10}`
+  ].filter(Boolean);
   return {
     personId: input.personId,
     activityId: template.id,
     targetRoom: template.targetRoom,
     score: Math.round(score * 10) / 10,
-    reason: `${commitmentPressure > 0 ? `commitment:${Math.round(commitmentPressure)} ` : ''}score:${Math.round(score * 10) / 10}`
+    reason: reasonParts.join(' ')
   };
 }
 
@@ -116,6 +126,12 @@ function scoreResourceUrgency(input: ActivityDecisionInput, template: ActivityTe
     return (input.availableResources.medicine ?? 0) > 0 ? 8 : 0;
   }
   return 0;
+}
+
+function scoreConflictCost(input: ActivityDecisionInput, template: ActivityTemplate): number {
+  const conflicts = template.requiredResources.map((resource) => input.resourceConflictByResource?.[resource.resourceId] ?? 0);
+  const strongestConflict = conflicts.length > 0 ? Math.max(...conflicts) : 0;
+  return strongestConflict > 0 ? -strongestConflict * 0.55 : 0;
 }
 
 function scoreMealAffinity(persona: PersonaProfile, template: ActivityTemplate): number {
