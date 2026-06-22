@@ -18,7 +18,9 @@ export interface ObservationEvidence {
   motionByRoom: Partial<Record<RoomId, number>>;
   activeDeviceRooms: Partial<Record<RoomId, number>>;
   co2ByRoom: Partial<Record<RoomId, number>>;
+  co2QualityByRoom: Partial<Record<RoomId, number>>;
   pm25ByRoom: Partial<Record<RoomId, number>>;
+  pm25QualityByRoom: Partial<Record<RoomId, number>>;
   droppedObservationEvents: number;
   observationQuality: number;
   fridgeDoorOpen: boolean;
@@ -39,7 +41,9 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
   const motionByRoom: Partial<Record<RoomId, number>> = {};
   const activeDeviceRooms: Partial<Record<RoomId, number>> = {};
   const co2ByRoom: Partial<Record<RoomId, number>> = {};
+  const co2QualityByRoom: Partial<Record<RoomId, number>> = {};
   const pm25ByRoom: Partial<Record<RoomId, number>> = {};
+  const pm25QualityByRoom: Partial<Record<RoomId, number>> = {};
   let droppedObservationEvents = 0;
   let fridgeDoorOpen = false;
   let fridgeDoorConfidence = 0;
@@ -73,10 +77,18 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
         );
       }
       if (typeof event.measurements.co2 === 'number') {
-        co2ByRoom[event.roomId] = Math.max(co2ByRoom[event.roomId] ?? 0, Number(event.measurements.co2));
+        const co2 = Number(event.measurements.co2);
+        if (co2 >= (co2ByRoom[event.roomId] ?? 0)) {
+          co2ByRoom[event.roomId] = co2;
+          co2QualityByRoom[event.roomId] = measurementConfidence(event, 0.8) * observationQualityWeight(event);
+        }
       }
       if (typeof event.measurements.pm25 === 'number') {
-        pm25ByRoom[event.roomId] = Math.max(pm25ByRoom[event.roomId] ?? 0, Number(event.measurements.pm25));
+        const pm25 = Number(event.measurements.pm25);
+        if (pm25 >= (pm25ByRoom[event.roomId] ?? 0)) {
+          pm25ByRoom[event.roomId] = pm25;
+          pm25QualityByRoom[event.roomId] = measurementConfidence(event, 0.8) * observationQualityWeight(event);
+        }
       }
       if (event.measurements.online === false) {
         routerOffline = true;
@@ -134,7 +146,9 @@ export function extractObservationEvidence(events: TwinEvent[]): ObservationEvid
     motionByRoom,
     activeDeviceRooms,
     co2ByRoom,
+    co2QualityByRoom,
     pm25ByRoom,
+    pm25QualityByRoom,
     droppedObservationEvents,
     observationQuality: acceptedEvents.length > 0
       ? Math.max(0.45, 1 - droppedObservationEvents / acceptedEvents.length * 0.55)
@@ -157,8 +171,8 @@ export function roomEvidenceScore(roomId: RoomId, evidence: ObservationEvidence)
     (evidence.motionByRoom[roomId] ?? 0) * 6 +
     (evidence.activeDeviceRooms[roomId] ?? 0) * 2 +
     (roomId === 'master_bedroom' && evidence.sleepSensorInBed ? 4.4 : 0) +
-    co2OccupancyScore(evidence.co2ByRoom[roomId]) +
-    pm25ActivityScore(evidence.pm25ByRoom[roomId])
+    co2OccupancyScore(evidence.co2ByRoom[roomId]) * (evidence.co2QualityByRoom[roomId] ?? 1) +
+    pm25ActivityScore(evidence.pm25ByRoom[roomId]) * (evidence.pm25QualityByRoom[roomId] ?? 1)
   ) * evidence.observationQuality;
 }
 

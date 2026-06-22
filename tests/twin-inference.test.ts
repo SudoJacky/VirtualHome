@@ -529,6 +529,34 @@ describe('twin inference model', () => {
       .toBeGreaterThan(result.people.adult_1.activity.probabilities.household_leisure);
   });
 
+  it('reduces study occupancy and work confidence when CO2 telemetry is low quality', () => {
+    const clean = inferTwinState([
+      telemetryEvent('study_co2_01', 'air_quality_sensor', 'study', { co2: 1180, confidence: 0.88 })
+    ], {
+      currentTime: '2026-06-17T14:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'study', 'kitchen']
+    });
+    const degraded = inferTwinState([
+      telemetryEvent(
+        'study_co2_01',
+        'air_quality_sensor',
+        'study',
+        { co2: 1180, confidence: 0.88 },
+        { delayedMs: 12 * 60 * 1000, noisy: true, confidence: 0.4 }
+      )
+    ], {
+      currentTime: '2026-06-17T14:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'study', 'kitchen']
+    });
+
+    expect(degraded.people.adult_1.room.top).toBe('study');
+    expect(degraded.people.adult_1.room.confidence).toBeLessThan(clean.people.adult_1.room.confidence);
+    expect(degraded.people.adult_1.activity.probabilities.remote_work_or_study)
+      .toBeLessThan(clean.people.adult_1.activity.probabilities.remote_work_or_study);
+  });
+
   it('uses kitchen air and power telemetry to infer meal preparation activity', () => {
     const result = inferTwinState([
       telemetryEvent('pm25_01', 'air_quality_sensor', 'kitchen', { pm25: 62, co2: 760, confidence: 0.83 }),
@@ -543,6 +571,34 @@ describe('twin inference model', () => {
     expect(result.people.adult_1.activity.top).toBe('meal_prep_or_kitchen_visit');
     expect(result.people.adult_1.activity.probabilities.meal_prep_or_kitchen_visit)
       .toBeGreaterThan(result.people.adult_1.activity.probabilities.away_or_unknown);
+  });
+
+  it('reduces kitchen occupancy and meal-prep confidence when PM2.5 telemetry is low quality', () => {
+    const clean = inferTwinState([
+      telemetryEvent('pm25_01', 'air_quality_sensor', 'kitchen', { pm25: 62, confidence: 0.83 })
+    ], {
+      currentTime: '2026-06-17T12:10:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'study', 'kitchen']
+    });
+    const degraded = inferTwinState([
+      telemetryEvent(
+        'pm25_01',
+        'air_quality_sensor',
+        'kitchen',
+        { pm25: 62, confidence: 0.83 },
+        { delayedMs: 12 * 60 * 1000, noisy: true, confidence: 0.4 }
+      )
+    ], {
+      currentTime: '2026-06-17T12:10:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'study', 'kitchen']
+    });
+
+    expect(degraded.people.adult_1.room.top).toBe('kitchen');
+    expect(degraded.people.adult_1.room.confidence).toBeLessThan(clean.people.adult_1.room.confidence);
+    expect(degraded.people.adult_1.activity.probabilities.meal_prep_or_kitchen_visit)
+      .toBeLessThan(clean.people.adult_1.activity.probabilities.meal_prep_or_kitchen_visit);
   });
 
   it('raises senior wellness and leak risks from sensor telemetry without truth labels', () => {

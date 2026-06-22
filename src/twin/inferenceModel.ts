@@ -249,10 +249,13 @@ function inferPersonActivity(
     scores.meal_prep_or_kitchen_visit += 3.8;
   }
   if (roomId === 'kitchen' && (evidence.stovePowerW >= 400 || (evidence.pm25ByRoom.kitchen ?? 0) >= 35)) {
-    scores.meal_prep_or_kitchen_visit += 2.6;
+    scores.meal_prep_or_kitchen_visit += 2.6 * Math.max(
+      evidence.stovePowerW >= 400 ? evidence.stovePowerConfidence || 1 : 0,
+      (evidence.pm25ByRoom.kitchen ?? 0) >= 35 ? evidence.pm25QualityByRoom.kitchen ?? 1 : 0
+    );
   }
   if (roomId === 'study' && (evidence.co2ByRoom.study ?? 0) >= 900) {
-    scores.remote_work_or_study += 3.2;
+    scores.remote_work_or_study += 3.2 * (evidence.co2QualityByRoom.study ?? 1);
   }
   if (roomId === 'master_bedroom' && evidence.sleepSensorInBed) {
     scores.sleeping_or_resting += 4.4;
