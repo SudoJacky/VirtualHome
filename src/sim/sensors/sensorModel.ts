@@ -117,7 +117,9 @@ export function observeBinarySensor(input: SensorObservationInput, profile: Sens
       ? !inactiveValue
       : actualValue;
   const noisy = missedActive || falseActive;
-  const confidence = observedValue === actualValue ? 0.96 : 0.28;
+  const confidence = observedValue === actualValue
+    ? active && profile.offlineSensitivity !== undefined ? profile.offlineSensitivity : 0.96
+    : 0.28;
 
   if (!noisy && observedValue === inactiveValue && input.previousObservation?.[options.worldKey] === undefined) {
     return null;

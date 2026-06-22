@@ -454,6 +454,48 @@ describe('sensor model', () => {
     expect(unchanged).toBeNull();
   });
 
+  it('uses router offline sensitivity for connectivity outage confidence', () => {
+    const profile = withSensorProfileOverrides(getSensorProfile('router'), {
+      falsePositiveRate: 0,
+      falseNegativeRate: 0,
+      offlineSensitivity: 0.99,
+      dropRate: 0,
+      duplicateRate: 0,
+      delayMs: { kind: 'constant', value: 0 }
+    });
+
+    const observation = observeBinarySensor({
+      deviceId: 'router_01',
+      roomId: 'study',
+      deviceType: 'router',
+      worldState: {
+        online: false
+      },
+      previousObservation: {
+        online: true,
+        lastObservedAt: '2026-06-17T08:00:00+08:00'
+      },
+      currentTime: '2026-06-17T08:01:00+08:00',
+      randomSeed: 42
+    }, profile, {
+      worldKey: 'online',
+      measurementName: 'online',
+      inactiveValue: true
+    });
+
+    expect(observation?.event).toMatchObject({
+      measurements: {
+        online: false,
+        confidence: 0.99
+      },
+      lineage: {
+        quality: {
+          confidence: 0.99
+        }
+      }
+    });
+  });
+
   it('reports numeric sensor changes after smoothing and threshold checks', () => {
     const profile = withSensorProfileOverrides(getSensorProfile('power_meter'), {
       reportOnChangeThreshold: 8,
