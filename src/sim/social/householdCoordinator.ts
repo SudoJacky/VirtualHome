@@ -49,6 +49,10 @@ export function coordinateHousehold(context: HouseholdSocialContext): SocialDeci
   if (packagePickup) {
     decisions.push(packagePickup);
   }
+  const maintenanceVisit = createMaintenanceVisitDecision(context);
+  if (maintenanceVisit) {
+    decisions.push(maintenanceVisit);
+  }
   const choreAssignment = createChoreAssignmentDecision(context);
   if (choreAssignment) {
     decisions.push(choreAssignment);
@@ -93,6 +97,33 @@ function createPackagePickupDecision(context: HouseholdSocialContext): SocialDec
     targetActivity: 'collect_package',
     conversationTopic: 'package_delivery',
     reason: 'social:package_pickup_response'
+  };
+}
+
+function createMaintenanceVisitDecision(context: HouseholdSocialContext): SocialDecision | null {
+  if (context.householdBacklog.deviceMaintenanceScore > 4) {
+    return null;
+  }
+  const minuteOfDay = minuteOfDayFromTime(context.currentTime);
+  if (minuteOfDay < 9 * 60 || minuteOfDay > 18 * 60) {
+    return null;
+  }
+  const responderId = ['adult_1', 'adult_2', 'senior_1']
+    .find((personId) => {
+      const person = context.people[personId];
+      return person?.available === true && person.location !== 'away';
+    });
+  if (!responderId) {
+    return null;
+  }
+  return {
+    kind: 'external_response',
+    ruleId: 'maintenance_visit_response',
+    actorIds: [responderId],
+    targetRoom: 'entrance',
+    targetActivity: 'meet_maintenance_worker',
+    conversationTopic: 'maintenance_visit',
+    reason: 'social:maintenance_visit_response'
   };
 }
 

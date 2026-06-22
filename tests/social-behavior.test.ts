@@ -195,6 +195,33 @@ describe('household social behavior model', () => {
     ]));
   });
 
+  it('coordinates a maintenance worker visit when device maintenance is degraded', () => {
+    const context = baseSocialContext();
+    context.currentTime = '2026-06-17T14:20:00+08:00';
+    context.people.adult_1 = { location: 'living_room', activity: 'idle', available: true };
+    context.people.adult_2 = { location: 'away', activity: 'commute', available: false };
+    context.householdBacklog = {
+      dirtyDishes: 1,
+      dirtyLaundryKg: 0.8,
+      packageCount: 0,
+      unfinishedChores: 1,
+      deviceMaintenanceScore: 3
+    };
+
+    const decisions = coordinateHousehold(context);
+
+    expect(decisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'external_response',
+        ruleId: 'maintenance_visit_response',
+        actorIds: ['adult_1'],
+        targetRoom: 'entrance',
+        targetActivity: 'meet_maintenance_worker',
+        conversationTopic: 'maintenance_visit'
+      })
+    ]));
+  });
+
   it('does not assign chores to the child when homework pressure is high', () => {
     const context = baseSocialContext();
     context.currentTime = '2026-06-17T17:30:00+08:00';

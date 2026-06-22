@@ -946,6 +946,41 @@ describe('virtual home simulator MVP', () => {
     ]));
   });
 
+  it('responds to a maintenance visit when device maintenance is degraded', () => {
+    const simulator = createSimulator({ seed: 1122 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T14:20:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_1.location = 'living_room';
+    snapshot.people.adult_1.activity = 'idle';
+    snapshot.people.adult_2.location = 'away';
+    snapshot.people.adult_2.activity = 'commute';
+    snapshot.worldState.inventory.packageCount = 0;
+    snapshot.worldState.inventory.dirtyDishes = 1;
+    snapshot.worldState.inventory.unfinishedChores = 1;
+    snapshot.worldState.inventory.deviceMaintenanceScore = 3;
+    simulator.restore(snapshot, simulator.getEvents());
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.people.adult_1).toMatchObject({ location: 'entrance', activity: 'meet_maintenance_worker' });
+    expect(updated.worldState.inventory.deviceMaintenanceScore).toBeGreaterThan(3);
+    expect(events.some((event): event is ExternalInteractionOccurredEvent => (
+      event.type === 'ExternalInteractionOccurred' &&
+      event.actorKind === 'repair' &&
+      event.purpose === 'maintenance_visit' &&
+      event.roomId === 'entrance'
+    ))).toBe(true);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'AutomationTriggered',
+        ruleId: 'maintenance_visit_response'
+      })
+    ]));
+  });
+
   it('assigns dirty dish cleanup as a household chore and reduces backlog', () => {
     const simulator = createSimulator({ seed: 1222 });
 

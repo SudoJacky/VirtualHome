@@ -805,6 +805,8 @@ class Simulator implements VirtualHomeSimulator {
         events.push(...this.applySeniorMedicineReminder(decision));
       } else if (decision.ruleId === 'package_pickup_response') {
         events.push(...this.applyPackagePickupResponse(decision));
+      } else if (decision.ruleId === 'maintenance_visit_response') {
+        events.push(...this.applyMaintenanceVisitResponse(decision));
       } else if (decision.ruleId === 'household_chore_assignment') {
         events.push(...this.applyHouseholdChoreAssignment(decision));
       } else if (decision.ruleId === 'shared_resource_contention') {
@@ -965,6 +967,57 @@ class Simulator implements VirtualHomeSimulator {
           affectedRoomIds: ['entrance'],
           relatedIntent: 'handle_delivery',
           expectedOutcome: 'Turn an external courier event into a concrete household response and clear the package backlog.'
+        }
+      })
+    ];
+    return events;
+  }
+
+  private applyMaintenanceVisitResponse(decision: SocialDecision): TwinEvent[] {
+    if (
+      this.state.triggeredRules.has(decision.ruleId) ||
+      !decision.targetRoom ||
+      !decision.targetActivity ||
+      this.state.snapshot.worldState.inventory.deviceMaintenanceScore > 4
+    ) {
+      return [];
+    }
+    const actorId = decision.actorIds[0];
+    const actor = actorId ? this.state.snapshot.people[actorId] : undefined;
+    if (!actor || actor.location === 'away') {
+      return [];
+    }
+
+    this.state.triggeredRules.add(decision.ruleId);
+    this.state.snapshot.worldState.inventory.deviceMaintenanceScore = Math.max(
+      this.state.snapshot.worldState.inventory.deviceMaintenanceScore,
+      8
+    );
+    const events: TwinEvent[] = [
+      this.createEvent({
+        type: 'ExternalInteractionOccurred',
+        interactionId: `${decision.ruleId}_${this.state.snapshot.simClock.sequence + 1}`,
+        actorKind: 'repair',
+        purpose: 'maintenance_visit',
+        roomId: 'entrance',
+        status: 'completed',
+        relatedDeviceIds: ['router_01', 'robot_vacuum_01'],
+        reason: decision.reason
+      }),
+      ...this.createRoutedPersonMovedEvents(actor.id, decision.targetRoom, decision.targetActivity, decision.reason),
+      this.createEvent({
+        type: 'AutomationTriggered',
+        ruleId: decision.ruleId,
+        explanation: 'A degraded maintenance score caused the household to meet a repair worker and restore device maintenance confidence.',
+        actions: ['acknowledge_repair_visit', 'move_household_member_to_entrance', 'raise_device_maintenance_score'],
+        reason: decision.reason,
+        eventExplanation: {
+          why: `${actor.id} is available while device maintenance score is degraded.`,
+          actorIds: [actor.id],
+          affectedDeviceIds: ['router_01', 'robot_vacuum_01'],
+          affectedRoomIds: ['entrance'],
+          relatedIntent: 'handle_maintenance_visit',
+          expectedOutcome: 'Represent a repair visit as concrete household coordination and improve long-term device maintenance state.'
         }
       })
     ];
