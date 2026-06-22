@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { getHomeDefinition } from '../src/sim/catalog';
 import { createSimulator } from '../src/sim/engine';
-import { buildEvaluationReport } from '../src/sim/evaluation/metrics';
+import { buildEvaluationReport, compareDownstreamUtilityGaps } from '../src/sim/evaluation/metrics';
 import { createEvaluationCliOutput, createEvaluationCliReport, createTrainingDataset, parseEvaluationCliArgs, runSimulationEvaluation } from '../src/sim/evaluation/runEvaluation';
 import type { ActivityStartedEvent, ConversationOccurredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent } from '../src/shared/types';
 
@@ -581,6 +581,43 @@ describe('long horizon simulation evaluation', () => {
     expect(report.inference.downstreamUtility.syntheticToRealGap).toMatchObject({
       homeModeAccuracyGap: expect.any(Number),
       riskBrierScoreGap: expect.any(Number)
+    });
+  });
+
+  it('compares synthetic-to-real downstream gaps before and after simulation parameter tuning', () => {
+    const comparison = compareDownstreamUtilityGaps(
+      {
+        syntheticToRealGap: {
+          homeModeAccuracyGap: 0.42,
+          riskBrierScoreGap: 0.18
+        }
+      },
+      {
+        syntheticToRealGap: {
+          homeModeAccuracyGap: 0.25,
+          riskBrierScoreGap: 0.09
+        }
+      }
+    );
+
+    expect(comparison).toEqual({
+      baseline: {
+        homeModeAccuracyGap: 0.42,
+        riskBrierScoreGap: 0.18
+      },
+      candidate: {
+        homeModeAccuracyGap: 0.25,
+        riskBrierScoreGap: 0.09
+      },
+      deltas: {
+        homeModeAccuracyGap: -0.17,
+        riskBrierScoreGap: -0.09
+      },
+      improved: {
+        homeModeAccuracyGap: true,
+        riskBrierScoreGap: true,
+        overall: true
+      }
     });
   });
 

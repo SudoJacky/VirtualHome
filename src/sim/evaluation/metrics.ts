@@ -167,6 +167,24 @@ export interface SimulationEvaluationReport {
   };
 }
 
+export interface DownstreamUtilityGapSummary {
+  syntheticToRealGap: {
+    homeModeAccuracyGap: number;
+    riskBrierScoreGap: number;
+  };
+}
+
+export interface DownstreamUtilityGapComparison {
+  baseline: DownstreamUtilityGapSummary['syntheticToRealGap'];
+  candidate: DownstreamUtilityGapSummary['syntheticToRealGap'];
+  deltas: DownstreamUtilityGapSummary['syntheticToRealGap'];
+  improved: {
+    homeModeAccuracyGap: boolean;
+    riskBrierScoreGap: boolean;
+    overall: boolean;
+  };
+}
+
 export function buildEvaluationReport(input: {
   days: EvaluationDayInput[];
   homeDefinition: HomeDefinition;
@@ -208,6 +226,32 @@ export function buildEvaluationReport(input: {
     behavior,
     sensor,
     inference
+  };
+}
+
+export function compareDownstreamUtilityGaps(
+  baseline: DownstreamUtilityGapSummary,
+  candidate: DownstreamUtilityGapSummary
+): DownstreamUtilityGapComparison {
+  const baselineGap = baseline.syntheticToRealGap;
+  const candidateGap = candidate.syntheticToRealGap;
+  const deltas = {
+    homeModeAccuracyGap: roundMetricDelta(candidateGap.homeModeAccuracyGap - baselineGap.homeModeAccuracyGap),
+    riskBrierScoreGap: roundMetricDelta(candidateGap.riskBrierScoreGap - baselineGap.riskBrierScoreGap)
+  };
+  const improved = {
+    homeModeAccuracyGap: deltas.homeModeAccuracyGap < 0,
+    riskBrierScoreGap: deltas.riskBrierScoreGap < 0
+  };
+
+  return {
+    baseline: { ...baselineGap },
+    candidate: { ...candidateGap },
+    deltas,
+    improved: {
+      ...improved,
+      overall: improved.homeModeAccuracyGap && improved.riskBrierScoreGap
+    }
   };
 }
 
@@ -1270,6 +1314,10 @@ function transitionVariationScore(transitionsByDay: number[]): number {
 
 function roundRatio(value: number): number {
   return Math.round(Math.max(0, Math.min(1, value)) * 1000) / 1000;
+}
+
+function roundMetricDelta(value: number): number {
+  return Math.round(value * 1000) / 1000;
 }
 
 function averageIntervalMinutes(timestamps: number[]): number {
