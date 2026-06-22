@@ -6,7 +6,7 @@ import { getScenario, type ScenarioAction, type ScenarioDefinition } from './sce
 import { getDeviceCapability, validateDeviceStatePatch } from '../shared/deviceRegistry';
 import { getDeviceSupportedCommands } from '../shared/deviceInstanceCapabilities';
 import { getSensorProfile, withSensorProfileOverrides } from './sensors/deviceProfiles';
-import { observeContactSensor, observeEnvironmentSensor, observeMotionSensor, type SensorObservation } from './sensors/sensorModel';
+import { observeBinarySensor, observeContactSensor, observeEnvironmentSensor, observeMotionSensor, observeNumericSensor, type SensorObservation } from './sensors/sensorModel';
 import { selectActivity } from './agents/agentPolicy';
 import { advanceNeeds, applyActivityEffectsToNeeds, createInitialNeeds, type NeedState } from './agents/needs';
 import { commitmentPressureAtMinute, createDailyCommitments } from './agents/scheduler';
@@ -2057,7 +2057,7 @@ class Simulator implements VirtualHomeSimulator {
   private generateTelemetry(): TwinEvent[] {
     const events: TwinEvent[] = [];
     for (const device of this.state.catalog.devices) {
-      if (!['temperature_humidity_sensor', 'air_quality_sensor', 'water_flow_sensor', 'soil_moisture_sensor', 'fridge', 'door_lock'].includes(device.type)) {
+      if (!['temperature_humidity_sensor', 'air_quality_sensor', 'water_flow_sensor', 'soil_moisture_sensor', 'fridge', 'door_lock', 'water_leak_sensor', 'sleep_sensor', 'router', 'stove', 'dishwasher', 'washer'].includes(device.type)) {
         continue;
       }
       const state = this.state.snapshot.devices[device.id].state;
@@ -2138,6 +2138,83 @@ class Simulator implements VirtualHomeSimulator {
           currentTime: this.state.snapshot.simClock.currentTime,
           randomSeed: this.state.random.getState()
         }, withSensorProfileOverrides(getSensorProfile('contact_sensor'), { samplingIntervalSec: 1 }));
+        if (!sensorObservation) {
+          continue;
+        }
+        Object.assign(measurements, sensorObservation.event.measurements);
+      } else if (device.type === 'water_leak_sensor') {
+        sensorObservation = observeBinarySensor({
+          deviceId: device.id,
+          roomId: device.roomId,
+          deviceType: device.type,
+          worldState: {
+            leakDetected: state.leakDetected === true
+          },
+          previousObservation: this.state.sensorObservations.get(device.id),
+          currentTime: this.state.snapshot.simClock.currentTime,
+          randomSeed: this.state.random.getState()
+        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }), {
+          worldKey: 'leakDetected',
+          measurementName: 'leak_detected'
+        });
+        if (!sensorObservation) {
+          continue;
+        }
+        Object.assign(measurements, sensorObservation.event.measurements);
+      } else if (device.type === 'sleep_sensor') {
+        sensorObservation = observeBinarySensor({
+          deviceId: device.id,
+          roomId: device.roomId,
+          deviceType: device.type,
+          worldState: {
+            inBed: state.inBed === true
+          },
+          previousObservation: this.state.sensorObservations.get(device.id),
+          currentTime: this.state.snapshot.simClock.currentTime,
+          randomSeed: this.state.random.getState()
+        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }), {
+          worldKey: 'inBed',
+          measurementName: 'in_bed'
+        });
+        if (!sensorObservation) {
+          continue;
+        }
+        Object.assign(measurements, sensorObservation.event.measurements);
+      } else if (device.type === 'router') {
+        sensorObservation = observeBinarySensor({
+          deviceId: device.id,
+          roomId: device.roomId,
+          deviceType: device.type,
+          worldState: {
+            online: state.online === true
+          },
+          previousObservation: this.state.sensorObservations.get(device.id),
+          currentTime: this.state.snapshot.simClock.currentTime,
+          randomSeed: this.state.random.getState()
+        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }), {
+          worldKey: 'online',
+          measurementName: 'online',
+          inactiveValue: true
+        });
+        if (!sensorObservation) {
+          continue;
+        }
+        Object.assign(measurements, sensorObservation.event.measurements);
+      } else if (['stove', 'dishwasher', 'washer'].includes(device.type)) {
+        sensorObservation = observeNumericSensor({
+          deviceId: device.id,
+          roomId: device.roomId,
+          deviceType: device.type,
+          worldState: {
+            powerW: Number(state.powerW ?? 0)
+          },
+          previousObservation: this.state.sensorObservations.get(device.id),
+          currentTime: this.state.snapshot.simClock.currentTime,
+          randomSeed: this.state.random.getState()
+        }, withSensorProfileOverrides(getSensorProfile('power_meter'), { samplingIntervalSec: 1 }), {
+          worldKey: 'powerW',
+          measurementName: 'power_w'
+        });
         if (!sensorObservation) {
           continue;
         }
@@ -2813,7 +2890,11 @@ function replayTelemetryEvent(snapshot: TwinSnapshot, event: DeviceTelemetryEven
     co2: 'co2',
     flow_l_min: 'flowLMin',
     total_l: 'totalL',
-    moisture_percent: 'moisturePercent'
+    moisture_percent: 'moisturePercent',
+    leak_detected: 'leakDetected',
+    in_bed: 'inBed',
+    online: 'online',
+    power_w: 'powerW'
   };
 
   if (device) {
@@ -2844,7 +2925,11 @@ function telemetryMeasurementsToDeviceState(measurements: Record<string, number 
     co2: 'co2',
     flow_l_min: 'flowLMin',
     total_l: 'totalL',
-    moisture_percent: 'moisturePercent'
+    moisture_percent: 'moisturePercent',
+    leak_detected: 'leakDetected',
+    in_bed: 'inBed',
+    online: 'online',
+    power_w: 'powerW'
   };
   return Object.fromEntries(Object.entries(measurements)
     .map(([measurement, value]) => [measurementStateKeys[measurement], value] as const)
@@ -2903,7 +2988,11 @@ function telemetryMeasurementsToObservation(measurements: Record<string, number 
     co2: 'co2',
     flow_l_min: 'flowLMin',
     total_l: 'totalL',
-    moisture_percent: 'moisturePercent'
+    moisture_percent: 'moisturePercent',
+    leak_detected: 'leakDetected',
+    in_bed: 'inBed',
+    online: 'online',
+    power_w: 'powerW'
   };
   return Object.fromEntries(Object.entries(measurements)
     .map(([measurement, value]) => [measurementStateKeys[measurement], value] as const)

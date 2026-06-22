@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { getSensorProfile, withSensorProfileOverrides } from '../src/sim/sensors/deviceProfiles';
 import {
+  observeBinarySensor,
   observeContactSensor,
   observeEnvironmentSensor,
   observeMotionSensor,
+  observeNumericSensor,
   type SensorObservationInput
 } from '../src/sim/sensors/sensorModel';
 
@@ -293,5 +295,144 @@ describe('sensor model', () => {
     }, profile);
 
     expect(initialClosed).toBeNull();
+  });
+
+  it('reports binary sensor changes using device-specific measurement names', () => {
+    const profile = withSensorProfileOverrides(getSensorProfile('water_leak_sensor'), {
+      falsePositiveRate: 0,
+      falseNegativeRate: 0,
+      dropRate: 0,
+      duplicateRate: 0,
+      delayMs: { kind: 'constant', value: 220 }
+    });
+
+    const observation = observeBinarySensor({
+      deviceId: 'water_leak_01',
+      roomId: 'bathroom',
+      deviceType: 'water_leak_sensor',
+      worldState: {
+        leakDetected: true
+      },
+      previousObservation: {
+        leakDetected: false,
+        lastObservedAt: '2026-06-17T02:00:00+08:00'
+      },
+      currentTime: '2026-06-17T02:03:00+08:00',
+      randomSeed: 37
+    }, profile, {
+      worldKey: 'leakDetected',
+      measurementName: 'leak_detected'
+    });
+
+    expect(observation).toMatchObject({
+      event: {
+        deviceId: 'water_leak_01',
+        deviceType: 'water_leak_sensor',
+        measurements: {
+          leak_detected: true,
+          confidence: 0.96
+        },
+        lineage: {
+          sourceLayer: 'sensor',
+          eventTime: '2026-06-17T02:03:00+08:00',
+          ingestTime: '2026-06-17T02:03:00.220+08:00'
+        }
+      },
+      observedState: {
+        leakDetected: true,
+        lastObservedAt: '2026-06-17T02:03:00+08:00'
+      }
+    });
+  });
+
+  it('suppresses unchanged inactive binary sensor observations', () => {
+    const profile = withSensorProfileOverrides(getSensorProfile('router'), {
+      falsePositiveRate: 0,
+      falseNegativeRate: 0,
+      delayMs: { kind: 'constant', value: 0 }
+    });
+
+    const unchanged = observeBinarySensor({
+      deviceId: 'router_01',
+      roomId: 'study',
+      deviceType: 'router',
+      worldState: {
+        online: true
+      },
+      previousObservation: {
+        online: true,
+        lastObservedAt: '2026-06-17T08:00:00+08:00'
+      },
+      currentTime: '2026-06-17T08:01:00+08:00',
+      randomSeed: 41
+    }, profile, {
+      worldKey: 'online',
+      measurementName: 'online',
+      inactiveValue: true
+    });
+
+    expect(unchanged).toBeNull();
+  });
+
+  it('reports numeric sensor changes after smoothing and threshold checks', () => {
+    const profile = withSensorProfileOverrides(getSensorProfile('power_meter'), {
+      reportOnChangeThreshold: 8,
+      smoothingFactor: 0.5,
+      driftPerDay: 0,
+      dropRate: 0,
+      duplicateRate: 0,
+      delayMs: { kind: 'constant', value: 300 }
+    });
+
+    const smallChange = observeNumericSensor({
+      deviceId: 'stove_01',
+      roomId: 'kitchen',
+      deviceType: 'stove',
+      worldState: {
+        powerW: 10
+      },
+      previousObservation: {
+        powerW: 0,
+        lastObservedAt: '2026-06-17T18:00:00+08:00'
+      },
+      currentTime: '2026-06-17T18:01:00+08:00',
+      randomSeed: 43
+    }, profile, {
+      worldKey: 'powerW',
+      measurementName: 'power_w'
+    });
+    const largeChange = observeNumericSensor({
+      deviceId: 'stove_01',
+      roomId: 'kitchen',
+      deviceType: 'stove',
+      worldState: {
+        powerW: 850
+      },
+      previousObservation: {
+        powerW: 0,
+        lastObservedAt: '2026-06-17T18:00:00+08:00'
+      },
+      currentTime: '2026-06-17T18:02:00+08:00',
+      randomSeed: 47
+    }, profile, {
+      worldKey: 'powerW',
+      measurementName: 'power_w'
+    });
+
+    expect(smallChange).toBeNull();
+    expect(largeChange?.event).toMatchObject({
+      deviceId: 'stove_01',
+      measurements: {
+        power_w: 425
+      },
+      lineage: {
+        sourceLayer: 'sensor',
+        ingestTime: '2026-06-17T18:02:00.300+08:00'
+      }
+    });
+    expect(largeChange?.observedState).toMatchObject({
+      powerW: 425,
+      lastObservedAt: '2026-06-17T18:02:00+08:00'
+    });
   });
 });

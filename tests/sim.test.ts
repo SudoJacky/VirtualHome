@@ -557,6 +557,100 @@ describe('virtual home simulator MVP', () => {
     expect(contactTelemetry?.lineage.ingestTime).not.toBe(contactTelemetry?.lineage.eventTime);
   });
 
+  it('reports water leak detections through sensor telemetry', () => {
+    const simulator = createSimulator({ seed: 335 });
+
+    simulator.startScenario('night_water_leak');
+    const events = simulator.advanceMinutes(3);
+    const leakTelemetry = events.find((event): event is DeviceTelemetryEvent => (
+      event.type === 'DeviceTelemetry' &&
+      event.deviceId === 'water_leak_01' &&
+      event.measurements.leak_detected === true
+    ));
+
+    expect(leakTelemetry).toMatchObject({
+      sourceLayer: 'sensor',
+      measurements: {
+        leak_detected: true,
+        confidence: expect.any(Number)
+      },
+      lineage: expect.objectContaining({
+        sourceLayer: 'sensor',
+        observability: 'ml_observation'
+      })
+    });
+  });
+
+  it('reports sleep sensor occupancy through sensor telemetry', () => {
+    const simulator = createSimulator({ seed: 336 });
+
+    simulator.startScenario('night_water_leak');
+    const events = simulator.advanceMinutes(1);
+    const sleepTelemetry = events.find((event): event is DeviceTelemetryEvent => (
+      event.type === 'DeviceTelemetry' &&
+      event.deviceId === 'master_sleep_01' &&
+      event.measurements.in_bed === true
+    ));
+
+    expect(sleepTelemetry).toMatchObject({
+      sourceLayer: 'sensor',
+      measurements: {
+        in_bed: true,
+        confidence: expect.any(Number)
+      },
+      lineage: expect.objectContaining({
+        sourceLayer: 'sensor',
+        observability: 'ml_observation'
+      })
+    });
+  });
+
+  it('reports router outages through connectivity sensor telemetry', () => {
+    const simulator = createSimulator({ seed: 337 });
+
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('network_offline');
+    const events = simulator.advanceMinutes(1);
+    const routerTelemetry = events.find((event): event is DeviceTelemetryEvent => (
+      event.type === 'DeviceTelemetry' &&
+      event.deviceId === 'router_01' &&
+      event.measurements.online === false
+    ));
+
+    expect(routerTelemetry).toMatchObject({
+      sourceLayer: 'sensor',
+      measurements: {
+        online: false,
+        confidence: expect.any(Number)
+      },
+      lineage: expect.objectContaining({
+        sourceLayer: 'sensor',
+        observability: 'ml_observation'
+      })
+    });
+  });
+
+  it('reports appliance power draw through power meter telemetry', () => {
+    const simulator = createSimulator({ seed: 330 });
+
+    simulator.startScenario('weekday_normal');
+    const events = simulator.advanceMinutes(720);
+    const powerTelemetry = events.find((event): event is DeviceTelemetryEvent => (
+      event.type === 'DeviceTelemetry' &&
+      event.deviceId === 'stove_01' &&
+      typeof event.measurements.power_w === 'number' &&
+      event.measurements.power_w > 0
+    ));
+
+    expect(powerTelemetry).toMatchObject({
+      sourceLayer: 'sensor',
+      lineage: expect.objectContaining({
+        sourceLayer: 'sensor',
+        observability: 'ml_observation'
+      })
+    });
+  });
+
   it('uses autonomous agent policy to prevent unreasonable daytime sleep persistence', () => {
     const simulator = createSimulator({ seed: 515 });
 

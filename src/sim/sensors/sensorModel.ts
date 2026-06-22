@@ -19,6 +19,19 @@ export interface SensorObservation {
   observedState: Record<string, number | boolean | string>;
 }
 
+export interface BinarySensorOptions {
+  worldKey: string;
+  measurementName: string;
+  inactiveValue?: boolean;
+}
+
+export interface NumericSensorOptions {
+  worldKey: string;
+  measurementName: string;
+  inactiveValue?: number;
+  noiseAmplitude?: number;
+}
+
 export function observeMotionSensor(input: SensorObservationInput, profile: SensorProfile): SensorObservation | null {
   if (!shouldSampleSensor(profile, input.currentTime, input.previousObservation)) {
     return null;
@@ -73,6 +86,78 @@ export function observeContactSensor(input: SensorObservationInput, profile: Sen
     confidence
   }, {
     contactOpen,
+    lastObservedAt: input.currentTime
+  });
+}
+
+export function observeBinarySensor(input: SensorObservationInput, profile: SensorProfile, options: BinarySensorOptions): SensorObservation | null {
+  if (!shouldSampleSensor(profile, input.currentTime, input.previousObservation)) {
+    return null;
+  }
+
+  const inactiveValue = options.inactiveValue ?? false;
+  const actualValue = input.worldState[options.worldKey] === true;
+  const active = actualValue !== inactiveValue;
+  const missedActive = active && probabilityHit(profile.falseNegativeRate, input.randomSeed, `${input.deviceId}:${options.worldKey}:false-negative:${input.currentTime}`);
+  const falseActive = !active && probabilityHit(profile.falsePositiveRate, input.randomSeed, `${input.deviceId}:${options.worldKey}:false-positive:${input.currentTime}`);
+  const observedValue = missedActive
+    ? inactiveValue
+    : falseActive
+      ? !inactiveValue
+      : actualValue;
+  const noisy = missedActive || falseActive;
+  const confidence = observedValue === actualValue ? 0.96 : 0.28;
+
+  if (!noisy && observedValue === inactiveValue && input.previousObservation?.[options.worldKey] === undefined) {
+    return null;
+  }
+  if (!noisy && input.previousObservation?.[options.worldKey] === observedValue) {
+    return null;
+  }
+
+  const measurements = {
+    [options.measurementName]: observedValue,
+    confidence
+  };
+
+  return createSensorObservation(input, measurements, profile, {
+    noisy,
+    confidence
+  }, {
+    [options.worldKey]: observedValue,
+    lastObservedAt: input.currentTime
+  });
+}
+
+export function observeNumericSensor(input: SensorObservationInput, profile: SensorProfile, options: NumericSensorOptions): SensorObservation | null {
+  if (!shouldSampleSensor(profile, input.currentTime, input.previousObservation)) {
+    return null;
+  }
+
+  const inactiveValue = options.inactiveValue ?? 0;
+  const current = numberValue(input.worldState[options.worldKey], inactiveValue);
+  const previousRaw = input.previousObservation?.[options.worldKey];
+  const previous = numberValue(previousRaw, previousRaw === undefined ? inactiveValue : current);
+  const smoothingFactor = profile.smoothingFactor ?? 1;
+  const daysSincePrevious = daysBetween(String(input.previousObservation?.lastObservedAt ?? input.currentTime), input.currentTime);
+  const observed = roundOne(
+    smoothNumber(previous, current, smoothingFactor) +
+    (profile.driftPerDay ?? 0) * daysSincePrevious +
+    deterministicNoise(input.randomSeed, `${input.deviceId}:${options.worldKey}:${input.currentTime}`, options.noiseAmplitude ?? 0)
+  );
+  const threshold = profile.reportOnChangeThreshold ?? 0;
+  const baseline = previousRaw === undefined ? inactiveValue : previous;
+
+  if (Math.abs(observed - baseline) < threshold) {
+    return null;
+  }
+
+  return createSensorObservation(input, {
+    [options.measurementName]: observed
+  }, profile, {
+    noisy: Boolean(profile.driftPerDay || options.noiseAmplitude)
+  }, {
+    [options.worldKey]: observed,
     lastObservedAt: input.currentTime
   });
 }
