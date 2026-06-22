@@ -73,7 +73,8 @@ describe('server API', () => {
       '/api/devices/{deviceId}/command',
       '/api/alerts/{alertId}/status',
       '/api/audit/access',
-      '/ws'
+      '/ws',
+      '/ws/device-events'
     ]));
     expect(document.paths['/api/control/advance'].post.requestBody.content['application/json'].schema.properties).toHaveProperty('idempotencyKey');
     expect(document.components.schemas).toHaveProperty('ValidationError');
@@ -82,6 +83,8 @@ describe('server API', () => {
     expect(document.components.schemas).toHaveProperty('EventLineage');
     expect(document.components.schemas).toHaveProperty('DeviceTelemetryEvent');
     expect(document.components.schemas).toHaveProperty('DeviceStateChangedEvent');
+    expect(document.components.schemas).toHaveProperty('DeviceValueEvent');
+    expect(document.components.schemas).toHaveProperty('DeviceSocketUpdateMessage');
     expect(document.components.schemas).toHaveProperty('EventExplanation');
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('markerKind');
     expect(document.components.schemas.DeviceCapability.properties).toHaveProperty('animationHint');
@@ -628,6 +631,59 @@ describe('server API', () => {
     expect(update.runId).toBe(beforeAdvance.runId);
     expect(Number(update.sequence)).toBeGreaterThan(beforeAdvance.simClock.sequence);
     expect((update.events as Array<{ sequence: number }>).length).toBeGreaterThan(0);
+
+    ws.close();
+    await server.close();
+  });
+
+  it('streams only device value changes on the device-events WebSocket', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-device-events-ws-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false, snapshotIntervalEvents: 1000 });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    const beforeAdvance = (await server.inject({ method: 'GET', url: '/api/state' })).json() as { runId: string; simClock: { sequence: number } };
+    const nextUpdate = createNthTypedMessagePromise('device.update', 2);
+    const ws = await server.injectWS(`/ws/device-events?runId=${beforeAdvance.runId}&afterSequence=${beforeAdvance.simClock.sequence}`, {}, {
+      onInit: nextUpdate.attach
+    });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 12 }
+    });
+    const update = await nextUpdate.value as {
+      type: string;
+      runId: string;
+      sequence: number;
+      replayComplete: boolean;
+      events: Array<Record<string, unknown>>;
+    };
+
+    expect(update).toMatchObject({
+      type: 'device.update',
+      runId: beforeAdvance.runId,
+      replayComplete: true
+    });
+    expect(update.sequence).toBeGreaterThan(beforeAdvance.simClock.sequence);
+    expect(update.events.length).toBeGreaterThan(0);
+    expect(update.events.every((event) => (
+      typeof event.deviceId === 'string' &&
+      typeof event.deviceType === 'string' &&
+      typeof event.roomId === 'string' &&
+      typeof event.field === 'string' &&
+      Object.hasOwn(event, 'value') &&
+      (event.sourceEventType === 'DeviceTelemetry' || event.sourceEventType === 'DeviceStateChanged')
+    ))).toBe(true);
+    expect(JSON.stringify(update.events)).not.toContain('eventExplanation');
+    expect(JSON.stringify(update.events)).not.toContain('reason');
+    expect(JSON.stringify(update.events)).not.toContain('activity');
+    expect(JSON.stringify(update.events)).not.toContain('PersonMoved');
+    expect(JSON.stringify(update.events)).not.toContain('ScenarioControl');
 
     ws.close();
     await server.close();

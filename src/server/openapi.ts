@@ -603,6 +603,52 @@ const twinSocketHeartbeatMessageSchema: JsonSchema = {
   }
 };
 
+const deviceValueEventSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'sourceEventId', 'sourceEventType', 'runId', 'sequence', 'ts', 'simTime', 'homeId', 'scenarioId', 'roomId', 'deviceId', 'deviceType', 'field', 'value'],
+  properties: {
+    id: stringSchema,
+    sourceEventId: stringSchema,
+    sourceEventType: { type: 'string', enum: ['DeviceTelemetry', 'DeviceStateChanged'] },
+    runId: stringSchema,
+    sequence: { type: 'integer', minimum: 1 },
+    ts: isoDateTimeSchema,
+    simTime: isoDateTimeSchema,
+    homeId: stringSchema,
+    scenarioId: stringSchema,
+    roomId: roomIdSchema,
+    deviceId: stringSchema,
+    deviceType: stringSchema,
+    field: stringSchema,
+    value: {
+      anyOf: [
+        stringSchema,
+        { type: 'number' },
+        { type: 'boolean' },
+        { type: 'null' }
+      ]
+    }
+  }
+};
+
+const deviceSocketUpdateMessageSchema: JsonSchema = {
+  type: 'object',
+  required: ['type', 'runId', 'sequence', 'replayComplete', 'events'],
+  properties: {
+    type: { type: 'string', enum: ['device.update'] },
+    runId: stringSchema,
+    sequence: { type: 'integer', minimum: 0 },
+    replayComplete: {
+      type: 'boolean',
+      description: 'False when reconnect replay was truncated and the client should reconnect from an earlier cursor or refresh.'
+    },
+    events: {
+      type: 'array',
+      items: { $ref: '#/components/schemas/DeviceValueEvent' }
+    }
+  }
+};
+
 const validationErrorSchema: JsonSchema = {
   type: 'object',
   required: ['error'],
@@ -1237,6 +1283,23 @@ export function buildOpenApiDocument(): Record<string, unknown> {
             }
           }
         }
+      },
+      '/ws/device-events': {
+        get: {
+          summary: 'Open the device-only value event WebSocket stream',
+          description: 'Clients receive device.update messages containing only flattened device telemetry/state values: device, room, field, value, time, and sequence. Household truth, control causes, activities, and explanations are not included.',
+          parameters: [runIdParameter(), {
+            name: 'afterSequence',
+            in: 'query',
+            required: false,
+            schema: { type: 'integer', minimum: 0 }
+          }],
+          responses: {
+            '101': {
+              description: 'WebSocket protocol upgrade. Messages are DeviceSocketUpdateMessage or device heartbeat/run-change messages.'
+            }
+          }
+        }
       }
     },
     components: {
@@ -1267,6 +1330,8 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         UpdateResponse: updateResponseSchema,
         TwinSocketUpdateMessage: twinSocketUpdateMessageSchema,
         TwinSocketHeartbeatMessage: twinSocketHeartbeatMessageSchema,
+        DeviceValueEvent: deviceValueEventSchema,
+        DeviceSocketUpdateMessage: deviceSocketUpdateMessageSchema,
         ValidationError: validationErrorSchema,
         NotFoundError: notFoundErrorSchema,
         IdempotencyConflict: idempotencyConflictSchema

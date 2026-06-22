@@ -11,6 +11,7 @@ import { getDeviceCapability, getDeviceCapabilityMetadata } from '../shared/devi
 import { getDeviceSupportedCommands } from '../shared/deviceInstanceCapabilities';
 import type { HomeDefinition, StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { createDeviceAccessRecords } from './deviceAccess';
+import { projectDeviceValueEvents } from './deviceEventStream';
 import { loadHomeDefinitionFromFile } from './homeDefinitionLoader';
 import { buildOpenApiDocument } from './openapi';
 import { TwinDatabase } from './persistence';
@@ -94,6 +95,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
     simulator.restore(latestSnapshot, db.getEventsForRun(latestSnapshot.runId));
   }
   const sockets = new Set<{ privacy: PrivacyMode; send: (payload: string) => void }>();
+  const deviceEventSockets = new Set<{ send: (payload: string) => void }>();
   const scenarioIds = getScenarioIds();
   let tickHandle: NodeJS.Timeout | undefined;
   let heartbeatHandle: NodeJS.Timeout | undefined;
@@ -105,6 +107,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
   function recordAndBroadcast(events: TwinEvent[]): TwinSnapshot {
     const snapshot = simulator.getSnapshot();
     const snapshotRecorded = db.recordUpdate(snapshot, events);
+    const deviceValueEvents = projectDeviceValueEvents(events);
     for (const socket of sockets) {
       const payload = JSON.stringify({
         type: 'twin.update',
@@ -115,6 +118,18 @@ export function createServer(options: ServerOptions): FastifyInstance {
         events: projectEventsForPrivacy(events, socket.privacy)
       });
       socket.send(payload);
+    }
+    if (deviceValueEvents.length > 0) {
+      const payload = JSON.stringify({
+        type: 'device.update',
+        runId: snapshot.runId,
+        sequence: snapshot.simClock.sequence,
+        replayComplete: true,
+        events: deviceValueEvents
+      });
+      for (const socket of deviceEventSockets) {
+        socket.send(payload);
+      }
     }
     return snapshot;
   }
@@ -129,6 +144,15 @@ export function createServer(options: ServerOptions): FastifyInstance {
     });
     for (const socket of sockets) {
       socket.send(payload);
+    }
+    const devicePayload = JSON.stringify({
+      type: 'device.heartbeat',
+      ts: new Date().toISOString(),
+      runId: snapshot.runId,
+      sequence: snapshot.simClock.sequence
+    });
+    for (const socket of deviceEventSockets) {
+      socket.send(devicePayload);
     }
   }
 
@@ -386,6 +410,39 @@ export function createServer(options: ServerOptions): FastifyInstance {
       }));
       socket.on('close', () => sockets.delete(client));
     });
+
+    fastify.get('/ws/device-events', { websocket: true }, (socket, request) => {
+      const result = websocketQuerySchema.safeParse(request.query);
+      const client = { send: (payload: string) => socket.send(payload) };
+      deviceEventSockets.add(client);
+      const snapshot = simulator.getSnapshot();
+      recordAccess('/ws/device-events', 'ml-observation', snapshot.runId, snapshot.simClock.sequence, result.success
+        ? { afterSequence: result.data.afterSequence ?? null }
+        : { validation: 'failed' });
+      if (result.success && result.data.runId && result.data.runId !== snapshot.runId) {
+        socket.send(JSON.stringify({
+          type: 'device.run_changed',
+          previousRunId: result.data.runId,
+          runId: snapshot.runId,
+          sequence: snapshot.simClock.sequence
+        }));
+        socket.on('close', () => deviceEventSockets.delete(client));
+        return;
+      }
+      const replayCandidates = result.success && result.data.runId && result.data.afterSequence !== undefined
+        ? db.getEventsAfter(result.data.runId, result.data.afterSequence, websocketReplayLimit + 1)
+        : [];
+      const replayComplete = replayCandidates.length <= websocketReplayLimit;
+      const replayEvents = replayCandidates.slice(0, websocketReplayLimit);
+      socket.send(JSON.stringify({
+        type: 'device.update',
+        runId: snapshot.runId,
+        sequence: snapshot.simClock.sequence,
+        replayComplete,
+        events: projectDeviceValueEvents(replayEvents)
+      }));
+      socket.on('close', () => deviceEventSockets.delete(client));
+    });
   });
 
   app.addHook('onReady', async () => {
@@ -413,6 +470,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
     if (heartbeatHandle) {
       clearInterval(heartbeatHandle);
     }
+    deviceEventSockets.clear();
     db.close();
   });
 
