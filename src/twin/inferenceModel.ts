@@ -30,6 +30,16 @@ export interface TwinInferenceResult {
   homeMode: BeliefDistribution<InferredHomeMode>;
   risks: Record<string, AnomalyRisk>;
   forecasts: TwinStateForecast[];
+  explanations: TwinInferenceExplanations;
+}
+
+export interface TwinInferenceExplanations {
+  homeMode: string[];
+  people: Record<string, {
+    room: string[];
+    activity: string[];
+  }>;
+  risks: Record<string, string[]>;
 }
 
 export function inferTwinState(events: TwinEvent[], options: TwinInferenceOptions): TwinInferenceResult {
@@ -67,8 +77,94 @@ export function inferTwinState(events: TwinEvent[], options: TwinInferenceOption
     forecasts: createStateForecasts(homeMode, risks, {
       homeModeByHorizon: createHomeModeForecasts(minuteOfDay, evidence, options.externalContext),
       peopleByHorizon: createPeopleForecasts(options.peopleIds, options.rooms, minuteOfDay, evidence, options.externalContext)
-    })
+    }),
+    explanations: createTwinInferenceExplanations(minuteOfDay, evidence, people, risks, options.externalContext)
   };
+}
+
+function createTwinInferenceExplanations(
+  minuteOfDay: number,
+  evidence: ReturnType<typeof extractObservationEvidence>,
+  people: Record<string, PersonInferenceBelief>,
+  risks: Record<string, AnomalyRisk>,
+  externalContext: ExternalContext | undefined
+): TwinInferenceExplanations {
+  return {
+    homeMode: explainHomeMode(minuteOfDay, evidence, externalContext),
+    people: Object.fromEntries(Object.entries(people).map(([personId, belief]) => [
+      personId,
+      {
+        room: explainRoomBelief(belief.room.top, minuteOfDay, evidence, externalContext),
+        activity: explainActivityBelief(belief.activity.top, belief.room.top, minuteOfDay, evidence)
+      }
+    ])),
+    risks: Object.fromEntries(Object.entries(risks).map(([riskId, risk]) => [riskId, [...risk.drivers]]))
+  };
+}
+
+function explainHomeMode(
+  minuteOfDay: number,
+  evidence: ReturnType<typeof extractObservationEvidence>,
+  externalContext: ExternalContext | undefined
+): string[] {
+  const reasons: string[] = [];
+  if (minuteOfDay >= 17 * 60 && minuteOfDay < 20 * 60) {
+    reasons.push('time_prior:evening_meal_window');
+  } else if (minuteOfDay >= 22 * 60 || minuteOfDay < 6 * 60) {
+    reasons.push('time_prior:sleep_window');
+  } else if (minuteOfDay >= 9 * 60 && minuteOfDay < 16 * 60 && isWorkday(externalContext)) {
+    reasons.push('time_prior:workday_away_window');
+  } else {
+    reasons.push('time_prior:daily_routine');
+  }
+  if (evidence.fridgeDoorOpen || evidence.motionByRoom.kitchen || (evidence.pm25ByRoom.kitchen ?? 0) >= 35) {
+    reasons.push('observation:kitchen_activity');
+  }
+  if (evidence.waterLeakDetected) reasons.push('observation:water_leak_detected');
+  if (evidence.routerOffline) reasons.push('observation:router_offline');
+  if (isSevereWeather(externalContext)) reasons.push('context:severe_weather');
+  return reasons;
+}
+
+function explainRoomBelief(
+  roomId: RoomId,
+  minuteOfDay: number,
+  evidence: ReturnType<typeof extractObservationEvidence>,
+  externalContext: ExternalContext | undefined
+): string[] {
+  const reasons: string[] = [];
+  if (evidence.motionByRoom[roomId] !== undefined) reasons.push(`observation:${roomId}_motion`);
+  if (evidence.activeDeviceRooms[roomId] !== undefined) reasons.push(`observation:${roomId}_device_state`);
+  if (evidence.co2ByRoom[roomId] !== undefined) reasons.push(`observation:${roomId}_co2`);
+  if (evidence.pm25ByRoom[roomId] !== undefined) reasons.push(`observation:${roomId}_pm25`);
+  if (reasons.length === 0) {
+    if (minuteOfDay >= 22 * 60 || minuteOfDay < 6 * 60) reasons.push('time_prior:sleep_window');
+    else if (isWorkday(externalContext) && minuteOfDay >= 9 * 60 && minuteOfDay < 18 * 60) reasons.push('time_prior:workday_routine');
+    else reasons.push('time_prior:daily_routine');
+  }
+  return reasons;
+}
+
+function explainActivityBelief(
+  activity: string,
+  roomId: RoomId,
+  minuteOfDay: number,
+  evidence: ReturnType<typeof extractObservationEvidence>
+): string[] {
+  const reasons: string[] = [];
+  if (activity === 'meal_prep_or_kitchen_visit' && roomId === 'kitchen') {
+    if (evidence.fridgeDoorOpen) reasons.push('observation:fridge_door_open');
+    if (evidence.stovePowerW >= 400) reasons.push('observation:stove_power');
+    if ((evidence.pm25ByRoom.kitchen ?? 0) >= 35) reasons.push('observation:kitchen_pm25');
+    if (evidence.motionByRoom.kitchen !== undefined) reasons.push('observation:kitchen_motion');
+  }
+  if (activity === 'remote_work_or_study' && roomId === 'study' && (evidence.co2ByRoom.study ?? 0) >= 900) {
+    reasons.push('observation:study_co2');
+  }
+  if (reasons.length === 0) {
+    reasons.push(minuteOfDay >= 22 * 60 || minuteOfDay < 6 * 60 ? 'time_prior:sleep_window' : 'time_prior:daily_routine');
+  }
+  return reasons;
 }
 
 function createHomeModeForecasts(

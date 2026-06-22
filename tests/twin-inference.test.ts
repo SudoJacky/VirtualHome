@@ -240,6 +240,55 @@ describe('twin inference model', () => {
     expect(result.homeMode.probabilities.dinner).toBeGreaterThan(0.4);
   });
 
+  it('explains inferred state using only accepted observations and priors', () => {
+    const truthEvent: PersonMovedEvent = {
+      ...baseEvent,
+      id: 'truth_person_move',
+      type: 'PersonMoved',
+      sourceLayer: 'truth',
+      lineage: { ...baseEvent.lineage, sourceLayer: 'truth', observability: 'private' },
+      personId: 'adult_1',
+      from: 'living_room',
+      to: 'kitchen',
+      activity: 'cooking'
+    };
+    const controlEvent: ScenarioControlEvent = {
+      ...baseEvent,
+      id: 'control_inject',
+      type: 'ScenarioControl',
+      sourceLayer: 'control',
+      lineage: { ...baseEvent.lineage, sourceLayer: 'control', observability: 'admin' },
+      command: 'inject',
+      value: 'fridge_left_open'
+    };
+
+    const result = inferTwinState([
+      truthEvent,
+      controlEvent,
+      motionEvent('kitchen', 0.91),
+      deviceStateEvent('fridge_01', 'kitchen', { doorOpen: true, powerW: 148 })
+    ], {
+      currentTime: '2026-06-17T18:30:00+08:00',
+      peopleIds: ['adult_1'],
+      rooms: ['living_room', 'kitchen', 'child_bedroom']
+    });
+
+    expect(result.explanations.homeMode).toEqual(expect.arrayContaining([
+      'time_prior:evening_meal_window',
+      'observation:kitchen_activity'
+    ]));
+    expect(result.explanations.people.adult_1.room).toEqual(expect.arrayContaining([
+      'observation:kitchen_motion'
+    ]));
+    expect(result.explanations.people.adult_1.activity).toEqual(expect.arrayContaining([
+      'observation:fridge_door_open'
+    ]));
+    expect(result.explanations.risks.fridge_left_open).toEqual(['fridge_01.doorOpen']);
+    expect(JSON.stringify(result.explanations)).not.toContain('truth');
+    expect(JSON.stringify(result.explanations)).not.toContain('control');
+    expect(JSON.stringify(result.explanations)).not.toContain('cooking');
+  });
+
   it('forecasts short horizon state and anomaly risk from observation-only input', () => {
     const result = inferTwinState([
       deviceStateEvent('fridge_01', 'kitchen', { doorOpen: true, powerW: 148 }),
