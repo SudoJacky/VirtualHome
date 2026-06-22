@@ -55,6 +55,23 @@ export interface DeterministicFallbackInput {
   };
 }
 
+export interface LlmProposalCacheKeyInput {
+  purpose: LlmProposalKind;
+  prompt: string;
+  availableResources: Record<string, number>;
+  memoryContext?: DeterministicFallbackInput['memoryContext'];
+}
+
+export interface CachedOrFallbackProposalInput extends DeterministicFallbackInput {
+  cache?: Record<string, LlmProposal>;
+}
+
+export interface CachedOrFallbackProposalResult {
+  source: 'cache' | 'deterministic-fallback';
+  cacheKey: string;
+  proposal: LlmProposal;
+}
+
 const allowedKinds = [
   'long_term_background',
   'weekly_schedule',
@@ -150,6 +167,33 @@ export function createDeterministicFallbackProposal(input: DeterministicFallback
       schemaVersion: 1,
       outputHash: shortHash(stableStringify(proposal))
     }
+  };
+}
+
+export function createLlmProposalCacheKey(input: LlmProposalCacheKeyInput): string {
+  return shortHash(stableStringify({
+    purpose: input.purpose,
+    prompt: input.prompt,
+    availableResources: input.availableResources,
+    memoryContext: input.memoryContext ?? null,
+    schemaVersion: 1
+  }));
+}
+
+export function resolveCachedOrFallbackProposal(input: CachedOrFallbackProposalInput): CachedOrFallbackProposalResult {
+  const cacheKey = createLlmProposalCacheKey(input);
+  const cached = input.cache?.[cacheKey];
+  if (cached) {
+    return {
+      source: 'cache',
+      cacheKey,
+      proposal: structuredClone(cached)
+    };
+  }
+  return {
+    source: 'deterministic-fallback',
+    cacheKey,
+    proposal: createDeterministicFallbackProposal(input)
   };
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDeterministicFallbackProposal, parseLlmProposalJson } from '../src/sim/llm/proposals';
+import { createDeterministicFallbackProposal, createLlmProposalCacheKey, parseLlmProposalJson, resolveCachedOrFallbackProposal } from '../src/sim/llm/proposals';
 
 describe('LLM proposal boundary', () => {
   it('accepts only bounded household planning proposals with metadata hashes', () => {
@@ -113,5 +113,47 @@ describe('LLM proposal boundary', () => {
     });
     expect(proposal.items[0].text).toContain('child_1');
     expect(proposal.items[0].text).toContain('homework_reminder x2');
+  });
+
+  it('replays cached LLM proposals before falling back deterministically', () => {
+    const cachedProposal = createDeterministicFallbackProposal({
+      purpose: 'weekly_schedule',
+      seed: 1,
+      prompt: 'Create cached weekly schedule',
+      availableResources: { cleaning_supplies: 1 }
+    });
+    const cacheKey = createLlmProposalCacheKey({
+      purpose: 'weekly_schedule',
+      prompt: 'Create cached weekly schedule',
+      availableResources: { cleaning_supplies: 1 }
+    });
+
+    const cached = resolveCachedOrFallbackProposal({
+      purpose: 'weekly_schedule',
+      seed: 42,
+      prompt: 'Create cached weekly schedule',
+      availableResources: { cleaning_supplies: 1 },
+      cache: {
+        [cacheKey]: cachedProposal
+      }
+    });
+    const missed = resolveCachedOrFallbackProposal({
+      purpose: 'weekly_schedule',
+      seed: 42,
+      prompt: 'Create uncached weekly schedule',
+      availableResources: { cleaning_supplies: 1 },
+      cache: {
+        [cacheKey]: cachedProposal
+      }
+    });
+
+    expect(cached).toMatchObject({
+      source: 'cache',
+      cacheKey,
+      proposal: cachedProposal
+    });
+    expect(missed.source).toBe('deterministic-fallback');
+    expect(missed.cacheKey).not.toBe(cacheKey);
+    expect(missed.proposal).not.toEqual(cachedProposal);
   });
 });
