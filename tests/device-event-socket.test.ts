@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   buildDeviceEventSocketUrl,
   cursorFromDeviceEvent,
+  cursorFromDeviceRunChanged,
+  cursorFromProcessedDeviceUpdate,
   nextDeviceEventReconnectDelayMs,
   parseDeviceEventSocketMessage
 } from '../src/web/deviceEventSocket';
@@ -101,5 +103,75 @@ describe('device event WebSocket client helpers', () => {
     expect(nextDeviceEventReconnectDelayMs(0)).toBe(1000);
     expect(nextDeviceEventReconnectDelayMs(4)).toBe(16000);
     expect(nextDeviceEventReconnectDelayMs(9)).toBe(30000);
+  });
+
+  it('advances complete empty updates to the update-level cursor', () => {
+    expect(cursorFromProcessedDeviceUpdate({
+      type: 'device.update',
+      runId: 'run_1',
+      sequence: 42,
+      replayComplete: true,
+      events: []
+    }, { runId: 'run_1', sequence: 12 })).toEqual({ runId: 'run_1', sequence: 42 });
+  });
+
+  it('advances incomplete replay only to the last processed event cursor', () => {
+    expect(cursorFromProcessedDeviceUpdate({
+      type: 'device.update',
+      runId: 'run_1',
+      sequence: 100,
+      replayComplete: false,
+      events: [
+        {
+          id: 'dev_evt_11',
+          sourceEventId: 'evt_11',
+          sourceEventType: 'DeviceTelemetry',
+          runId: 'run_1',
+          sequence: 11,
+          ts: '2026-06-22T00:00:00.000Z',
+          simTime: '2026-06-22T08:00:00.000Z',
+          homeId: 'home_1',
+          roomId: 'kitchen',
+          deviceId: 'light_1',
+          deviceType: 'light',
+          field: 'power',
+          value: true
+        },
+        {
+          id: 'dev_evt_14',
+          sourceEventId: 'evt_14',
+          sourceEventType: 'DeviceTelemetry',
+          runId: 'run_1',
+          sequence: 14,
+          ts: '2026-06-22T00:00:03.000Z',
+          simTime: '2026-06-22T08:03:00.000Z',
+          homeId: 'home_1',
+          roomId: 'kitchen',
+          deviceId: 'light_1',
+          deviceType: 'light',
+          field: 'power',
+          value: false
+        }
+      ]
+    }, { runId: 'run_1', sequence: 10 })).toEqual({ runId: 'run_1', sequence: 14 });
+  });
+
+  it('keeps the previous cursor for incomplete replay with no processed events', () => {
+    expect(cursorFromProcessedDeviceUpdate({
+      type: 'device.update',
+      runId: 'run_1',
+      sequence: 100,
+      replayComplete: false,
+      events: []
+    }, { runId: 'run_1', sequence: 10 })).toEqual({ runId: 'run_1', sequence: 10 });
+  });
+
+  it('starts replay from the beginning of a changed run', () => {
+    expect(cursorFromDeviceRunChanged({
+      type: 'device.run_changed',
+      previousRunId: 'run_1',
+      runId: 'run_2',
+      sequence: 88
+    })).toEqual({ runId: 'run_2', sequence: 0 });
   });
 });

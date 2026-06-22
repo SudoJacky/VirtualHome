@@ -64,6 +64,25 @@ export function cursorFromDeviceEvent(event: DeviceValueEvent): DeviceEventCurso
   return { runId: event.runId, sequence: event.sequence };
 }
 
+export function cursorFromDeviceRunChanged(update: DeviceRunChangedMessage): DeviceEventCursor {
+  return { runId: update.runId, sequence: 0 };
+}
+
+export function cursorFromProcessedDeviceUpdate(update: DeviceUpdateMessage, previousCursor: DeviceEventCursor | null): DeviceEventCursor | null {
+  if (update.replayComplete) {
+    return { runId: update.runId, sequence: update.sequence };
+  }
+
+  const lastProcessedEvent = update.events.reduce<DeviceValueEvent | null>((latest, event) => {
+    if (!latest || event.sequence > latest.sequence) {
+      return event;
+    }
+    return latest;
+  }, null);
+
+  return lastProcessedEvent ? cursorFromDeviceEvent(lastProcessedEvent) : previousCursor;
+}
+
 export function nextDeviceEventReconnectDelayMs(attempt: number): number {
   return Math.min(30000, 1000 * (2 ** Math.max(0, attempt)));
 }

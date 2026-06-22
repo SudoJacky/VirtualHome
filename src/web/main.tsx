@@ -2,6 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Bell,
+  Brain,
   Bug,
   CalendarDays,
   Clock,
@@ -17,6 +18,7 @@ import {
 } from 'lucide-react';
 import type { DeviceState, RoomId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { Floorplan3D, type FloorplanLayers, type FloorplanSelection } from './Floorplan3D';
+import { HomeMemoryView } from './HomeMemoryView';
 import { ApiClientError, createIdempotencyKey, getJson, postAlertStatus, postDeviceCommand, postUpdate, type ApiUpdate, type DeviceCommandValue } from './apiClient';
 import { confirmDeviceCommand } from './deviceCommandSafety';
 import { createFloorplan3DModel, type Floorplan3DDevice, type Floorplan3DRoom, type FloorplanDeviceDisplayMode, type FloorplanEventReplay } from './floorplan3dModel';
@@ -29,7 +31,7 @@ import './styles.css';
 function App(): React.ReactElement {
   const [snapshot, setSnapshot] = React.useState<TwinSnapshot | null>(null);
   const [events, setEvents] = React.useState<TwinEvent[]>([]);
-  const [sidebarMode, setSidebarMode] = React.useState<'home' | 'studio' | 'debug'>('home');
+  const [sidebarMode, setSidebarMode] = React.useState<'home' | 'memory' | 'studio' | 'debug'>('home');
   const [floorplanView, setFloorplanView] = React.useState<'3d' | '2d'>('3d');
   const [deviceDisplayMode, setDeviceDisplayMode] = React.useState<FloorplanDeviceDisplayMode>('active');
   const [dailyDate, setDailyDate] = React.useState(() => todayInShanghai());
@@ -402,13 +404,16 @@ function App(): React.ReactElement {
           <Home size={24} />
           <div>
             <strong>VirtualHome</strong>
-            <span>{sidebarMode === 'home' ? 'Home' : sidebarMode === 'studio' ? 'Studio' : 'Debug'}</span>
+            <span>{sidebarMode === 'home' ? 'Home' : sidebarMode === 'memory' ? 'Memory' : sidebarMode === 'studio' ? 'Studio' : 'Debug'}</span>
           </div>
         </div>
 
         <div className="mode-toggle" aria-label="Console mode">
           <button className={sidebarMode === 'home' ? 'active' : ''} onClick={() => setSidebarMode('home')}>
             <Home size={14} /> Home
+          </button>
+          <button className={sidebarMode === 'memory' ? 'active' : ''} onClick={() => setSidebarMode('memory')}>
+            <Brain size={14} /> Memory
           </button>
           <button className={sidebarMode === 'studio' ? 'active' : ''} onClick={() => setSidebarMode('studio')}>
             <Play size={14} /> Studio
@@ -434,6 +439,12 @@ function App(): React.ReactElement {
               <button onClick={() => setFloorplanView('3d')}><Play size={16} /> Open 3D view</button>
             </section>
           </>
+        ) : sidebarMode === 'memory' ? (
+          <section className="control-group">
+            <h2>Memory</h2>
+            <button onClick={() => setSidebarMode('home')}><Home size={16} /> Back to home</button>
+            <button onClick={() => setSidebarMode('debug')}><Bug size={16} /> Open debug</button>
+          </section>
         ) : sidebarMode === 'studio' ? (
           <>
             <section className="control-group">
@@ -518,6 +529,10 @@ function App(): React.ReactElement {
       </aside>
 
       <section className="workspace">
+        {sidebarMode === 'memory' ? (
+          <HomeMemoryView />
+        ) : (
+          <>
         <header className="topbar">
           <div>
             <span className="eyebrow">Current mode</span>
@@ -972,6 +987,8 @@ function App(): React.ReactElement {
           onReplay={startReplayForRecord}
         />
         {sidebarMode === 'debug' ? <RawEventStream events={events} /> : null}
+          </>
+        )}
       </section>
     </main>
   );
