@@ -90,9 +90,12 @@ export function createServer(options: ServerOptions): FastifyInstance {
     telemetryRetentionEvents: options.telemetryRetentionEvents
   });
   const latestSnapshot = db.getLatestSnapshot();
-  const restoredFromDatabase = Boolean(latestSnapshot?.runId);
-  if (latestSnapshot?.runId) {
-    simulator.restore(latestSnapshot, db.getEventsForRun(latestSnapshot.runId));
+  const restorableSnapshot = latestSnapshot?.runId && snapshotMatchesHomeDefinition(latestSnapshot, homeDefinition)
+    ? latestSnapshot
+    : null;
+  const restoredFromDatabase = Boolean(restorableSnapshot?.runId);
+  if (restorableSnapshot?.runId) {
+    simulator.restore(restorableSnapshot, db.getEventsForRun(restorableSnapshot.runId));
   }
   const sockets = new Set<{ privacy: PrivacyMode; send: (payload: string) => void }>();
   const deviceEventSockets = new Set<{ send: (payload: string) => void }>();
@@ -511,6 +514,28 @@ function todayInShanghai(): string {
     month: '2-digit',
     day: '2-digit'
   }).format(new Date());
+}
+
+function snapshotMatchesHomeDefinition(snapshot: TwinSnapshot, homeDefinition: HomeDefinition): boolean {
+  if (snapshot.homeId !== homeDefinition.building.id) {
+    return false;
+  }
+
+  const definitionRoomIds = homeDefinition.floors.flatMap((floor) => floor.rooms.map((room) => room.id));
+  const definitionDeviceIds = homeDefinition.floors.flatMap((floor) => floor.fixtures.devices.map((device) => device.id));
+  const definitionPersonIds = homeDefinition.people.map((person) => person.id);
+
+  return sameStringSet(Object.keys(snapshot.rooms), definitionRoomIds) &&
+    sameStringSet(Object.keys(snapshot.devices), definitionDeviceIds) &&
+    sameStringSet(Object.keys(snapshot.people), definitionPersonIds);
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  const rightSet = new Set(right);
+  return left.every((item) => rightSet.has(item));
 }
 
 function isValidCalendarDate(date: string): boolean {
