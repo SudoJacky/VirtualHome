@@ -135,10 +135,11 @@ describe('home memory reasoning flow', () => {
     expect(reasoning.inputs).toEqual([
       { label: 'Meaningful rooms', value: '4' },
       { label: 'Weighted evidence', value: '2.6' },
+      { label: 'Behavior episodes', value: '4' },
       { label: 'Raw events', value: '5' }
     ]);
-    expect(reasoning.rule).toBe('Sparse evidence keeps the resident count uncertain.');
-    expect(reasoning.result).toBe('Uncertain resident count');
+    expect(reasoning.rule).toBe('Otherwise default to a broad 1-3 resident range.');
+    expect(reasoning.result).toBe('1-3 residents');
     expect(reasoning.steps.map((step) => step.label)).toEqual([
       'Collect room activity',
       'Count observed events',

@@ -6,6 +6,8 @@ import {
 } from './homeEvidenceClassifier';
 
 export type TimeBucket = 'morning' | 'daytime' | 'evening' | 'night';
+export type MemoryEpisodeKind = 'occupancy' | 'contact_activity' | 'device_usage' | 'appliance_usage';
+export type MemoryEpisodeStatus = 'open' | 'closed';
 
 type TimeBucketCounts = Record<TimeBucket, number>;
 export type ProfileEvidenceCategoryCounts = Record<EvidenceCategory, number>;
@@ -63,6 +65,33 @@ export interface FieldMemory {
   falseCount?: number;
 }
 
+export interface MemoryEpisode {
+  id: string;
+  kind: MemoryEpisodeKind;
+  status: MemoryEpisodeStatus;
+  homeId: string;
+  runId: string;
+  roomId: string;
+  deviceId: string;
+  deviceType: string;
+  field: string;
+  fieldId: string;
+  timeBucket: TimeBucket;
+  startedAt: string;
+  startedSimTime: string;
+  updatedAt: string;
+  updatedSimTime: string;
+  endedAt?: string;
+  endedSimTime?: string;
+  durationMinutes?: number;
+  eventCount: number;
+  evidenceIds: string[];
+  startValue: DeviceEventValue;
+  latestValue: DeviceEventValue;
+  peakValue?: number;
+  profileWeight: number;
+}
+
 export interface DeviceMemory {
   deviceId: string;
   roomId: string;
@@ -100,6 +129,9 @@ export interface HomeMemory {
   rooms: Record<string, RoomMemory>;
   devices: Record<string, DeviceMemory>;
   fields: Record<string, FieldMemory>;
+  episodes: Record<string, MemoryEpisode>;
+  activeEpisodeIds: Record<string, string>;
+  episodeCount: number;
   recentEvents: MemoryEvidence[];
   profileEventCount: number;
   profileEvidenceWeight: number;
@@ -117,6 +149,9 @@ export function createHomeMemory(): HomeMemory {
     rooms: {},
     devices: {},
     fields: {},
+    episodes: {},
+    activeEpisodeIds: {},
+    episodeCount: 0,
     recentEvents: [],
     profileEventCount: 0,
     profileEvidenceWeight: 0,
@@ -157,6 +192,7 @@ export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): 
   const fieldMemory = updateFieldMemory(baseMemory.fields[fieldId], event, evidence, fieldId);
   const deviceMemory = updateDeviceMemory(baseMemory.devices[event.deviceId], event, evidence, fieldId, timeBucket);
   const roomMemory = updateRoomMemory(baseMemory.rooms[event.roomId], event, evidence, fieldId, timeBucket);
+  const episodeMemory = updateEpisodeMemory(baseMemory, event, evidence, fieldId, timeBucket);
 
   return {
     ...baseMemory,
@@ -175,6 +211,9 @@ export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): 
       ...baseMemory.fields,
       [fieldId]: fieldMemory
     },
+    episodes: episodeMemory.episodes,
+    activeEpisodeIds: episodeMemory.activeEpisodeIds,
+    episodeCount: episodeMemory.episodeCount,
     recentEvents: appendBounded(baseMemory.recentEvents, evidence, ROOT_RECENT_LIMIT),
     profileEventCount: incrementProfileEventCount(baseMemory.profileEventCount, evidence),
     profileEvidenceWeight: roundWeight(baseMemory.profileEvidenceWeight + evidence.profileWeight),
@@ -357,6 +396,242 @@ function toEvidence(
   };
 }
 
+interface EpisodeMemoryUpdate {
+  episodes: Record<string, MemoryEpisode>;
+  activeEpisodeIds: Record<string, string>;
+  episodeCount: number;
+}
+
+interface EpisodeSignal {
+  kind: MemoryEpisodeKind;
+  active: boolean;
+  peakValue?: number;
+}
+
+function updateEpisodeMemory(
+  memory: HomeMemory,
+  event: DeviceValueEvent,
+  evidence: MemoryEvidence,
+  fieldId: string,
+  timeBucket: TimeBucket
+): EpisodeMemoryUpdate {
+  const signal = episodeSignalForEvent(event);
+
+  if (!signal) {
+    return {
+      episodes: memory.episodes,
+      activeEpisodeIds: memory.activeEpisodeIds,
+      episodeCount: memory.episodeCount
+    };
+  }
+
+  const activeKey = `${fieldId}:${signal.kind}`;
+  const activeEpisodeId = memory.activeEpisodeIds[activeKey];
+  const activeEpisode = activeEpisodeId ? memory.episodes[activeEpisodeId] : undefined;
+
+  if (signal.active) {
+    if (activeEpisode) {
+      return {
+        episodes: {
+          ...memory.episodes,
+          [activeEpisode.id]: updateActiveEpisode(activeEpisode, event, evidence, signal)
+        },
+        activeEpisodeIds: memory.activeEpisodeIds,
+        episodeCount: memory.episodeCount
+      };
+    }
+
+    const episode = createEpisode(event, evidence, fieldId, timeBucket, signal);
+    return {
+      episodes: {
+        ...memory.episodes,
+        [episode.id]: episode
+      },
+      activeEpisodeIds: {
+        ...memory.activeEpisodeIds,
+        [activeKey]: episode.id
+      },
+      episodeCount: memory.episodeCount + 1
+    };
+  }
+
+  if (!activeEpisode) {
+    return {
+      episodes: memory.episodes,
+      activeEpisodeIds: memory.activeEpisodeIds,
+      episodeCount: memory.episodeCount
+    };
+  }
+
+  const closedEpisode = closeEpisode(activeEpisode, event, evidence, signal);
+  const activeEpisodeIds = { ...memory.activeEpisodeIds };
+  delete activeEpisodeIds[activeKey];
+
+  return {
+    episodes: {
+      ...memory.episodes,
+      [closedEpisode.id]: closedEpisode
+    },
+    activeEpisodeIds,
+    episodeCount: memory.episodeCount
+  };
+}
+
+function createEpisode(
+  event: DeviceValueEvent,
+  evidence: MemoryEvidence,
+  fieldId: string,
+  timeBucket: TimeBucket,
+  signal: EpisodeSignal
+): MemoryEpisode {
+  return {
+    id: `episode:${fieldId}:${signal.kind}:${event.sequence}`,
+    kind: signal.kind,
+    status: 'open',
+    homeId: event.homeId,
+    runId: event.runId,
+    roomId: event.roomId,
+    deviceId: event.deviceId,
+    deviceType: event.deviceType,
+    field: event.field,
+    fieldId,
+    timeBucket,
+    startedAt: event.ts,
+    startedSimTime: event.simTime,
+    updatedAt: event.ts,
+    updatedSimTime: event.simTime,
+    eventCount: 1,
+    evidenceIds: [evidence.id],
+    startValue: event.value,
+    latestValue: event.value,
+    peakValue: signal.peakValue,
+    profileWeight: evidence.profileWeight
+  };
+}
+
+function updateActiveEpisode(
+  episode: MemoryEpisode,
+  event: DeviceValueEvent,
+  evidence: MemoryEvidence,
+  signal: EpisodeSignal
+): MemoryEpisode {
+  return {
+    ...episode,
+    homeId: event.homeId,
+    runId: event.runId,
+    roomId: event.roomId,
+    deviceType: event.deviceType,
+    updatedAt: event.ts,
+    updatedSimTime: event.simTime,
+    eventCount: episode.eventCount + 1,
+    evidenceIds: [...episode.evidenceIds, evidence.id],
+    latestValue: event.value,
+    peakValue: maxOptional(episode.peakValue, signal.peakValue),
+    profileWeight: roundWeight(episode.profileWeight + evidence.profileWeight)
+  };
+}
+
+function closeEpisode(
+  episode: MemoryEpisode,
+  event: DeviceValueEvent,
+  evidence: MemoryEvidence,
+  signal: EpisodeSignal
+): MemoryEpisode {
+  return {
+    ...updateActiveEpisode(episode, event, evidence, signal),
+    status: 'closed',
+    endedAt: event.ts,
+    endedSimTime: event.simTime,
+    durationMinutes: durationMinutes(episode.startedAt, event.ts)
+  };
+}
+
+function episodeSignalForEvent(event: DeviceValueEvent): EpisodeSignal | null {
+  const field = normalize(event.field);
+  const deviceType = normalize(event.deviceType);
+
+  if (isMotionEpisodeField(deviceType, field)) {
+    return booleanEpisodeSignal('occupancy', event.value);
+  }
+
+  if (isContactEpisodeField(field)) {
+    return openClosedEpisodeSignal('contact_activity', event.value);
+  }
+
+  if (field === 'powerw' || field === 'wattage' || field === 'current') {
+    if (typeof event.value !== 'number') {
+      return null;
+    }
+    return {
+      kind: 'appliance_usage',
+      active: event.value > 0,
+      peakValue: event.value > 0 ? event.value : undefined
+    };
+  }
+
+  if (field === 'power' || field === 'state') {
+    return powerStateEpisodeSignal(event.value);
+  }
+
+  return null;
+}
+
+function booleanEpisodeSignal(kind: MemoryEpisodeKind, value: DeviceEventValue): EpisodeSignal | null {
+  if (typeof value === 'boolean') {
+    return { kind, active: value };
+  }
+  return null;
+}
+
+function openClosedEpisodeSignal(kind: MemoryEpisodeKind, value: DeviceEventValue): EpisodeSignal | null {
+  if (typeof value === 'boolean') {
+    return { kind, active: value };
+  }
+  if (typeof value === 'string') {
+    const normalized = normalize(value);
+    if (normalized === 'open') return { kind, active: true };
+    if (normalized === 'closed') return { kind, active: false };
+  }
+  return null;
+}
+
+function powerStateEpisodeSignal(value: DeviceEventValue): EpisodeSignal | null {
+  if (typeof value === 'boolean') {
+    return { kind: 'device_usage', active: value };
+  }
+  if (typeof value === 'string') {
+    const normalized = normalize(value);
+    if (normalized === 'on') return { kind: 'device_usage', active: true };
+    if (normalized === 'off') return { kind: 'device_usage', active: false };
+  }
+  return null;
+}
+
+function isMotionEpisodeField(deviceType: string, field: string): boolean {
+  return deviceType.includes('motion') || field === 'motion' || field === 'occupancy' || field === 'occupied';
+}
+
+function isContactEpisodeField(field: string): boolean {
+  return field === 'contact' || field === 'dooropen' || field === 'open' || field === 'windowopen';
+}
+
+function maxOptional(left: number | undefined, right: number | undefined): number | undefined {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return Math.max(left, right);
+}
+
+function durationMinutes(startedAt: string, endedAt: string): number | undefined {
+  const startMs = Date.parse(startedAt);
+  const endMs = Date.parse(endedAt);
+
+  if (Number.isNaN(startMs) || Number.isNaN(endMs)) {
+    return undefined;
+  }
+
+  return roundWeight(Math.max(0, (endMs - startMs) / 60000));
+}
+
 interface FieldChangeAnalysis {
   meaningfulChange: boolean;
   valueDelta?: number;
@@ -419,6 +694,10 @@ function numericDelta(previousValue: DeviceEventValue, nextValue: DeviceEventVal
 
 function formatDelta(delta: number): string {
   return Number(delta.toFixed(3)).toString();
+}
+
+function normalize(value: string): string {
+  return value.replace(/[_\s-]+/g, '').toLowerCase();
 }
 
 function getFieldId(deviceId: string, field: string): string {

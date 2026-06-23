@@ -252,6 +252,152 @@ describe('home memory model', () => {
     expect(memory.recentEvents.map((event) => event.profileWeight)).toEqual([0.05, 0, 0.05]);
   });
 
+  it('compresses repeated motion activity into an occupancy episode', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'motion_event_1',
+        sourceEventId: 'source_motion_event_1',
+        sequence: 1,
+        ts: '2026-06-22T00:00:00.000Z',
+        simTime: '2026-06-22T08:00:00',
+        deviceId: 'motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'motion_event_2',
+        sourceEventId: 'source_motion_event_2',
+        sequence: 2,
+        ts: '2026-06-22T00:01:00.000Z',
+        simTime: '2026-06-22T08:01:00',
+        deviceId: 'motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'motion_event_3',
+        sourceEventId: 'source_motion_event_3',
+        sequence: 3,
+        ts: '2026-06-22T00:05:00.000Z',
+        simTime: '2026-06-22T08:05:00',
+        deviceId: 'motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: false
+      })
+    ]);
+
+    const episode = Object.values(memory.episodes)[0];
+
+    expect(memory.episodeCount).toBe(1);
+    expect(memory.activeEpisodeIds).toEqual({});
+    expect(episode).toMatchObject({
+      kind: 'occupancy',
+      status: 'closed',
+      roomId: 'kitchen',
+      deviceId: 'motion_01',
+      field: 'motion',
+      startedAt: '2026-06-22T00:00:00.000Z',
+      endedAt: '2026-06-22T00:05:00.000Z',
+      durationMinutes: 5,
+      eventCount: 3,
+      evidenceIds: ['motion_event_1', 'motion_event_2', 'motion_event_3']
+    });
+  });
+
+  it('compresses appliance power usage into an episode with peak value', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'power_event_1',
+        sourceEventId: 'source_power_event_1',
+        sequence: 1,
+        ts: '2026-06-22T00:00:00.000Z',
+        simTime: '2026-06-22T08:00:00',
+        deviceId: 'coffee_maker_01',
+        deviceType: 'coffee_maker',
+        field: 'powerW',
+        value: 0
+      }),
+      deviceEvent({
+        id: 'power_event_2',
+        sourceEventId: 'source_power_event_2',
+        sequence: 2,
+        ts: '2026-06-22T00:02:00.000Z',
+        simTime: '2026-06-22T08:02:00',
+        deviceId: 'coffee_maker_01',
+        deviceType: 'coffee_maker',
+        field: 'powerW',
+        value: 800
+      }),
+      deviceEvent({
+        id: 'power_event_3',
+        sourceEventId: 'source_power_event_3',
+        sequence: 3,
+        ts: '2026-06-22T00:04:00.000Z',
+        simTime: '2026-06-22T08:04:00',
+        deviceId: 'coffee_maker_01',
+        deviceType: 'coffee_maker',
+        field: 'powerW',
+        value: 820
+      }),
+      deviceEvent({
+        id: 'power_event_4',
+        sourceEventId: 'source_power_event_4',
+        sequence: 4,
+        ts: '2026-06-22T00:10:00.000Z',
+        simTime: '2026-06-22T08:10:00',
+        deviceId: 'coffee_maker_01',
+        deviceType: 'coffee_maker',
+        field: 'powerW',
+        value: 0
+      })
+    ]);
+
+    const episode = Object.values(memory.episodes)[0];
+
+    expect(memory.episodeCount).toBe(1);
+    expect(episode).toMatchObject({
+      kind: 'appliance_usage',
+      status: 'closed',
+      startedAt: '2026-06-22T00:02:00.000Z',
+      endedAt: '2026-06-22T00:10:00.000Z',
+      durationMinutes: 8,
+      eventCount: 3,
+      peakValue: 820,
+      startValue: 800,
+      latestValue: 0
+    });
+  });
+
+  it('does not create behavior episodes for environment telemetry drift', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'temperature_event_1',
+        sourceEventId: 'source_temperature_event_1',
+        sequence: 1,
+        deviceId: 'temperature_01',
+        deviceType: 'temperature_sensor',
+        field: 'temperature',
+        value: 25
+      }),
+      deviceEvent({
+        id: 'temperature_event_2',
+        sourceEventId: 'source_temperature_event_2',
+        sequence: 2,
+        deviceId: 'temperature_01',
+        deviceType: 'temperature_sensor',
+        field: 'temperature',
+        value: 25.8
+      })
+    ]);
+
+    expect(memory.episodeCount).toBe(0);
+    expect(memory.episodes).toEqual({});
+    expect(memory.activeEpisodeIds).toEqual({});
+  });
+
   it('keeps ignored system telemetry out of profile evidence counts', () => {
     const memory = reduceDeviceEvents(createHomeMemory(), [
       deviceEvent({

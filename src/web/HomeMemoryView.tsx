@@ -355,6 +355,7 @@ function ProfileStatsPanel({
         <Stat label="Rooms" value={Object.keys(memory.rooms).length} />
         <Stat label="Devices" value={Object.keys(memory.devices).length} />
         <Stat label="Fields" value={Object.keys(memory.fields).length} />
+        <Stat label="Episodes" value={memory.episodeCount} />
         <Stat label="Hypotheses" value={hypotheses.length} />
         <Stat label="Graph" value={`${nodeCount}/${edgeCount}`} />
       </div>
@@ -573,6 +574,7 @@ function selectedDetails(
         ? [
             { label: 'Devices', value: String(room.devices.length) },
             { label: 'Fields', value: String(room.activeFields.length) },
+            { label: 'Episodes', value: episodesForRoom(memory, room.roomId).length.toString() },
             { label: 'Last seen', value: formatTime(room.lastSeenAt) }
           ]
         : [],
@@ -586,7 +588,8 @@ function selectedDetails(
         ? [
             { label: 'Room', value: device.roomId },
             { label: 'Type', value: device.type },
-            { label: 'Fields', value: device.fields.length.toString() }
+            { label: 'Fields', value: device.fields.length.toString() },
+            { label: 'Episodes', value: episodesForDevice(memory, device.deviceId).length.toString() }
           ]
         : [],
       evidence: device?.recentEvents ?? []
@@ -599,7 +602,8 @@ function selectedDetails(
         ? [
             { label: 'Device', value: field.deviceId },
             { label: 'Field', value: field.field },
-            { label: 'Current', value: formatValue(field.currentValue) }
+            { label: 'Current', value: formatValue(field.currentValue) },
+            { label: 'Episodes', value: episodesForField(memory, field.id).length.toString() }
           ]
         : [],
       evidence: field?.recentEvents ?? []
@@ -621,10 +625,23 @@ function selectedDetails(
   return {
     rows: [
       { label: 'Rooms', value: Object.keys(memory.rooms).length.toString() },
-      { label: 'Devices', value: Object.keys(memory.devices).length.toString() }
+      { label: 'Devices', value: Object.keys(memory.devices).length.toString() },
+      { label: 'Episodes', value: memory.episodeCount.toString() }
     ],
     evidence: memory.recentEvents
   };
+}
+
+function episodesForRoom(memory: HomeMemory, roomId: string): HomeMemory['episodes'][string][] {
+  return Object.values(memory.episodes).filter((episode) => episode.roomId === roomId);
+}
+
+function episodesForDevice(memory: HomeMemory, deviceId: string): HomeMemory['episodes'][string][] {
+  return Object.values(memory.episodes).filter((episode) => episode.deviceId === deviceId);
+}
+
+function episodesForField(memory: HomeMemory, fieldId: string): HomeMemory['episodes'][string][] {
+  return Object.values(memory.episodes).filter((episode) => episode.fieldId === fieldId);
 }
 
 function newestFirst(events: DeviceValueEvent[]): DeviceValueEvent[] {

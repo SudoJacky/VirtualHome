@@ -117,36 +117,42 @@ export function createHypothesisReasoning(memory: HomeMemory, hypothesis: Profil
 }
 
 function createHouseholdSizeReasoning(memory: HomeMemory, hypothesis: ProfileHypothesis): HypothesisReasoning {
-  const meaningfulRooms = Object.values(memory.rooms).filter((room) => meaningfulWeightOfRoom(room) > 0);
+  const episodes = Object.values(memory.episodes);
+  const episodeRooms = new Set(episodes.map((episode) => episode.roomId));
+  const meaningfulRooms = Object.values(memory.rooms).filter((room) => (
+    meaningfulWeightOfRoom(room) > 0 || episodeRooms.has(room.roomId)
+  ));
   const activeRoomCount = meaningfulRooms.length;
   const weightedEvidence = meaningfulRooms.reduce((total, room) => total + meaningfulWeightOfRoom(room), 0);
+  const behaviorSignal = weightedEvidence + episodes.length;
   const totalEvents = memory.totalEvents;
-  const sparseEvidence = weightedEvidence <= 3;
+  const sparseEvidence = behaviorSignal <= 3;
   const result = sparseEvidence
     ? 'Uncertain resident count'
-    : estimateHouseholdSize(activeRoomCount, weightedEvidence);
+    : estimateHouseholdSize(activeRoomCount, behaviorSignal);
 
   return {
     title: hypothesis.label,
     inputs: [
       { label: 'Meaningful rooms', value: String(activeRoomCount) },
       { label: 'Weighted evidence', value: formatWeight(weightedEvidence) },
+      { label: 'Behavior episodes', value: String(episodes.length) },
       { label: 'Raw events', value: String(totalEvents) }
     ],
-    rule: householdSizeRule(activeRoomCount, weightedEvidence),
+    rule: householdSizeRule(activeRoomCount, behaviorSignal),
     result,
     steps: [
       {
         label: 'Collect room activity',
-        detail: `${activeRoomCount} room${plural(activeRoomCount)} have meaningful human activity or device usage evidence.`
+        detail: `${activeRoomCount} room${plural(activeRoomCount)} have meaningful human activity, device usage evidence, or behavior episodes.`
       },
       {
         label: 'Count observed events',
-        detail: `${totalEvents} raw device event${plural(totalEvents)} reduce to ${formatWeight(weightedEvidence)} weighted profile evidence.`
+        detail: `${totalEvents} raw device event${plural(totalEvents)} reduce to ${formatWeight(weightedEvidence)} weighted profile evidence and ${episodes.length} behavior episode${plural(episodes.length)}.`
       },
       {
         label: 'Evaluate household size rule',
-        detail: householdSizeRule(activeRoomCount, totalEvents)
+        detail: householdSizeRule(activeRoomCount, behaviorSignal)
       },
       {
         label: 'Attach evidence',
@@ -156,11 +162,11 @@ function createHouseholdSizeReasoning(memory: HomeMemory, hypothesis: ProfileHyp
   };
 }
 
-function householdSizeRule(activeRoomCount: number, totalEvents: number): string {
-  if (activeRoomCount >= 5 && totalEvents >= 20) {
-    return 'If active rooms >= 5 and total events >= 20, suggest 2-5 residents.';
+function householdSizeRule(activeRoomCount: number, behaviorSignal: number): string {
+  if (activeRoomCount >= 5 && behaviorSignal >= 20) {
+    return 'If active rooms >= 5 and behavior signal >= 20, suggest 2-5 residents.';
   }
-  if (totalEvents <= 3) {
+  if (behaviorSignal <= 3) {
     return 'Sparse evidence keeps the resident count uncertain.';
   }
   return 'Otherwise default to a broad 1-3 resident range.';

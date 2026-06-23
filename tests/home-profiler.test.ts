@@ -227,6 +227,33 @@ describe('home profiler', () => {
     expect(presence?.confidence).toBeLessThanOrEqual(0.45);
   });
 
+  it('uses behavior episodes when explaining presence, room habits, and household size', () => {
+    const events = Array.from({ length: 20 }, (_, index) => deviceEvent({
+      id: `motion_event_${index + 1}`,
+      sourceEventId: `source_motion_${index + 1}`,
+      sequence: index + 1,
+      simTime: `2026-06-22T08:${String(index).padStart(2, '0')}:00`,
+      roomId: 'living',
+      deviceId: 'motion_01',
+      deviceType: 'motion_sensor',
+      field: 'motion',
+      value: true
+    }));
+    const memory = reduceDeviceEvents(createHomeMemory(), events);
+    const hypotheses = createHomeProfileHypotheses(memory);
+
+    const presence = hypotheses.find((hypothesis) => hypothesis.type === 'presence_signal');
+    const roomHabit = hypotheses.find((hypothesis) => hypothesis.type === 'room_habit');
+    const householdSize = hypotheses.find((hypothesis) => hypothesis.type === 'household_size');
+
+    expect(memory.totalEvents).toBe(20);
+    expect(memory.episodeCount).toBe(1);
+    expect(presence?.summary).toMatch(/1 behavior episode/i);
+    expect(roomHabit?.summary).toMatch(/1 behavior episode/i);
+    expect(householdSize?.summary).toMatch(/1 behavior episode/i);
+    expect(householdSize?.summary).not.toMatch(/2-5 residents/);
+  });
+
   it('returns no hypotheses for empty memory', () => {
     expect(createHomeProfileHypotheses(createHomeMemory())).toEqual([]);
   });
