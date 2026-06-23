@@ -73,7 +73,6 @@
     { "id": "adult_1", "kind": "human", "role": "commuter adult", "homeMember": true },
     { "id": "adult_2", "kind": "human", "role": "hybrid work adult", "homeMember": true },
     { "id": "child_1", "kind": "human", "role": "student", "homeMember": true },
-    { "id": "senior_1", "kind": "human", "role": "senior family member", "homeMember": true },
     { "id": "pet_1", "kind": "pet", "role": "house pet", "homeMember": true }
   ]
 }

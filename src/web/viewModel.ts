@@ -530,15 +530,6 @@ const scenarioCards: ScenarioCard[] = [
     recordsGenerated: 'Manual injection and entrance security records.'
   },
   {
-    id: 'senior_no_activity',
-    title: 'Senior no activity',
-    businessValue: 'Shows wellness-oriented monitoring without exposing private details.',
-    expectedTimeline: 'No-activity injection creates a check-in workflow.',
-    expectedDeviceActions: ['Sleep and room state remain inspectable'],
-    expectedAlerts: ['Senior has no morning activity yet'],
-    recordsGenerated: 'Wellness alert and recommended check-in records.'
-  },
-  {
     id: 'network_offline',
     title: 'Network outage',
     businessValue: 'Shows operational resilience and degraded-state reporting.',

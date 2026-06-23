@@ -46,7 +46,6 @@ export function generateDailyScenario(options: DailyScenarioOptions): ScenarioDe
       adult_1: { location: 'master_bedroom', activity: 'sleeping' },
       adult_2: { location: 'master_bedroom', activity: 'sleeping' },
       child_1: { location: 'child_bedroom', activity: 'sleeping' },
-      senior_1: { location: 'master_bedroom', activity: 'sleeping' },
       pet_1: { location: 'living_room', activity: 'sleeping' }
     },
     calendar,
@@ -65,7 +64,6 @@ function createWeekdaySteps(calendar: CalendarProfile, random: SeededRandom, wak
   const schoolDeparture = wakeMinute + jitter(random, 78, 8);
   const commuteDeparture = wakeMinute + jitter(random, 92, 10);
   const remoteWorkStart = wakeMinute + jitter(random, 116, 12);
-  const seniorMorning = wakeMinute + jitter(random, 142, 18);
 
   return [
     step(wakeMinute, [
@@ -101,9 +99,6 @@ function createWeekdaySteps(calendar: CalendarProfile, random: SeededRandom, wak
       device('study_co2_01', { co2: 620 }, 'routine:remote_work'),
       device('kitchen_light_01', { power: 'off', brightness: 0 }, 'routine:morning_done')
     ]),
-    step(seniorMorning, [
-      move('senior_1', calendar.season === 'winter' ? 'living_room' : 'garden', calendar.season === 'winter' ? 'morning_exercise' : 'gardening')
-    ]),
     step(17 * 60 + jitter(random, 35, 20), [
       mode('evening_home'),
       move('child_1', 'child_bedroom', 'homework'),
@@ -132,8 +127,7 @@ function createWeekendSteps(calendar: CalendarProfile, random: SeededRandom, wak
     ]),
     step(brunchMinute, [
       move('adult_2', 'kitchen', 'brunch'),
-      move('senior_1', 'dining_room', 'brunch'),
-      activity('startActivity', 'weekend_brunch', ['adult_2', 'senior_1', 'child_1'], 'kitchen', 'routine:weekend_brunch'),
+      activity('startActivity', 'weekend_brunch', ['adult_2', 'child_1'], 'kitchen', 'routine:weekend_brunch'),
       device('kitchen_light_01', { power: 'on', brightness: calendar.season === 'winter' ? 78 : 58 }, 'routine:brunch'),
       device('stove_01', { powerW: 680, level: 4 }, 'routine:brunch')
     ]),
@@ -193,11 +187,7 @@ function createSeasonalCareSteps(calendar: CalendarProfile, random: SeededRandom
     ];
   }
   if (calendar.season === 'spring' || calendar.season === 'autumn') {
-    return [
-      step(16 * 60 + jitter(random, 20, 30), [
-        move('senior_1', 'garden', 'plant_care')
-      ])
-    ];
+    return [];
   }
   return [];
 }
@@ -216,7 +206,6 @@ function createEveningSteps(calendar: CalendarProfile, random: SeededRandom): Sc
       move('adult_1', 'dining_room', 'dinner'),
       move('adult_2', 'dining_room', 'dinner'),
       move('child_1', 'dining_room', 'dinner'),
-      move('senior_1', 'dining_room', 'dinner'),
       device('stove_01', { powerW: 0, level: 0 }, 'routine:dinner_ready'),
       device('range_hood_01', { power: 'off', speed: 0 }, 'routine:dinner_ready'),
       device('dining_light_01', { power: 'on', brightness: calendar.season === 'winter' ? 76 : 62 }, 'routine:dinner')
@@ -244,7 +233,6 @@ function createNightSteps(calendar: CalendarProfile, random: SeededRandom): Scen
       mode('sleeping'),
       move('adult_1', 'master_bedroom', 'sleeping'),
       move('adult_2', 'master_bedroom', 'sleeping'),
-      move('senior_1', 'master_bedroom', 'sleeping'),
       device('master_sleep_01', { inBed: true, heartRateSimulated: 61 }, 'routine:adult_sleep'),
       device('living_light_01', { power: 'off', brightness: 0 }, 'routine:sleep'),
       device('tv_01', { power: 'off', app: null, volume: 0 }, 'routine:sleep')

@@ -3,7 +3,26 @@ import { alertEscalationPolicies, createSimulator } from '../src/sim/engine';
 import { getCatalog, getHomeDefinition } from '../src/sim/catalog';
 import { getScenarioIds } from '../src/sim/scenarios';
 import { getDeviceCapability } from '../src/shared/deviceRegistry';
-import type { AbnormalityInjectedEvent, AlertCreatedEvent, AutomationTriggeredEvent, ConversationOccurredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, ExternalInteractionOccurredEvent, PersonMovedEvent, RoomId, RuleRecoveredEvent, TwinSnapshot } from '../src/shared/types';
+import type { AbnormalityInjectedEvent, AlertCreatedEvent, AutomationTriggeredEvent, ConversationOccurredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, ExternalInteractionOccurredEvent, PersonMovedEvent, PersonState, RoomId, RuleRecoveredEvent, TwinSnapshot } from '../src/shared/types';
+
+function addSeniorToSnapshot(snapshot: TwinSnapshot, location: RoomId | 'away', activity: string): PersonState {
+  const senior: PersonState = {
+    id: 'senior_1',
+    kind: 'human',
+    location,
+    activity,
+    behavior: {
+      routinePhase: activity === 'sleeping' ? 'sleep' : 'wellness_watch',
+      intent: activity === 'gardening' || activity === 'plant_care' ? 'care_for_plants' : 'steady_routine',
+      attentionTarget: location,
+      energy: 44
+    },
+    confidence: 1,
+    privacyMode: false
+  };
+  snapshot.people.senior_1 = senior;
+  return senior;
+}
 
 describe('virtual home simulator MVP', () => {
   it('defines the MVP home shape from MVP.md', () => {
@@ -14,7 +33,7 @@ describe('virtual home simulator MVP', () => {
     expect(homeDefinition.floors[0].rooms).toHaveLength(9);
     expect(homeDefinition.floors[0].fixtures.devices).toHaveLength(catalog.devices.length);
     expect(catalog.rooms).toHaveLength(9);
-    expect(catalog.people.filter((person) => person.kind === 'human')).toHaveLength(4);
+    expect(catalog.people.filter((person) => person.kind === 'human')).toHaveLength(3);
     expect(catalog.people.filter((person) => person.kind === 'pet')).toHaveLength(1);
     expect(catalog.devices.length).toBeGreaterThan(20);
     expect(catalog.devices.map((device) => device.id)).toEqual(expect.arrayContaining([
@@ -221,8 +240,12 @@ describe('virtual home simulator MVP', () => {
     const simulator = createSimulator({ seed: 1 });
 
     simulator.startScenario('weekday_normal');
-    simulator.advanceMinutes(258);
     const snapshot = simulator.getSnapshot();
+    snapshot.devices.sprinkler_01.state = { ...snapshot.devices.sprinkler_01.state, valveOpen: true };
+    snapshot.devices.sprinkler_01.lastReason = 'test:sprinkler_on';
+    simulator.restore(snapshot, simulator.getEvents());
+    simulator.advanceMinutes(258);
+    const updated = simulator.getSnapshot();
     const events = simulator.getEvents();
 
     expect(events.some((event): event is PersonMovedEvent => (
@@ -231,7 +254,7 @@ describe('virtual home simulator MVP', () => {
       event.to === 'garden' &&
       event.simTime === '2026-06-17T10:18:00+08:00'
     ))).toBe(true);
-    expect(snapshot.devices.sprinkler_01.state.valveOpen).toBe(false);
+    expect(updated.devices.sprinkler_01.state.valveOpen).toBe(false);
     expect(events.some((event): event is DeviceStateChangedEvent => (
       event.type === 'DeviceStateChanged' &&
       event.deviceId === 'sprinkler_01' &&
@@ -350,15 +373,20 @@ describe('virtual home simulator MVP', () => {
     });
   });
 
-  it('applies a senior garden care routine while preserving pet sprinkler safety', () => {
+  it('applies a senior garden care routine for an explicit senior test resident', () => {
     const simulator = createSimulator({ seed: 42 });
 
-    simulator.startDailyScenario({ date: '2026-10-14', seed: 42 });
-    simulator.advanceMinutes(680);
+    simulator.startScenario('weekday_normal');
     const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T10:00:00+08:00';
+    snapshot.homeState.mode = 'morning';
+    addSeniorToSnapshot(snapshot, 'garden', 'gardening');
+    simulator.restore(snapshot, simulator.getEvents());
+    simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
     const events = simulator.getEvents();
 
-    expect(['gardening', 'plant_care']).toContain(snapshot.people.senior_1.activity);
+    expect(['gardening', 'plant_care']).toContain(updated.people.senior_1.activity);
     expect(events.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'senior_garden_care')).toBe(true);
     expect(events.some((event): event is DeviceStateChangedEvent => (
       event.type === 'DeviceStateChanged' &&
@@ -372,8 +400,7 @@ describe('virtual home simulator MVP', () => {
       typeof event.state.moisturePercent === 'number' &&
       event.reason === 'habit:senior_1:gardening:soil_check'
     ))).toBe(true);
-    expect(events.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'pet_garden_sprinkler_pause')).toBe(true);
-    expect(snapshot.devices.sprinkler_01.state.valveOpen).toBe(false);
+    expect(updated.devices.sprinkler_01.state.valveOpen).toBe(true);
   });
 
   it('moves appliances through running and waiting-to-unload lifecycle states', () => {
@@ -407,6 +434,9 @@ describe('virtual home simulator MVP', () => {
     const simulator = createSimulator({ seed: 9 });
 
     simulator.startScenario('night_water_leak');
+    const seniorSnapshot = simulator.getSnapshot();
+    addSeniorToSnapshot(seniorSnapshot, 'master_bedroom', 'sleeping');
+    simulator.restore(seniorSnapshot, simulator.getEvents());
     simulator.advanceMinutes(180);
     const snapshot = simulator.getSnapshot();
     const events = simulator.getEvents();
@@ -423,6 +453,9 @@ describe('virtual home simulator MVP', () => {
     const simulator = createSimulator({ seed: 42 });
 
     simulator.startScenario('weekday_normal');
+    const seniorSnapshot = simulator.getSnapshot();
+    addSeniorToSnapshot(seniorSnapshot, 'master_bedroom', 'morning_rest');
+    simulator.restore(seniorSnapshot, simulator.getEvents());
     simulator.advanceMinutes(35);
     const snapshot = simulator.getSnapshot();
     const events = simulator.getEvents();
@@ -956,8 +989,7 @@ describe('virtual home simulator MVP', () => {
     snapshot.people.adult_2.activity = 'cooking_dinner';
     snapshot.people.child_1.location = 'child_bedroom';
     snapshot.people.child_1.activity = 'homework';
-    snapshot.people.senior_1.location = 'living_room';
-    snapshot.people.senior_1.activity = 'idle';
+    addSeniorToSnapshot(snapshot, 'living_room', 'idle');
     delete snapshot.activities.family_dinner;
     simulator.restore(snapshot, simulator.getEvents());
     const events = simulator.advanceMinutes(1);
@@ -994,8 +1026,7 @@ describe('virtual home simulator MVP', () => {
     snapshot.homeState.mode = 'morning';
     snapshot.people.adult_1.location = 'kitchen';
     snapshot.people.adult_1.activity = 'breakfast';
-    snapshot.people.senior_1.location = 'living_room';
-    snapshot.people.senior_1.activity = 'idle';
+    addSeniorToSnapshot(snapshot, 'living_room', 'idle');
     snapshot.worldState.inventory.medicineDoses = 3;
     snapshot.worldState.inventory.healthRiskScore = 54;
     simulator.restore(snapshot, simulator.getEvents());
@@ -1170,8 +1201,7 @@ describe('virtual home simulator MVP', () => {
     snapshot.people.adult_2.activity = 'commute';
     snapshot.people.child_1.location = 'away';
     snapshot.people.child_1.activity = 'school';
-    snapshot.people.senior_1.location = 'living_room';
-    snapshot.people.senior_1.activity = 'reading';
+    addSeniorToSnapshot(snapshot, 'living_room', 'reading');
     snapshot.devices.living_light_01.state = { ...snapshot.devices.living_light_01.state, power: 'off', brightness: 0 };
     snapshot.worldState.inventory.packageCount = 0;
     snapshot.worldState.inventory.medicineDoses = 8;
@@ -1210,8 +1240,7 @@ describe('virtual home simulator MVP', () => {
     snapshot.people.adult_2.activity = 'commute';
     snapshot.people.child_1.location = 'away';
     snapshot.people.child_1.activity = 'school';
-    snapshot.people.senior_1.location = 'garden';
-    snapshot.people.senior_1.activity = 'needs_phone';
+    addSeniorToSnapshot(snapshot, 'garden', 'needs_phone');
     snapshot.worldState.inventory.packageCount = 0;
     snapshot.worldState.inventory.medicineDoses = 8;
     snapshot.worldState.inventory.deviceMaintenanceScore = 8;
@@ -1788,6 +1817,9 @@ describe('virtual home simulator MVP', () => {
     const simulator = createSimulator({ seed: 42 });
 
     simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    addSeniorToSnapshot(snapshot, 'master_bedroom', 'morning_rest');
+    simulator.restore(snapshot, simulator.getEvents());
     const firstNoActivity = simulator.injectAbnormality('senior_no_activity');
     expect(simulator.getSnapshot().alerts.senior_no_activity_001).toMatchObject({
       status: 'active',
@@ -1817,6 +1849,9 @@ describe('virtual home simulator MVP', () => {
     const simulator = createSimulator({ seed: 42 });
 
     simulator.startScenario('weekday_normal');
+    const snapshotWithSenior = simulator.getSnapshot();
+    addSeniorToSnapshot(snapshotWithSenior, 'master_bedroom', 'morning_rest');
+    simulator.restore(snapshotWithSenior, simulator.getEvents());
     simulator.injectAbnormality('senior_no_activity');
     const resolved = simulator.resolveAbnormality('senior_no_activity');
     const snapshot = simulator.getSnapshot();

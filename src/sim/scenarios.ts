@@ -44,7 +44,6 @@ export const scenarios: Record<StaticScenarioId, ScenarioDefinition> = {
       adult_1: { location: 'master_bedroom', activity: 'sleeping' },
       adult_2: { location: 'master_bedroom', activity: 'sleeping' },
       child_1: { location: 'child_bedroom', activity: 'sleeping' },
-      senior_1: { location: 'master_bedroom', activity: 'morning_rest' },
       pet_1: { location: 'living_room', activity: 'resting' }
     },
     steps: [
@@ -83,7 +82,6 @@ export const scenarios: Record<StaticScenarioId, ScenarioDefinition> = {
         minute: 40,
         actions: [
           { kind: 'movePerson', personId: 'adult_2', to: 'kitchen', activity: 'coffee' },
-          { kind: 'movePerson', personId: 'senior_1', to: 'dining_room', activity: 'breakfast' },
           { kind: 'setDevice', deviceId: 'fridge_01', state: { doorOpen: false, powerW: 95 }, reason: 'activity:breakfast_done' }
         ]
       },
@@ -98,20 +96,6 @@ export const scenarios: Record<StaticScenarioId, ScenarioDefinition> = {
           { kind: 'setDevice', deviceId: 'dining_light_01', state: { power: 'off', brightness: 0 }, reason: 'activity:breakfast_done' },
           { kind: 'endActivity', activityId: 'breakfast', reason: 'schedule:morning_done' },
           { kind: 'endActivity', activityId: 'child_breakfast', reason: 'schedule:school_departure' }
-        ]
-      },
-      {
-        minute: 240,
-        actions: [
-          { kind: 'movePerson', personId: 'senior_1', to: 'garden', activity: 'gardening' },
-          { kind: 'setDevice', deviceId: 'sprinkler_01', state: { valveOpen: true }, reason: 'activity:garden_care' }
-        ]
-      },
-      {
-        minute: 265,
-        actions: [
-          { kind: 'movePerson', personId: 'senior_1', to: 'living_room', activity: 'resting' },
-          { kind: 'setDevice', deviceId: 'sprinkler_01', state: { valveOpen: false }, reason: 'activity:garden_care_done' }
         ]
       },
       {
@@ -137,8 +121,7 @@ export const scenarios: Record<StaticScenarioId, ScenarioDefinition> = {
           { kind: 'movePerson', personId: 'adult_1', to: 'dining_room', activity: 'dinner' },
           { kind: 'movePerson', personId: 'adult_2', to: 'dining_room', activity: 'dinner' },
           { kind: 'movePerson', personId: 'child_1', to: 'dining_room', activity: 'dinner' },
-          { kind: 'movePerson', personId: 'senior_1', to: 'dining_room', activity: 'dinner' },
-          { kind: 'startActivity', activityId: 'family_dinner', participants: ['adult_1', 'adult_2', 'child_1', 'senior_1'], roomId: 'dining_room', reason: 'schedule:weekday_evening' },
+          { kind: 'startActivity', activityId: 'family_dinner', participants: ['adult_1', 'adult_2', 'child_1'], roomId: 'dining_room', reason: 'schedule:weekday_evening' },
           { kind: 'setDevice', deviceId: 'stove_01', state: { powerW: 0, level: 0 }, reason: 'activity:cooking_done' },
           { kind: 'setDevice', deviceId: 'range_hood_01', state: { power: 'off', speed: 0 }, reason: 'activity:cooking_done' },
           { kind: 'setDevice', deviceId: 'dining_light_01', state: { power: 'on', brightness: 65 }, reason: 'activity:dinner' },
@@ -170,7 +153,6 @@ export const scenarios: Record<StaticScenarioId, ScenarioDefinition> = {
           { kind: 'setHomeMode', mode: 'sleeping' },
           { kind: 'movePerson', personId: 'adult_1', to: 'master_bedroom', activity: 'sleeping' },
           { kind: 'movePerson', personId: 'adult_2', to: 'master_bedroom', activity: 'sleeping' },
-          { kind: 'movePerson', personId: 'senior_1', to: 'master_bedroom', activity: 'sleeping' },
           { kind: 'setDevice', deviceId: 'master_sleep_01', state: { inBed: true, heartRateSimulated: 61 }, reason: 'activity:sleeping' },
           { kind: 'setDevice', deviceId: 'dining_light_01', state: { power: 'off', brightness: 0 }, reason: 'activity:sleeping' },
           { kind: 'endActivity', activityId: 'watching_tv', reason: 'schedule:sleeping' }
@@ -188,7 +170,6 @@ export const scenarios: Record<StaticScenarioId, ScenarioDefinition> = {
       adult_1: { location: 'entrance', activity: 'leaving_home' },
       adult_2: { location: 'living_room', activity: 'preparing_to_leave' },
       child_1: { location: 'entrance', activity: 'leaving_home' },
-      senior_1: { location: 'living_room', activity: 'preparing_to_leave' },
       pet_1: { location: 'living_room', activity: 'resting' }
     },
     steps: [
@@ -205,7 +186,6 @@ export const scenarios: Record<StaticScenarioId, ScenarioDefinition> = {
         minute: 8,
         actions: [
           { kind: 'movePerson', personId: 'adult_2', to: 'away', activity: 'out' },
-          { kind: 'movePerson', personId: 'senior_1', to: 'away', activity: 'out' },
           { kind: 'setDevice', deviceId: 'door_lock_01', state: { locked: true }, reason: 'activity:last_person_left' }
         ]
       }
@@ -221,7 +201,6 @@ export const scenarios: Record<StaticScenarioId, ScenarioDefinition> = {
       adult_1: { location: 'master_bedroom', activity: 'sleeping' },
       adult_2: { location: 'master_bedroom', activity: 'sleeping' },
       child_1: { location: 'child_bedroom', activity: 'sleeping' },
-      senior_1: { location: 'master_bedroom', activity: 'sleeping' },
       pet_1: { location: 'living_room', activity: 'sleeping' }
     },
     steps: [

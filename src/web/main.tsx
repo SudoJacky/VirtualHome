@@ -514,7 +514,6 @@ function App(): React.ReactElement {
               <button onClick={() => void runApiAction('Fridge open', (key) => inject('fridge_left_open', key))}><Bell size={16} /> Fridge open</button>
               <button onClick={() => void runApiAction('Door open', (key) => inject('door_left_open', key))}><Bell size={16} /> Door open</button>
               <button onClick={() => void runApiAction('Network off', (key) => inject('network_offline', key))}><Bell size={16} /> Network off</button>
-              <button onClick={() => void runApiAction('No activity', (key) => inject('senior_no_activity', key))}><Radar size={16} /> No activity</button>
             </section>
 
             <section className="control-group">
@@ -522,7 +521,6 @@ function App(): React.ReactElement {
               <button onClick={() => void runApiAction('Resolve fridge', (key) => resolve('fridge_left_open', key))}><Bell size={16} /> Fridge closed</button>
               <button onClick={() => void runApiAction('Resolve door', (key) => resolve('door_left_open', key))}><Bell size={16} /> Door secured</button>
               <button onClick={() => void runApiAction('Resolve network', (key) => resolve('network_offline', key))}><Bell size={16} /> Network online</button>
-              <button onClick={() => void runApiAction('Resolve activity', (key) => resolve('senior_no_activity', key))}><Radar size={16} /> Check-in done</button>
             </section>
           </>
         )}
