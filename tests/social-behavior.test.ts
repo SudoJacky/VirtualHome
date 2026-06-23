@@ -93,7 +93,7 @@ describe('household social behavior model', () => {
         kind: 'conversation',
         ruleId: 'parent_homework_reminder',
         actorIds: ['adult_1', 'child_1'],
-        targetRoom: 'child_bedroom',
+        targetRoom: 'living_room',
         targetActivity: 'homework',
         conversationTopic: 'homework_reminder'
       }),

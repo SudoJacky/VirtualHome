@@ -541,7 +541,7 @@ function App(): React.ReactElement {
               <i />
               {snapshot.simClock.paused ? 'Paused' : 'Auto running'}
             </span>
-            <div className="sim-time"><Clock size={16} /> {formatTime(model.simTime)}</div>
+            <div className="sim-time" title={model.simTime}><Clock size={16} /> {model.simCalendar.fullLabel}</div>
             <span className={`status-pill socket-${socketStatus}`} title={lastHeartbeatAt ? `Last heartbeat ${formatTime(lastHeartbeatAt)}` : undefined}>
               <i />
               {socketStatusLabel(socketStatus)}

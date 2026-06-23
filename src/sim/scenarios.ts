@@ -102,7 +102,7 @@ export const scenarios: Record<StaticScenarioId, ScenarioDefinition> = {
         minute: 600,
         actions: [
           { kind: 'setHomeMode', mode: 'evening_home' },
-          { kind: 'movePerson', personId: 'child_1', to: 'child_bedroom', activity: 'homework' },
+          { kind: 'movePerson', personId: 'child_1', to: 'living_room', activity: 'homework' },
           { kind: 'movePerson', personId: 'adult_1', to: 'living_room', activity: 'arrived_home' },
           { kind: 'setDevice', deviceId: 'child_sleep_01', state: { inBed: false, heartRateSimulated: 76 }, reason: 'activity:homework' }
         ]

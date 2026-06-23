@@ -101,7 +101,7 @@ function createWeekdaySteps(calendar: CalendarProfile, random: SeededRandom, wak
     ]),
     step(17 * 60 + jitter(random, 35, 20), [
       mode('evening_home'),
-      move('child_1', 'child_bedroom', 'homework'),
+      move('child_1', 'living_room', 'homework'),
       device('child_sleep_01', { inBed: false, heartRateSimulated: 78 }, 'routine:homework')
     ]),
     step(18 * 60 + jitter(random, 8, 20), [
@@ -160,7 +160,7 @@ function createWeekendSteps(calendar: CalendarProfile, random: SeededRandom, wak
             mode('evening_home'),
             move('adult_1', 'living_room', 'returned_home'),
             move('adult_2', 'living_room', 'returned_home'),
-            move('child_1', 'child_bedroom', 'playing')
+            move('child_1', 'living_room', 'playing')
           ])
         ])
   ];

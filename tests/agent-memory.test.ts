@@ -33,7 +33,7 @@ function activity(activityId: string, participant: string, sequence: number): Ac
     type: 'ActivityStarted',
     activityId,
     participants: [participant],
-    roomId: activityId === 'study_homework' ? 'child_bedroom' : 'kitchen'
+    roomId: activityId === 'study_homework' ? 'living_room' : 'kitchen'
   };
 }
 

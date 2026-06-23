@@ -46,7 +46,7 @@ describe('agent policy', () => {
     expect(remoteWorker.activityId).toBe('remote_work_session');
     expect(remoteWorker.targetRoom).toBe('study');
     expect(child.activityId).toBe('study_homework');
-    expect(child.targetRoom).toBe('child_bedroom');
+    expect(child.targetRoom).toBe('living_room');
   });
 
   it('falls back when a preferred activity lacks required resources', () => {
