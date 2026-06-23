@@ -2614,6 +2614,11 @@ function uniqueRoomIds(values: RoomId[]): RoomId[] {
 }
 
 function minutesOfDay(isoTime: string): number {
+  const writtenTime = /^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})/.exec(isoTime);
+  if (writtenTime) {
+    return Number(writtenTime[1]) * 60 + Number(writtenTime[2]);
+  }
+
   const date = new Date(isoTime);
   return date.getHours() * 60 + date.getMinutes();
 }
