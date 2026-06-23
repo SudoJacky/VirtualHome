@@ -59,6 +59,7 @@ export function createEventEvidenceFlow(
         metrics: [
           { label: 'Category', value: event.evidenceCategory.replaceAll('_', ' ') },
           { label: 'Strength', value: event.evidenceStrength },
+          { label: 'Change', value: event.meaningfulChange ? 'meaningful' : 'telemetry' },
           { label: 'Profile weight', value: formatWeight(event.profileWeight) }
         ]
       },

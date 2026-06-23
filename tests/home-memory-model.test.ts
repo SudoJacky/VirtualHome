@@ -126,7 +126,7 @@ describe('home memory model', () => {
     });
   });
 
-  it('stores sensor telemetry as facts while keeping weak profile evidence weight', () => {
+  it('stores sensor telemetry as facts while keeping only meaningful profile evidence weight', () => {
     const events = Array.from({ length: 30 }, (_, index) => deviceEvent({
       id: `temperature_event_${index + 1}`,
       sourceEventId: `source_temperature_${index + 1}`,
@@ -140,19 +140,116 @@ describe('home memory model', () => {
     const memory = reduceDeviceEvents(createHomeMemory(), events);
 
     expect(memory.totalEvents).toBe(30);
-    expect(memory.profileEventCount).toBe(30);
-    expect(memory.profileEvidenceWeight).toBeCloseTo(1.5);
+    expect(memory.profileEventCount).toBe(1);
+    expect(memory.profileEvidenceWeight).toBeCloseTo(0.05);
     expect(memory.profileEvidenceByCategory).toMatchObject({
-      environment_context: 30
+      environment_context: 1
     });
-    expect(memory.rooms.kitchen.profileEvidenceWeight).toBeCloseTo(1.5);
-    expect(memory.devices.temperature_01.profileEvidenceWeight).toBeCloseTo(1.5);
+    expect(memory.rooms.kitchen.profileEvidenceWeight).toBeCloseTo(0.05);
+    expect(memory.devices.temperature_01.profileEvidenceWeight).toBeCloseTo(0.05);
     expect(memory.fields['temperature_01:temperature']).toMatchObject({
       eventCount: 30,
+      changeCount: 1,
+      telemetryCount: 29,
+      lastMeaningfulChangeAt: '2026-06-22T00:00:00.000Z',
       evidenceCategory: 'environment_context',
       evidenceStrength: 'weak',
-      profileWeight: 0.05
+      profileWeight: 0
     });
+  });
+
+  it('tracks repeated same-value telemetry separately from meaningful changes', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'motion_event_1',
+        sourceEventId: 'source_motion_event_1',
+        sequence: 1,
+        deviceId: 'motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'motion_event_2',
+        sourceEventId: 'source_motion_event_2',
+        sequence: 2,
+        deviceId: 'motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'motion_event_3',
+        sourceEventId: 'source_motion_event_3',
+        sequence: 3,
+        deviceId: 'motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      })
+    ]);
+
+    expect(memory.totalEvents).toBe(3);
+    expect(memory.profileEventCount).toBe(1);
+    expect(memory.profileEvidenceWeight).toBeCloseTo(0.55);
+    expect(memory.fields['motion_01:motion']).toMatchObject({
+      eventCount: 3,
+      changeCount: 1,
+      telemetryCount: 2,
+      lastMeaningfulChangeAt: '2026-06-22T00:00:00.000Z',
+      profileEventCount: 1,
+      profileEvidenceWeight: 0.55
+    });
+    expect(memory.recentEvents[0]).toMatchObject({
+      meaningfulChange: false,
+      profileWeight: 0
+    });
+  });
+
+  it('ignores tiny numeric drift for profile confidence while preserving numeric facts', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'temperature_event_1',
+        sourceEventId: 'source_temperature_event_1',
+        sequence: 1,
+        deviceId: 'temperature_01',
+        deviceType: 'temperature_sensor',
+        field: 'temperature',
+        value: 25
+      }),
+      deviceEvent({
+        id: 'temperature_event_2',
+        sourceEventId: 'source_temperature_event_2',
+        sequence: 2,
+        deviceId: 'temperature_01',
+        deviceType: 'temperature_sensor',
+        field: 'temperature',
+        value: 25.2
+      }),
+      deviceEvent({
+        id: 'temperature_event_3',
+        sourceEventId: 'source_temperature_event_3',
+        sequence: 3,
+        ts: '2026-06-22T00:03:00.000Z',
+        deviceId: 'temperature_01',
+        deviceType: 'temperature_sensor',
+        field: 'temperature',
+        value: 25.8
+      })
+    ]);
+
+    expect(memory.profileEventCount).toBe(2);
+    expect(memory.profileEvidenceWeight).toBeCloseTo(0.1);
+    expect(memory.fields['temperature_01:temperature']).toMatchObject({
+      eventCount: 3,
+      changeCount: 2,
+      telemetryCount: 1,
+      lastMeaningfulChangeAt: '2026-06-22T00:03:00.000Z',
+      numericMin: 25,
+      numericMax: 25.8
+    });
+    expect(memory.recentEvents.map((event) => event.meaningfulChange)).toEqual([true, false, true]);
+    expect(memory.recentEvents.map((event) => event.profileWeight)).toEqual([0.05, 0, 0.05]);
   });
 
   it('keeps ignored system telemetry out of profile evidence counts', () => {

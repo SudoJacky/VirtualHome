@@ -27,6 +27,8 @@ export interface MemoryEvidence {
   timeBucket: TimeBucket;
   evidenceCategory: EvidenceCategory;
   evidenceStrength: EvidenceStrength;
+  meaningfulChange: boolean;
+  valueDelta?: number;
   profileWeight: number;
   evidenceReason: string;
 }
@@ -42,8 +44,11 @@ export interface FieldMemory {
   currentValue: DeviceEventValue;
   previousValue?: DeviceEventValue;
   eventCount: number;
+  changeCount: number;
+  telemetryCount: number;
   firstSeenAt: string;
   lastSeenAt: string;
+  lastMeaningfulChangeAt?: string;
   recentEvents: MemoryEvidence[];
   evidenceCategory: EvidenceCategory;
   evidenceStrength: EvidenceStrength;
@@ -145,9 +150,10 @@ export function reduceDeviceEvents(memory: HomeMemory, events: DeviceValueEvent[
 export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): HomeMemory {
   const baseMemory = memory.runId !== null && memory.runId !== event.runId ? createHomeMemory() : memory;
   const timeBucket = getTimeBucket(event.simTime);
-  const classification = classifyDeviceEvidence(event);
-  const evidence = toEvidence(event, timeBucket, classification);
   const fieldId = getFieldId(event.deviceId, event.field);
+  const classification = classifyDeviceEvidence(event);
+  const change = analyzeFieldChange(baseMemory.fields[fieldId], event, classification);
+  const evidence = toEvidence(event, timeBucket, classification, change);
   const fieldMemory = updateFieldMemory(baseMemory.fields[fieldId], event, evidence, fieldId);
   const deviceMemory = updateDeviceMemory(baseMemory.devices[event.deviceId], event, evidence, fieldId, timeBucket);
   const roomMemory = updateRoomMemory(baseMemory.rooms[event.roomId], event, evidence, fieldId, timeBucket);
@@ -277,8 +283,11 @@ function updateFieldMemory(
       field: event.field,
       currentValue: event.value,
       eventCount: 1,
+      changeCount: evidence.meaningfulChange ? 1 : 0,
+      telemetryCount: evidence.meaningfulChange ? 0 : 1,
       firstSeenAt: event.ts,
       lastSeenAt: event.ts,
+      lastMeaningfulChangeAt: evidence.meaningfulChange ? event.ts : undefined,
       recentEvents: [evidence],
       evidenceCategory: evidence.evidenceCategory,
       evidenceStrength: evidence.evidenceStrength,
@@ -301,7 +310,10 @@ function updateFieldMemory(
     currentValue: event.value,
     previousValue: current.currentValue,
     eventCount: current.eventCount + 1,
+    changeCount: current.changeCount + (evidence.meaningfulChange ? 1 : 0),
+    telemetryCount: current.telemetryCount + (evidence.meaningfulChange ? 0 : 1),
     lastSeenAt: event.ts,
+    lastMeaningfulChangeAt: evidence.meaningfulChange ? event.ts : current.lastMeaningfulChangeAt,
     recentEvents: appendBounded(current.recentEvents, evidence, FIELD_RECENT_LIMIT),
     evidenceCategory: evidence.evidenceCategory,
     evidenceStrength: evidence.evidenceStrength,
@@ -318,7 +330,8 @@ function updateFieldMemory(
 function toEvidence(
   event: DeviceValueEvent,
   timeBucket: TimeBucket,
-  classification: ReturnType<typeof classifyDeviceEvidence>
+  classification: ReturnType<typeof classifyDeviceEvidence>,
+  change: FieldChangeAnalysis
 ): MemoryEvidence {
   return {
     id: event.id,
@@ -337,9 +350,75 @@ function toEvidence(
     timeBucket,
     evidenceCategory: classification.category,
     evidenceStrength: classification.strength,
-    profileWeight: classification.profileWeight,
-    evidenceReason: classification.reason
+    meaningfulChange: change.meaningfulChange,
+    valueDelta: change.valueDelta,
+    profileWeight: change.profileWeight,
+    evidenceReason: change.evidenceReason
   };
+}
+
+interface FieldChangeAnalysis {
+  meaningfulChange: boolean;
+  valueDelta?: number;
+  profileWeight: number;
+  evidenceReason: string;
+}
+
+function analyzeFieldChange(
+  current: FieldMemory | undefined,
+  event: DeviceValueEvent,
+  classification: ReturnType<typeof classifyDeviceEvidence>
+): FieldChangeAnalysis {
+  if (!current) {
+    return {
+      meaningfulChange: true,
+      profileWeight: classification.profileWeight,
+      evidenceReason: classification.reason
+    };
+  }
+
+  const valueDelta = numericDelta(current.currentValue, event.value);
+  const meaningfulChange = isMeaningfulFieldChange(current.currentValue, event.value, classification, valueDelta);
+  const telemetryReason = valueDelta !== undefined
+    ? ` Delta ${formatDelta(valueDelta)} is treated as telemetry and does not add profile weight.`
+    : ' Repeated telemetry does not add profile weight.';
+
+  return {
+    meaningfulChange,
+    valueDelta,
+    profileWeight: meaningfulChange ? classification.profileWeight : 0,
+    evidenceReason: meaningfulChange ? classification.reason : `${classification.reason}${telemetryReason}`
+  };
+}
+
+function isMeaningfulFieldChange(
+  previousValue: DeviceEventValue,
+  nextValue: DeviceEventValue,
+  classification: ReturnType<typeof classifyDeviceEvidence>,
+  valueDelta: number | undefined
+): boolean {
+  if (valueDelta !== undefined) {
+    if (valueDelta === 0) {
+      return false;
+    }
+    if (classification.category === 'environment_context') {
+      return valueDelta >= 0.5;
+    }
+    return true;
+  }
+
+  return !Object.is(previousValue, nextValue);
+}
+
+function numericDelta(previousValue: DeviceEventValue, nextValue: DeviceEventValue): number | undefined {
+  if (typeof previousValue !== 'number' || typeof nextValue !== 'number') {
+    return undefined;
+  }
+  return roundWeight(Math.abs(nextValue - previousValue));
+}
+
+function formatDelta(delta: number): string {
+  return Number(delta.toFixed(3)).toString();
 }
 
 function getFieldId(deviceId: string, field: string): string {

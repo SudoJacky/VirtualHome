@@ -219,7 +219,8 @@ describe('home profiler', () => {
     const presence = hypotheses.find((hypothesis) => hypothesis.type === 'presence_signal');
 
     expect(memory.totalEvents).toBe(60);
-    expect(memory.profileEvidenceWeight).toBeCloseTo(3);
+    expect(memory.profileEventCount).toBe(5);
+    expect(memory.profileEvidenceWeight).toBeCloseTo(0.25);
     expect(householdSize?.summary).toMatch(/environment|weak|uncertain/i);
     expect(householdSize?.summary).not.toMatch(/2-5 residents/);
     expect(householdSize?.confidence).toBeLessThanOrEqual(0.45);

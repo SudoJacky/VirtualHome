@@ -108,6 +108,7 @@ describe('home memory reasoning flow', () => {
     expect(flow.steps[0].metrics).toEqual([
       { label: 'Category', value: 'human activity' },
       { label: 'Strength', value: 'medium' },
+      { label: 'Change', value: 'meaningful' },
       { label: 'Profile weight', value: '0.55' }
     ]);
     expect(flow.steps[1].detail).toContain('bathroom / bathroom_motion_01 / motion');
