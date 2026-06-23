@@ -1,10 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import { getCatalog } from '../src/sim/catalog';
 import { createSimulator } from '../src/sim/engine';
+import type { PersonState, RoomId, TwinSnapshot } from '../src/shared/types';
 import { getDeviceCapability } from '../src/shared/deviceRegistry';
 import { devicePoints } from '../src/web/deviceInstanceLayout';
 import { createFloorplan3DModel, selectVisibleFloorplanDevices } from '../src/web/floorplan3dModel';
 import { roomConnectionOpenings, roomLayouts, wallSegments } from '../src/web/floorplanLayout';
+
+function addSeniorToSnapshot(snapshot: TwinSnapshot, location: RoomId | 'away', activity: string): PersonState {
+  const senior: PersonState = {
+    id: 'senior_1',
+    kind: 'human',
+    location,
+    activity,
+    behavior: {
+      routinePhase: activity === 'sleeping' ? 'sleep' : 'wellness_watch',
+      intent: activity === 'morning_rest' ? 'steady_routine' : 'rest',
+      attentionTarget: location,
+      energy: 44
+    },
+    confidence: 1,
+    privacyMode: false
+  };
+  snapshot.people.senior_1 = senior;
+  return senior;
+}
 
 describe('3D floorplan layout and model', () => {
   it('defines renderable layout metadata for every room and catalog device', () => {
@@ -26,7 +46,7 @@ describe('3D floorplan layout and model', () => {
     const model = createFloorplan3DModel(simulator.getSnapshot(), simulator.getEvents());
 
     expect(model.rooms.find((room) => room.id === 'bathroom')?.alertSeverity).toBe('critical');
-    expect(model.people.map((person) => person.id).sort()).toEqual(['adult_1', 'adult_2', 'child_1', 'pet_1', 'senior_1']);
+    expect(model.people.map((person) => person.id).sort()).toEqual(['adult_1', 'adult_2', 'child_1', 'pet_1']);
     expect(model.people.every((person) => Number.isFinite(person.x) && Number.isFinite(person.z))).toBe(true);
     expect(model.devices.some((device) => device.id === 'water_leak_01' && device.active && device.abnormal)).toBe(true);
     expect(model.devices.every((device) => Number.isFinite(device.x) && Number.isFinite(device.z))).toBe(true);
@@ -339,6 +359,9 @@ describe('3D floorplan layout and model', () => {
 
     const seniorSimulator = createSimulator({ seed: 42 });
     seniorSimulator.startScenario('weekday_normal');
+    const seniorSnapshot = seniorSimulator.getSnapshot();
+    addSeniorToSnapshot(seniorSnapshot, 'master_bedroom', 'morning_rest');
+    seniorSimulator.restore(seniorSnapshot, seniorSimulator.getEvents());
     seniorSimulator.advanceMinutes(35);
     const seniorModel = createFloorplan3DModel(seniorSimulator.getSnapshot(), seniorSimulator.getEvents());
     const dinner = dinnerModel.eventReplays.find((replay) => replay.ruleId === 'family_dinner_readiness');
@@ -360,6 +383,9 @@ describe('3D floorplan layout and model', () => {
 
   it('links core abnormality and behavior rules into replay focus devices', () => {
     const abnormalitySimulator = createSimulator({ seed: 42 });
+    const abnormalitySnapshot = abnormalitySimulator.getSnapshot();
+    addSeniorToSnapshot(abnormalitySnapshot, 'master_bedroom', 'morning_rest');
+    abnormalitySimulator.restore(abnormalitySnapshot, abnormalitySimulator.getEvents());
     abnormalitySimulator.injectAbnormality('door_left_open');
     abnormalitySimulator.injectAbnormality('network_offline');
     abnormalitySimulator.injectAbnormality('senior_no_activity');
@@ -538,7 +564,7 @@ describe('3D floorplan layout and model', () => {
     const humans = model.people.filter((person) => person.kind === 'human');
     const pet = model.people.find((person) => person.kind === 'pet');
 
-    expect(humans).toHaveLength(4);
+    expect(humans).toHaveLength(3);
     expect(new Set(humans.map((person) => person.visualStyle.bodyColor)).size).toBeGreaterThan(2);
     expect(humans.every((person) => person.visualStyle.height >= 0.62)).toBe(true);
     expect(pet?.visualStyle).toMatchObject({

@@ -41,13 +41,4 @@ describe('scenario script plan', () => {
     ]);
   });
 
-  it('turns senior no activity into a family check-in recovery storyline', () => {
-    expect(createScenarioScriptPlan('senior_no_activity')).toEqual([
-      { kind: 'startScenario', scenarioId: 'weekday_normal' },
-      { kind: 'advance', minutes: 140 },
-      { kind: 'inject', abnormality: 'senior_no_activity' },
-      { kind: 'advance', minutes: 2 },
-      { kind: 'resolve', abnormality: 'senior_no_activity' }
-    ]);
-  });
 });

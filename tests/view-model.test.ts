@@ -1,7 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import { createSimulator } from '../src/sim/engine';
 import { getDeviceCapability } from '../src/shared/deviceRegistry';
+import type { PersonState, RoomId, TwinSnapshot } from '../src/shared/types';
 import { createDashboardModel, mergeTwinEvents } from '../src/web/viewModel';
+
+function addSeniorToSnapshot(snapshot: TwinSnapshot, location: RoomId | 'away', activity: string): PersonState {
+  const senior: PersonState = {
+    id: 'senior_1',
+    kind: 'human',
+    location,
+    activity,
+    behavior: {
+      routinePhase: activity === 'sleeping' ? 'sleep' : 'wellness_watch',
+      intent: 'steady_routine',
+      attentionTarget: location,
+      energy: 44
+    },
+    confidence: 1,
+    privacyMode: false
+  };
+  snapshot.people.senior_1 = senior;
+  return senior;
+}
 
 describe('dashboard view model', () => {
   it('summarizes the twin state for the React demo console', () => {
@@ -18,7 +38,7 @@ describe('dashboard view model', () => {
     expect(model.recentEvents.some((event) => event.label.includes('Bathroom leak'))).toBe(true);
     expect(model.telemetrySeries.length).toBeGreaterThan(0);
     expect(model.telemetrySeries[0].points.length).toBeGreaterThan(1);
-    expect(model.floorplanRooms.master_bedroom.people.map((person) => person.id)).toEqual(['adult_1', 'adult_2', 'senior_1']);
+    expect(model.floorplanRooms.master_bedroom.people.map((person) => person.id)).toEqual(['adult_1', 'adult_2']);
     expect(model.floorplanRooms.bathroom.devices.some((device) => device.id === 'water_leak_01' && device.active)).toBe(true);
     expect(model.floorplanRooms.bathroom.devices.some((device) => device.id === 'water_valve_01' && !device.active)).toBe(true);
   });
@@ -184,6 +204,10 @@ describe('dashboard view model', () => {
   it('explains pet-driven garden safety automation with readable facts', () => {
     const simulator = createSimulator({ seed: 1 });
     simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.devices.sprinkler_01.state = { ...snapshot.devices.sprinkler_01.state, valveOpen: true };
+    snapshot.devices.sprinkler_01.lastReason = 'test:sprinkler_on';
+    simulator.restore(snapshot, simulator.getEvents());
     simulator.advanceMinutes(258);
 
     const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
@@ -210,7 +234,6 @@ describe('dashboard view model', () => {
       'night_water_leak',
       'fridge_left_open',
       'door_left_open',
-      'senior_no_activity',
       'network_offline',
       'kitchen_air_quality'
     ]);
@@ -533,6 +556,9 @@ describe('dashboard view model', () => {
 
   it('models senior care risk from sleep sensor state and morning time window', () => {
     const simulator = createSimulator({ seed: 42 });
+    const snapshot = simulator.getSnapshot();
+    addSeniorToSnapshot(snapshot, 'master_bedroom', 'morning_rest');
+    simulator.restore(snapshot, simulator.getEvents());
     simulator.injectAbnormality('senior_no_activity');
 
     const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
@@ -679,7 +705,7 @@ describe('dashboard view model', () => {
 
     const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
 
-    expect(model.behaviorCards.map((card) => card.personId)).toEqual(['adult_2', 'child_1', 'adult_1', 'senior_1', 'pet_1']);
+    expect(model.behaviorCards.map((card) => card.personId)).toEqual(['adult_2', 'child_1', 'adult_1', 'pet_1']);
     expect(model.behaviorCards[0]).toMatchObject({
       personId: 'adult_2',
       label: 'Hybrid work adult',

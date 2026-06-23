@@ -5,8 +5,7 @@ export type ScenarioCardId =
   | 'door_left_open'
   | 'fridge_left_open'
   | 'kitchen_air_quality'
-  | 'network_offline'
-  | 'senior_no_activity';
+  | 'network_offline';
 
 export type ScenarioScriptAction =
   | { kind: 'startScenario'; scenarioId: StaticScenarioId }
@@ -48,15 +47,6 @@ export function createScenarioScriptPlan(cardId: string): ScenarioScriptAction[]
       { kind: 'startScenario', scenarioId: 'away_day' },
       { kind: 'advance', minutes: 8 },
       { kind: 'inject', abnormality: 'door_left_open' }
-    ];
-  }
-  if (cardId === 'senior_no_activity') {
-    return [
-      { kind: 'startScenario', scenarioId: 'weekday_normal' },
-      { kind: 'advance', minutes: 140 },
-      { kind: 'inject', abnormality: 'senior_no_activity' },
-      { kind: 'advance', minutes: 2 },
-      { kind: 'resolve', abnormality: 'senior_no_activity' }
     ];
   }
   if (cardId === 'network_offline') {
