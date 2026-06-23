@@ -194,6 +194,29 @@ describe('virtual home simulator MVP', () => {
     ))).toBe(true);
   });
 
+  it('keeps sleeping-mode pet movement from turning on lights', () => {
+    const simulator = createSimulator({ seed: 7 });
+
+    simulator.startDailyScenario({ date: '2026-01-14', seed: 7 });
+    simulator.advanceMinutes(55);
+    const snapshot = simulator.getSnapshot();
+    const events = simulator.getEvents();
+    const petMoves = events.filter((event): event is PersonMovedEvent => (
+      event.type === 'PersonMoved' &&
+      event.personId === 'pet_1'
+    ));
+    const sleepLightOnEvents = events.filter((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceType === 'light' &&
+      event.state.power === 'on' &&
+      event.simTime < '2026-01-14T07:29:00+08:00'
+    ));
+
+    expect(snapshot.homeState.mode).toBe('sleeping');
+    expect(petMoves.length).toBeGreaterThan(0);
+    expect(sleepLightOnEvents).toEqual([]);
+  });
+
   it('pauses garden watering when the pet enters the sprinkler zone', () => {
     const simulator = createSimulator({ seed: 1 });
 
