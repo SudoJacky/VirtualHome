@@ -18,6 +18,12 @@ import {
   type HomeMemoryGraphHighlight,
   type HomeMemoryGraphNode
 } from './homeMemoryGraphModel';
+import {
+  createEventEvidenceFlow,
+  createHypothesisReasoning,
+  type EventEvidenceFlow,
+  type HypothesisReasoning
+} from './homeMemoryReasoning';
 import { createHomeProfileHypotheses, type ProfileHypothesis } from './homeProfiler';
 
 type MemorySocketStatus = 'connecting' | 'live' | 'reconnecting' | 'paused' | 'offline';
@@ -178,6 +184,18 @@ export function HomeMemoryView(): React.ReactElement {
     () => graph.nodes.find((node) => node.id === selectedNodeId) ?? null,
     [graph.nodes, selectedNodeId]
   );
+  const selectedHypothesis = React.useMemo(
+    () => hypothesisForNode(hypotheses, selectedNode) ?? hypotheses.find((hypothesis) => hypothesis.type === 'household_size') ?? hypotheses[0] ?? null,
+    [hypotheses, selectedNode]
+  );
+  const eventFlow = React.useMemo(
+    () => createEventEvidenceFlow(memory, hypotheses, memory.recentEvents[0] ?? null),
+    [hypotheses, memory]
+  );
+  const hypothesisReasoning = React.useMemo(
+    () => (selectedHypothesis ? createHypothesisReasoning(memory, selectedHypothesis) : null),
+    [memory, selectedHypothesis]
+  );
   const status: MemorySocketStatus = paused ? 'paused' : connectionStatus;
 
   React.useEffect(() => {
@@ -263,6 +281,12 @@ export function HomeMemoryView(): React.ReactElement {
             lastUpdateAt={lastUpdateAt}
             onSelectHypothesis={(nodeId) => setSelectedNodeId(nodeId)}
           />
+          <ReasoningFlowPanel
+            eventFlow={eventFlow}
+            hypothesisReasoning={hypothesisReasoning}
+            selectedHypothesis={selectedHypothesis}
+            onSelectHypothesis={(nodeId) => setSelectedNodeId(nodeId)}
+          />
           <SelectedMemoryPanel
             memory={memory}
             hypotheses={hypotheses}
@@ -294,6 +318,13 @@ function latestBySequence(events: DeviceValueEvent[]): DeviceValueEvent {
 
 function sortedUnique(values: string[]): string[] {
   return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+}
+
+function hypothesisForNode(hypotheses: ProfileHypothesis[], node: HomeMemoryGraphNode | null): ProfileHypothesis | null {
+  if (!node || node.kind !== 'hypothesis') {
+    return null;
+  }
+  return hypotheses.find((hypothesis) => `hypothesis:${hypothesis.id}` === node.id) ?? null;
 }
 
 function ProfileStatsPanel({
@@ -342,6 +373,92 @@ function ProfileStatsPanel({
         {hypotheses.length === 0 ? <p className="muted">No profile hypotheses yet.</p> : null}
       </div>
     </section>
+  );
+}
+
+function ReasoningFlowPanel({
+  eventFlow,
+  hypothesisReasoning,
+  selectedHypothesis,
+  onSelectHypothesis
+}: {
+  eventFlow: EventEvidenceFlow | null;
+  hypothesisReasoning: HypothesisReasoning | null;
+  selectedHypothesis: ProfileHypothesis | null;
+  onSelectHypothesis: (nodeId: string) => void;
+}): React.ReactElement {
+  return (
+    <section className="memory-panel reasoning-flow-panel">
+      <div className="panel-heading">
+        <div>
+          <span className="eyebrow">Reasoning flow</span>
+          <h2>Event to profile</h2>
+        </div>
+      </div>
+      {eventFlow ? (
+        <div className="reasoning-flow-block">
+          <strong>{eventFlow.title}</strong>
+          <ReasoningSteps steps={eventFlow.steps} />
+          {eventFlow.relatedHypotheses.length > 0 ? (
+            <div className="reasoning-chip-row">
+              {eventFlow.relatedHypotheses.slice(0, 4).map((hypothesis) => (
+                <button
+                  key={hypothesis.id}
+                  onClick={() => onSelectHypothesis(`hypothesis:${hypothesis.id}`)}
+                  title={hypothesis.summary}
+                >
+                  {hypothesis.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <p className="muted">Waiting for a device event to explain the flow.</p>
+      )}
+
+      {hypothesisReasoning && selectedHypothesis ? (
+        <div className="reasoning-flow-block">
+          <div className="reasoning-result">
+            <span>{selectedHypothesis.type.replaceAll('_', ' ')}</span>
+            <strong>{hypothesisReasoning.result}</strong>
+          </div>
+          <div className="reasoning-inputs">
+            {hypothesisReasoning.inputs.map((input) => (
+              <div key={input.label}>
+                <span>{input.label}</span>
+                <strong>{input.value}</strong>
+              </div>
+            ))}
+          </div>
+          <div className="reasoning-rule">
+            <span>Rule matched</span>
+            <p>{hypothesisReasoning.rule}</p>
+          </div>
+          <ReasoningSteps steps={hypothesisReasoning.steps} />
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function ReasoningSteps({ steps }: { steps: Array<{ label: string; detail: string; metrics?: Array<{ label: string; value: string }> }> }): React.ReactElement {
+  return (
+    <ol className="reasoning-steps">
+      {steps.map((step) => (
+        <li key={step.label}>
+          <strong>{step.label}</strong>
+          <p>{step.detail}</p>
+          {step.metrics ? (
+            <div className="reasoning-metrics">
+              {step.metrics.map((metric) => (
+                <span key={metric.label}>{metric.label}: {metric.value}</span>
+              ))}
+            </div>
+          ) : null}
+        </li>
+      ))}
+    </ol>
   );
 }
 

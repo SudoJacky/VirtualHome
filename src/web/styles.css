@@ -593,6 +593,127 @@ button:hover {
   font-size: 12px;
 }
 
+.reasoning-flow-panel {
+  gap: 16px;
+}
+
+.reasoning-flow-block {
+  border-top: 1px solid #edf1f2;
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+}
+
+.reasoning-flow-block > strong {
+  color: #20343b;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.reasoning-result {
+  background: #f8faf9;
+  border: 1px solid #dce6e5;
+  border-radius: 6px;
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+}
+
+.reasoning-result span,
+.reasoning-rule span,
+.reasoning-inputs span,
+.reasoning-steps p,
+.reasoning-metrics span {
+  color: #60757b;
+  font-size: 12px;
+}
+
+.reasoning-result strong {
+  color: #20343b;
+  font-size: 18px;
+}
+
+.reasoning-inputs {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.reasoning-inputs div {
+  background: #f6f9f8;
+  border: 1px solid #dce6e5;
+  border-radius: 6px;
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+}
+
+.reasoning-rule {
+  background: #fffaf0;
+  border: 1px solid #efd8a9;
+  border-radius: 6px;
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+}
+
+.reasoning-rule p,
+.reasoning-steps p {
+  margin: 0;
+}
+
+.reasoning-steps {
+  counter-reset: reasoning-step;
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.reasoning-steps li {
+  border-left: 2px solid #d7e1df;
+  display: grid;
+  gap: 4px;
+  padding-left: 12px;
+  position: relative;
+}
+
+.reasoning-steps li::before {
+  background: #267e71;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  content: "";
+  height: 8px;
+  left: -5px;
+  position: absolute;
+  top: 4px;
+  width: 8px;
+}
+
+.reasoning-steps strong {
+  color: #20343b;
+  font-size: 13px;
+}
+
+.reasoning-metrics,
+.reasoning-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.reasoning-metrics span,
+.reasoning-chip-row button {
+  background: #edf3f2;
+  border-radius: 999px;
+  padding: 4px 8px;
+}
+
+.reasoning-chip-row button {
+  min-height: 0;
+}
+
 .memory-event-strip {
   overflow: hidden;
 }
