@@ -398,6 +398,7 @@ describe('virtual home simulator MVP', () => {
     const events = simulator.getEvents();
 
     expect(updated.devices.living_ac_01.state).toMatchObject({ power: 'on', targetC: 25, mode: 'cool' });
+    expect(updated.people.adult_1.activity).toBe('reading');
     expect(events.some((event): event is PersonMovedEvent => (
       event.type === 'PersonMoved' &&
       event.personId === 'adult_1' &&
@@ -414,6 +415,33 @@ describe('virtual home simulator MVP', () => {
       event.ruleId === 'room_climate_comfort' &&
       event.eventExplanation?.actorIds.includes('adult_1') === true
     ))).toBe(true);
+  });
+
+  it('keeps rule-controlled air conditioning on until the comfort target is reached', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T20:00:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_1 = { ...snapshot.people.adult_1, location: 'living_room', activity: 'reading' };
+    snapshot.rooms.living_room.temperatureC = 28.4;
+    snapshot.rooms.living_room.humidityPercent = 57;
+    snapshot.devices.living_ac_01.state = { ...snapshot.devices.living_ac_01.state, power: 'on', targetC: 25, mode: 'cool' };
+    snapshot.devices.living_ac_01.lastReason = 'operator:climate:living_room:adult_1:occupied_cooling';
+    simulator.restore(snapshot, simulator.getEvents());
+
+    simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+    const events = simulator.getEvents();
+
+    expect(updated.devices.living_ac_01.state).toMatchObject({ power: 'on', targetC: 25, mode: 'cool' });
+    expect(updated.rooms.living_room.temperatureC).toBeLessThan(28.4);
+    expect(events.some((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'living_ac_01' &&
+      event.state.power === 'off'
+    ))).toBe(false);
   });
 
   it('uses automatic climate support for sleeping bedroom occupants without waking them', () => {

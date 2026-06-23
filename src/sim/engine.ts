@@ -1802,7 +1802,7 @@ class Simulator implements VirtualHomeSimulator {
         occupants,
         temperatureC,
         humidityPercent,
-        allowedToChange: climateRuleControlled
+        allowedToChange: climateRuleControlled && !this.shouldContinueClimateSupport(ac, temperatureC)
       }));
     }
     return events;
@@ -1827,7 +1827,12 @@ class Simulator implements VirtualHomeSimulator {
 
     const events: TwinEvent[] = [];
     if (input.actor) {
+      const originalLocation = input.actor.location;
+      const originalActivity = input.actor.activity;
       events.push(...this.createRoutedPersonMovedEvents(input.actor.id, input.roomId, `controlling_${input.deviceId}`, input.reason));
+      input.actor.location = originalLocation;
+      input.actor.activity = originalActivity;
+      this.updatePersonBehavior(input.actor.id);
     }
     events.push(this.setDeviceState(input.deviceId, input.patch, input.reason));
     events.push(this.createEvent({
@@ -1854,6 +1859,21 @@ class Simulator implements VirtualHomeSimulator {
       reason.startsWith(`operator:climate:${roomId}:`) ||
       reason.startsWith(`automation:climate:${roomId}:`)
     );
+  }
+
+  private shouldContinueClimateSupport(device: DeviceState, temperatureC: number): boolean {
+    if (device.state.power !== 'on') {
+      return false;
+    }
+    const targetC = Number(device.state.targetC ?? 26);
+    const mode = String(device.state.mode ?? 'auto');
+    if (mode === 'cool') {
+      return temperatureC > targetC + 0.4;
+    }
+    if (mode === 'heat') {
+      return temperatureC < targetC - 0.4;
+    }
+    return Math.abs(temperatureC - targetC) > 0.4;
   }
 
   private devicePatchChanges(deviceId: string, patch: Record<string, string | number | boolean | null>): boolean {
