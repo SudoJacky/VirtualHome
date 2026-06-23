@@ -82,7 +82,8 @@ describe('dashboard view model', () => {
 
     const merged = mergeTwinEvents(events, events);
 
-    expect(merged).toHaveLength(events.length);
+    expect(merged).toHaveLength(Math.min(events.length, 100));
+    expect(new Set(merged.map((event) => event.id)).size).toBe(merged.length);
   });
 
   it('keeps the frontend event stream isolated to the active run', () => {
@@ -409,6 +410,21 @@ describe('dashboard view model', () => {
       .toBeGreaterThan(holiday.twinInference.homeMode.probabilities.away);
     expect(holiday.twinInference.homeMode.probabilities.evening_home)
       .toBeGreaterThan(workday.twinInference.homeMode.probabilities.evening_home);
+  });
+
+  it('exposes simulation calendar context for the dashboard header', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startDailyScenario({ date: '2026-07-14', seed: 42 });
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+
+    expect(model.simCalendar).toMatchObject({
+      date: '2026-07-14',
+      dayOfWeekLabel: 'Tue',
+      dayTypeLabel: 'Weekday',
+      seasonLabel: 'Summer',
+      schoolDayLabel: 'School day',
+      fullLabel: '2026-07-14 Tue 05:11 · Summer · Weekday · School day'
+    });
   });
 
   it('adds numeric telemetry forecast points to prediction cards', () => {
@@ -751,7 +767,7 @@ describe('dashboard view model', () => {
     expect(model.behaviorCards.find((card) => card.personId === 'child_1')).toMatchObject({
       routinePhase: 'after school',
       intent: 'finish homework',
-      attentionTarget: 'Child Bedroom'
+      attentionTarget: 'Living Room'
     });
   });
 
@@ -789,7 +805,7 @@ describe('dashboard view model', () => {
       why: 'child_1 is in after_school with intent finish_homework.',
       actors: ['Student'],
       affectedDevices: expect.arrayContaining(['Child Sleep Sensor', 'Living Room Light', 'Living Room TV']),
-      affectedRooms: ['Child Bedroom', 'Living Room'],
+      affectedRooms: ['Living Room', 'Child Bedroom'],
       relatedIntent: 'finish homework',
       expectedOutcome: 'Reduce entertainment distraction while the student finishes homework.',
       actions: ['mark child out of bed', 'turn off tv for homework', 'dim living light for homework']
@@ -798,11 +814,11 @@ describe('dashboard view model', () => {
       personId: 'child_1',
       intent: 'finish homework',
       routinePhase: 'after school',
-      nextPlan: 'Continue finish homework near Child Bedroom',
+      nextPlan: 'Continue finish homework near Living Room',
       memorySummary: expect.stringContaining('child_1 memory summary'),
       nextCommitment: expect.objectContaining({
         activity: 'study homework',
-        roomName: 'Child Bedroom',
+        roomName: 'Living Room',
         pressure: expect.any(Number),
         source: 'role'
       }),
@@ -827,7 +843,7 @@ describe('dashboard view model', () => {
 
       expect(childAudit?.nextCommitment).toMatchObject({
         activity: 'study homework',
-        roomName: 'Child Bedroom',
+        roomName: 'Living Room',
         source: 'role'
       });
       expect(childAudit?.nextCommitment?.pressure ?? 0).toBeGreaterThan(0);

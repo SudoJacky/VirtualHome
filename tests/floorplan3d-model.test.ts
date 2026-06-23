@@ -421,8 +421,8 @@ describe('3D floorplan layout and model', () => {
     const remoteWorkModel = createFloorplan3DModel(remoteWorkSimulator.getSnapshot(), remoteWorkSimulator.getEvents());
 
     expect(homeworkModel.eventReplays.find((replay) => replay.ruleId === 'child_homework_focus')).toMatchObject({
-      roomId: 'child_bedroom',
-      sourceDeviceId: 'child_sleep_01',
+      roomId: 'living_room',
+      sourceDeviceId: 'living_motion_01',
       targetDeviceId: 'tv_01',
       focusDeviceId: 'tv_01'
     });

@@ -29,7 +29,7 @@ export function createDailyCommitments(input: DailyCommitmentInput): DailyCommit
     commitments.push(commitment(input.persona, 'remote_work_session', 'study', 9 * 60 + jitter, 17 * 60, 86, 'role'));
   }
   if (input.persona.role === 'student' && externalContext.calendar.schoolDay) {
-    commitments.push(commitment(input.persona, 'study_homework', 'child_bedroom', 16 * 60 + 20 + jitter, 18 * 60 + 20, 84, 'role'));
+    commitments.push(commitment(input.persona, 'study_homework', 'living_room', 16 * 60 + 20 + jitter, 18 * 60 + 20, 84, 'role'));
   }
   if (input.persona.role === 'senior') {
     commitments.push(commitment(input.persona, 'take_medicine', 'master_bedroom', 8 * 60 + 10 + jitter, 10 * 60, 82, 'care'));

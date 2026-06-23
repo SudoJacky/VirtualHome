@@ -709,8 +709,8 @@ function automationLinkForRule(ruleId: string): Pick<FloorplanAutomationLink, 'r
       severity: 'warning'
     },
     child_homework_focus: {
-      roomId: 'child_bedroom',
-      sourceDeviceId: 'child_sleep_01',
+      roomId: 'living_room',
+      sourceDeviceId: 'living_motion_01',
       targetDeviceId: 'tv_01',
       severity: 'info'
     },

@@ -221,7 +221,9 @@ button:hover {
 .run-status {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
+  justify-content: flex-end;
 }
 
 .status-pill,
@@ -238,6 +240,14 @@ button:hover {
 .status-pill {
   color: #41575d;
   font-size: 14px;
+}
+
+.sim-time {
+  color: #263f46;
+  font-size: 14px;
+  line-height: 1.35;
+  max-width: 360px;
+  white-space: normal;
 }
 
 .status-pill i {

@@ -19,6 +19,7 @@ export interface DashboardEvent {
 export interface DashboardModel {
   homeMode: string;
   simTime: string;
+  simCalendar: SimulationCalendarContext;
   occupancyCount: number;
   occupiedRooms: string[];
   activeDeviceCount: number;
@@ -72,6 +73,16 @@ export interface DashboardModel {
     }>;
     activeDeviceCount: number;
   }>;
+}
+
+export interface SimulationCalendarContext {
+  date: string;
+  time: string;
+  dayOfWeekLabel: string;
+  dayTypeLabel: string;
+  seasonLabel: string;
+  schoolDayLabel: string;
+  fullLabel: string;
 }
 
 export interface TwinInferencePanel {
@@ -573,6 +584,7 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
   return {
     homeMode: snapshot.homeState.mode,
     simTime: snapshot.simClock.currentTime,
+    simCalendar: createSimulationCalendarContext(snapshot),
     occupancyCount: snapshot.homeState.occupancyCount,
     occupiedRooms,
     activeDeviceCount,
@@ -604,6 +616,25 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
     insightCards: createInsightCards(snapshot, telemetrySeries, deviceHealthCards),
     telemetrySeries,
     floorplanRooms: createFloorplanRooms(snapshot, visibleEvents)
+  };
+}
+
+function createSimulationCalendarContext(snapshot: TwinSnapshot): SimulationCalendarContext {
+  const date = snapshot.simClock.currentTime.slice(0, 10);
+  const time = snapshot.simClock.currentTime.slice(11, 16);
+  const calendar = createExternalContext({ date, seed: snapshot.runContext.seed }).calendar;
+  const dayOfWeekLabel = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][calendar.dayOfWeek] ?? 'Unknown';
+  const dayTypeLabel = calendar.dayType === 'weekday' ? 'Weekday' : 'Weekend';
+  const seasonLabel = calendar.season.charAt(0).toUpperCase() + calendar.season.slice(1);
+  const schoolDayLabel = calendar.schoolDay ? 'School day' : calendar.holidayName ? `No school (${calendar.holidayName})` : 'No school';
+  return {
+    date,
+    time,
+    dayOfWeekLabel,
+    dayTypeLabel,
+    seasonLabel,
+    schoolDayLabel,
+    fullLabel: `${date} ${dayOfWeekLabel} ${time} · ${seasonLabel} · ${dayTypeLabel} · ${schoolDayLabel}`
   };
 }
 

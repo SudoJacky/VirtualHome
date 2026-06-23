@@ -40,6 +40,12 @@ describe('virtual home simulator MVP', () => {
       'doorbell_camera_01',
       'package_sensor_01',
       'robot_vacuum_01',
+      'living_ac_01',
+      'master_ac_01',
+      'child_ac_01',
+      'master_light_01',
+      'child_light_01',
+      'study_light_01',
       'dishwasher_01',
       'router_01',
       'washer_01'
@@ -236,6 +242,87 @@ describe('virtual home simulator MVP', () => {
     expect(sleepLightOnEvents).toEqual([]);
   });
 
+  it('turns on private and work room lights only for awake human occupancy', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T14:00:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_1 = { ...snapshot.people.adult_1, location: 'master_bedroom', activity: 'reading' };
+    snapshot.people.adult_2 = { ...snapshot.people.adult_2, location: 'study', activity: 'remote_work' };
+    snapshot.people.child_1 = { ...snapshot.people.child_1, location: 'living_room', activity: 'homework' };
+    snapshot.devices.master_light_01.state = { ...snapshot.devices.master_light_01.state, power: 'off', brightness: 0 };
+    snapshot.devices.study_light_01.state = { ...snapshot.devices.study_light_01.state, power: 'off', brightness: 0 };
+    snapshot.devices.child_light_01.state = { ...snapshot.devices.child_light_01.state, power: 'off', brightness: 0 };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+    const events = simulator.getEvents();
+
+    expect(updated.devices.master_light_01.state).toMatchObject({ power: 'on', brightness: 68 });
+    expect(updated.devices.study_light_01.state).toMatchObject({ power: 'on', brightness: 62 });
+    expect(updated.devices.child_light_01.state.power).toBe('off');
+    expect(events.some((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'master_light_01' &&
+      event.reason === 'habit:adult_1:reading:lights_on'
+    ))).toBe(true);
+  });
+
+  it('turns off rule-controlled bedroom and study lights when rooms empty or occupants sleep', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T22:30:00+08:00';
+    snapshot.homeState.mode = 'sleeping';
+    snapshot.people.adult_1 = { ...snapshot.people.adult_1, location: 'master_bedroom', activity: 'sleeping' };
+    snapshot.people.adult_2 = { ...snapshot.people.adult_2, location: 'master_bedroom', activity: 'sleeping' };
+    snapshot.people.child_1 = { ...snapshot.people.child_1, location: 'child_bedroom', activity: 'sleeping' };
+    snapshot.devices.master_light_01.state = { ...snapshot.devices.master_light_01.state, power: 'on', brightness: 68 };
+    snapshot.devices.master_light_01.lastReason = 'habit:adult_1:reading:lights_on';
+    snapshot.devices.study_light_01.state = { ...snapshot.devices.study_light_01.state, power: 'on', brightness: 62 };
+    snapshot.devices.study_light_01.lastReason = 'habit:adult_2:remote_work:lights_on';
+    snapshot.devices.child_light_01.state = { ...snapshot.devices.child_light_01.state, power: 'on', brightness: 70 };
+    snapshot.devices.child_light_01.lastReason = 'habit:child_1:reading:lights_on';
+    simulator.restore(snapshot, simulator.getEvents());
+
+    simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.devices.master_light_01.state.power).toBe('off');
+    expect(updated.devices.study_light_01.state.power).toBe('off');
+    expect(updated.devices.child_light_01.state.power).toBe('off');
+  });
+
+  it('does not let pet-only movement turn on bedroom or study lights', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T14:00:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_1 = { ...snapshot.people.adult_1, location: 'living_room', activity: 'reading' };
+    snapshot.people.adult_2 = { ...snapshot.people.adult_2, location: 'kitchen', activity: 'cooking_dinner' };
+    snapshot.people.child_1 = { ...snapshot.people.child_1, location: 'living_room', activity: 'homework' };
+    snapshot.people.pet_1 = { ...snapshot.people.pet_1, location: 'child_bedroom', activity: 'pet_patrol' };
+    snapshot.devices.child_light_01.state = { ...snapshot.devices.child_light_01.state, power: 'off', brightness: 0 };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+    const events = simulator.getEvents();
+
+    expect(updated.devices.child_light_01.state.power).toBe('off');
+    expect(events.some((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'child_light_01' &&
+      event.state.power === 'on'
+    ))).toBe(false);
+  });
+
   it('pauses garden watering when the pet enters the sprinkler zone', () => {
     const simulator = createSimulator({ seed: 1 });
 
@@ -291,6 +378,145 @@ describe('virtual home simulator MVP', () => {
     });
   });
 
+  it('lets an awake occupant control living room air conditioning when the room is too warm', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T20:00:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_1 = { ...snapshot.people.adult_1, location: 'living_room', activity: 'reading' };
+    snapshot.people.adult_2 = { ...snapshot.people.adult_2, location: 'living_room', activity: 'family_time' };
+    snapshot.people.child_1 = { ...snapshot.people.child_1, location: 'living_room', activity: 'homework' };
+    snapshot.rooms.living_room.temperatureC = 29.4;
+    snapshot.rooms.living_room.humidityPercent = 58;
+    snapshot.devices.living_ac_01.state = { ...snapshot.devices.living_ac_01.state, power: 'off', targetC: 26, mode: 'auto' };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+    const events = simulator.getEvents();
+
+    expect(updated.devices.living_ac_01.state).toMatchObject({ power: 'on', targetC: 25, mode: 'cool' });
+    expect(events.some((event): event is PersonMovedEvent => (
+      event.type === 'PersonMoved' &&
+      event.personId === 'adult_1' &&
+      event.to === 'living_room' &&
+      event.activity === 'controlling_living_ac_01'
+    ))).toBe(true);
+    expect(events.some((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'living_ac_01' &&
+      event.reason === 'operator:climate:living_room:adult_1:occupied_cooling'
+    ))).toBe(true);
+    expect(events.some((event): event is AutomationTriggeredEvent => (
+      event.type === 'AutomationTriggered' &&
+      event.ruleId === 'room_climate_comfort' &&
+      event.eventExplanation?.actorIds.includes('adult_1') === true
+    ))).toBe(true);
+  });
+
+  it('uses automatic climate support for sleeping bedroom occupants without waking them', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('night_water_leak');
+    const snapshot = simulator.getSnapshot();
+    snapshot.rooms.child_bedroom.temperatureC = 16.8;
+    snapshot.rooms.child_bedroom.humidityPercent = 51;
+    snapshot.devices.child_ac_01.state = { ...snapshot.devices.child_ac_01.state, power: 'off', targetC: 26, mode: 'auto' };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+    const events = simulator.getEvents();
+
+    expect(updated.people.child_1.activity).toBe('sleeping');
+    expect(updated.devices.child_ac_01.state).toMatchObject({ power: 'on', targetC: 21, mode: 'heat' });
+    expect(events.some((event): event is PersonMovedEvent => (
+      event.type === 'PersonMoved' &&
+      event.personId === 'child_1' &&
+      event.activity === 'controlling_child_ac_01'
+    ))).toBe(false);
+    expect(events.some((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'child_ac_01' &&
+      event.reason === 'automation:climate:child_bedroom:occupied_heating'
+    ))).toBe(true);
+  });
+
+  it('does not start room air conditioning for an empty room', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T14:00:00+08:00';
+    snapshot.homeState.mode = 'morning';
+    snapshot.people.adult_1 = { ...snapshot.people.adult_1, location: 'living_room', activity: 'reading' };
+    snapshot.people.adult_2 = { ...snapshot.people.adult_2, location: 'study', activity: 'remote_work' };
+    snapshot.people.child_1 = { ...snapshot.people.child_1, location: 'living_room', activity: 'homework' };
+    snapshot.rooms.master_bedroom.temperatureC = 30.2;
+    snapshot.devices.master_ac_01.state = { ...snapshot.devices.master_ac_01.state, power: 'off', targetC: 26, mode: 'auto' };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+    const events = simulator.getEvents();
+
+    expect(updated.devices.master_ac_01.state.power).toBe('off');
+    expect(events.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'room_climate_comfort' && event.eventExplanation?.affectedRoomIds.includes('master_bedroom'))).toBe(false);
+  });
+
+  it('turns off rule-controlled room air conditioning when the room becomes empty', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T14:00:00+08:00';
+    snapshot.homeState.mode = 'morning';
+    snapshot.people.adult_1 = { ...snapshot.people.adult_1, location: 'living_room', activity: 'reading' };
+    snapshot.people.adult_2 = { ...snapshot.people.adult_2, location: 'study', activity: 'remote_work' };
+    snapshot.people.child_1 = { ...snapshot.people.child_1, location: 'living_room', activity: 'homework' };
+    snapshot.rooms.master_bedroom.temperatureC = 24.8;
+    snapshot.devices.master_ac_01.state = { ...snapshot.devices.master_ac_01.state, power: 'on', targetC: 25, mode: 'cool' };
+    snapshot.devices.master_ac_01.lastReason = 'operator:climate:master_bedroom:adult_1:occupied_cooling';
+    simulator.restore(snapshot, simulator.getEvents());
+
+    simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+    const events = simulator.getEvents();
+
+    expect(updated.devices.master_ac_01.state).toMatchObject({ power: 'off', mode: 'auto' });
+    expect(events.some((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'master_ac_01' &&
+      event.reason === 'habit:climate:master_bedroom:vacant_or_comfortable'
+    ))).toBe(true);
+  });
+
+  it('moves an active air conditioner room temperature toward the target and reports telemetry', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T14:00:00+08:00';
+    snapshot.homeState.mode = 'morning';
+    snapshot.rooms.living_room.temperatureC = 29.4;
+    snapshot.rooms.living_room.humidityPercent = 58;
+    snapshot.devices.living_ac_01.state = { ...snapshot.devices.living_ac_01.state, power: 'on', targetC: 25, mode: 'cool' };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.rooms.living_room.temperatureC).toBeLessThan(29.4);
+    expect(events.some((event): event is DeviceTelemetryEvent => (
+      event.type === 'DeviceTelemetry' &&
+      event.deviceId === 'living_ac_01' &&
+      event.measurements.power_on === true &&
+      event.measurements.target_c === 25
+    ))).toBe(true);
+  });
+
   it('applies a commuter arrival scene when adult 1 gets home', () => {
     const simulator = createSimulator({ seed: 42 });
 
@@ -333,7 +559,7 @@ describe('virtual home simulator MVP', () => {
     expect(snapshot.people.child_1.behavior).toMatchObject({
       routinePhase: 'after_school',
       intent: 'finish_homework',
-      attentionTarget: 'child_bedroom',
+      attentionTarget: 'living_room',
       energy: 62
     });
   });
@@ -346,6 +572,7 @@ describe('virtual home simulator MVP', () => {
     const snapshot = simulator.getSnapshot();
     const events = simulator.getEvents();
 
+    expect(snapshot.people.child_1.location).toBe('living_room');
     expect(snapshot.people.child_1.activity).toBe('homework');
     expect(snapshot.devices.child_sleep_01.state.inBed).toBe(false);
     expect(snapshot.devices.tv_01.state).toMatchObject({ power: 'off', volume: 0 });
@@ -366,7 +593,7 @@ describe('virtual home simulator MVP', () => {
         why: 'child_1 is in after_school with intent finish_homework.',
         actorIds: ['child_1'],
         affectedDeviceIds: ['child_sleep_01', 'tv_01', 'living_light_01'],
-        affectedRoomIds: ['child_bedroom', 'living_room'],
+        affectedRoomIds: ['living_room', 'child_bedroom'],
         relatedIntent: 'finish_homework',
         expectedOutcome: 'Reduce entertainment distraction while the student finishes homework.'
       }
@@ -984,7 +1211,7 @@ describe('virtual home simulator MVP', () => {
     const events = simulator.advanceMinutes(1);
     const updated = simulator.getSnapshot();
 
-    expect(updated.people.child_1.location).toBe('child_bedroom');
+    expect(updated.people.child_1.location).toBe('living_room');
     expect(updated.people.child_1.activity).toBe('homework');
     expect(updated.devices.tv_01.state).toMatchObject({ power: 'off', volume: 0 });
     expect(events.some((event): event is ConversationOccurredEvent => (
@@ -2086,6 +2313,41 @@ describe('virtual home simulator MVP', () => {
     expect(snapshot.simClock.currentTime.startsWith('2026-07-14')).toBe(true);
     expect(events.some((event) => event.type === 'PersonMoved' && event.personId === 'child_1' && event.to === 'away' && event.activity === 'school')).toBe(true);
     expect(events.some((event) => event.type === 'DeviceStateChanged' && event.deviceId === 'sprinkler_01' && event.state.valveOpen === true)).toBe(true);
+  });
+
+  it('keeps school activity consistent with being away from home', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T09:00:00+08:00';
+    snapshot.homeState.mode = 'morning';
+    snapshot.people.child_1 = { ...snapshot.people.child_1, location: 'living_room', activity: 'school' };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.people.child_1).toMatchObject({ location: 'away', activity: 'school' });
+    expect(events.some((event): event is PersonMovedEvent => (
+      event.type === 'PersonMoved' &&
+      event.personId === 'child_1' &&
+      event.to === 'away' &&
+      event.activity === 'school' &&
+      event.reason === 'rule:school_location_consistency'
+    ))).toBe(true);
+  });
+
+  it('does not create weekend homework reminders from school-day pressure', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startDailyScenario({ date: '2026-07-18', seed: 42 });
+    simulator.advanceMinutes(650);
+    const snapshot = simulator.getSnapshot();
+    const events = simulator.getEvents();
+
+    expect(snapshot.people.child_1.activity).not.toBe('homework');
+    expect(events.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'parent_homework_reminder')).toBe(false);
   });
 });
 

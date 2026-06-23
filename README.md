@@ -2,6 +2,10 @@
 
 Standalone smart-home simulation and digital-twin demo.
 
+## Simulator & Dynamic Home Memory
+
+![VirtualHome simulator and dynamic home memory console](./imgs/show1.PNG)
+
 ## Run
 
 Install dependencies:
@@ -45,16 +49,24 @@ http://127.0.0.1:5173
 ## What is implemented
 
 - TypeScript simulation core for one default model-driven virtual family home.
-- Nine rooms, four human family members, one pet, and 30 virtual devices loaded from `src/sim/defaultHomeDefinition.json`.
+- Nine rooms, three human family members, one pet, and 35 virtual devices loaded from `src/sim/defaultHomeDefinition.json`.
 - Three static scenarios plus generated daily routines from date and seed.
 - Internal twin events for people movement, device state, telemetry, rules, alerts, scenario control, and recovery.
+- Household routines keep device control tied to plausible user actions, sensor observations, or deterministic automation rules.
 - SQLite-backed append-only events, optionally capped telemetry, idempotency records, and checkpointed state snapshots.
-- Startup recovery from persisted snapshots with event replay.
+- Startup recovery from persisted snapshots with event replay. Persisted snapshots are ignored when their home definition no longer matches the current rooms, devices, people, or home id.
 - Fastify REST API, OpenAPI document at `/api/openapi.json`, and WebSocket event-delta updates with heartbeat/reconnect cursors.
 - Adapter-facing device twin view at `/api/device-twins` with desired state, reported state, connectivity, freshness, and command acknowledgement metadata.
 - Telemetry summary endpoint at `/api/telemetry/summary` for aggregated metrics over recent event windows.
 - Server-side privacy projection for public state/events.
 - React demo console with floorplan, device state, alerts, timeline, scenario controls, daily routine generation, manual advance, pause/resume, abnormality injection, retryable commands, and recovery actions.
+
+## Simulation realism
+
+- Device state changes are generated from explicit scenario steps, manual commands, sensor-triggered rules, or routine behavior with a concrete household actor.
+- Fully automated devices, such as robot vacuum behavior and safety recovery, are modeled as automation rather than as implicit pet or random user control.
+- Sleep and away states constrain routine behavior so lights, appliances, and mobile devices do not keep acting as if the household were awake.
+- The 3D floorplan animates recent people and pet movement, but suppresses ambient pet/routine movement trails so frequent movement does not leave noisy blue route lines.
 
 ## Boundary
 
@@ -71,6 +83,7 @@ This repository is still a single-home simulation sandbox. It now exposes protoc
 - `GET /api/audit/access` returns recent read-access audit records for privacy-sensitive APIs.
 - `POST /api/daily/start`, `/api/scenarios/:id/start`, and `/api/control/*` mutate the simulation. Control requests accept `idempotencyKey` for safe retries.
 - `GET /ws` streams `twin.update` event deltas and `twin.heartbeat` messages. Clients reconnect with `runId` and `afterSequence`.
+- `GET /ws/device-events` streams flattened `device.update` deltas for adapter-style consumers that only need device telemetry and state changes.
 
 ## Verification
 

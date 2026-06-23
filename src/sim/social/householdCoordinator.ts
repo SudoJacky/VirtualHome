@@ -300,7 +300,7 @@ function createHomeworkReminderDecision(context: HouseholdSocialContext): Social
     kind: 'conversation',
     ruleId: 'parent_homework_reminder',
     actorIds: [parentId, 'child_1'],
-    targetRoom: 'child_bedroom',
+    targetRoom: 'living_room',
     targetActivity: 'homework',
     conversationTopic: 'homework_reminder',
     reason: 'social:parent_homework_reminder'

@@ -15,6 +15,7 @@ import { applyActivityToInventory, createInitialInventory, resourcesFromInventor
 import { getDefaultHouseholdObjects } from './world/objects';
 import { createConversationDraft } from './social/conversationEvents';
 import { coordinateHousehold, type HouseholdSocialContext, type SocialDecision } from './social/householdCoordinator';
+import { createExternalContext } from './externalContext';
 import type {
   AbnormalityInjectedEvent,
   AlertCreatedEvent,
@@ -99,7 +100,7 @@ interface BehaviorProfile {
 const behaviorProfiles: Record<string, BehaviorProfile> = {
   adult_1: { role: 'commuter', preferredRooms: ['bathroom', 'kitchen', 'entrance', 'living_room'], activeLightLevel: 68 },
   adult_2: { role: 'remote_worker', preferredRooms: ['study', 'kitchen', 'living_room'], activeLightLevel: 62 },
-  child_1: { role: 'student', preferredRooms: ['child_bedroom', 'kitchen', 'living_room'], activeLightLevel: 70 },
+  child_1: { role: 'student', preferredRooms: ['living_room', 'kitchen', 'child_bedroom'], activeLightLevel: 70 },
   senior_1: { role: 'senior', preferredRooms: ['master_bedroom', 'dining_room', 'living_room', 'garden'], activeLightLevel: 74 },
   pet_1: { role: 'pet', preferredRooms: ['living_room', 'garden', 'kitchen', 'master_bedroom'], activeLightLevel: 0 }
 };
@@ -107,10 +108,19 @@ const behaviorProfiles: Record<string, BehaviorProfile> = {
 const roomLightDevices: Partial<Record<RoomId, string>> = {
   dining_room: 'dining_light_01',
   kitchen: 'kitchen_light_01',
-  living_room: 'living_light_01'
+  living_room: 'living_light_01',
+  master_bedroom: 'master_light_01',
+  child_bedroom: 'child_light_01',
+  study: 'study_light_01'
 };
 
-const publicQuietDeviceIds = ['living_light_01', 'kitchen_light_01', 'dining_light_01', 'tv_01', 'range_hood_01'] as const;
+const roomClimateDevices: Partial<Record<RoomId, string>> = {
+  living_room: 'living_ac_01',
+  master_bedroom: 'master_ac_01',
+  child_bedroom: 'child_ac_01'
+};
+
+const publicQuietDeviceIds = ['living_light_01', 'kitchen_light_01', 'dining_light_01', 'master_light_01', 'child_light_01', 'study_light_01', 'tv_01', 'range_hood_01'] as const;
 const quietChoreApplianceIds = ['dishwasher_01', 'washer_01'] as const;
 
 const defaultRuleCooldownMinutes = 5;
@@ -506,6 +516,8 @@ class Simulator implements VirtualHomeSimulator {
     events.push(...this.advanceRobotVacuumLifecycle());
     events.push(...this.advanceRouterRestartLifecycle());
     events.push(...this.advanceFridgeDoorLifecycle());
+    this.advanceAirConditionerClimateEffects();
+    events.push(...this.applyPersonStateConsistency());
     this.rebuildRooms();
     events.push(...this.applyAutonomousAgentPolicy());
     this.rebuildRooms();
@@ -605,6 +617,36 @@ class Simulator implements VirtualHomeSimulator {
       }));
     }
     return events;
+  }
+
+  private advanceAirConditionerClimateEffects(): void {
+    for (const [roomId, deviceId] of Object.entries(roomClimateDevices) as Array<[RoomId, string]>) {
+      const ac = this.state.snapshot.devices[deviceId];
+      const room = this.state.snapshot.rooms[roomId];
+      if (!ac || !room || ac.state.power !== 'on') {
+        continue;
+      }
+      const mode = String(ac.state.mode ?? 'auto');
+      const targetC = Number(ac.state.targetC ?? 26);
+      const currentTemperature = Number(room.temperatureC ?? targetC);
+      const currentHumidity = Number(room.humidityPercent ?? 55);
+      const delta = targetC - currentTemperature;
+      let nextTemperature = currentTemperature;
+      let nextHumidity = currentHumidity;
+
+      if (mode === 'cool' && delta < 0) {
+        nextTemperature += Math.max(delta, -0.35);
+        nextHumidity -= 0.08;
+      } else if (mode === 'heat' && delta > 0) {
+        nextTemperature += Math.min(delta, 0.32);
+        nextHumidity -= 0.04;
+      } else if (mode === 'auto' && Math.abs(delta) > 0.2) {
+        nextTemperature += Math.sign(delta) * Math.min(Math.abs(delta), 0.18);
+      }
+
+      room.temperatureC = this.round(this.clamp(nextTemperature, 16, 32));
+      room.humidityPercent = this.round(this.clamp(nextHumidity, 35, 78));
+    }
   }
 
   private advanceRobotVacuumLifecycle(): TwinEvent[] {
@@ -725,6 +767,16 @@ class Simulator implements VirtualHomeSimulator {
     return this.createRoutedPersonMovedEvents('pet_1', to, activity);
   }
 
+  private applyPersonStateConsistency(): TwinEvent[] {
+    const events: TwinEvent[] = [];
+    for (const person of Object.values(this.state.snapshot.people)) {
+      if (person.kind === 'human' && person.activity === 'school' && person.location !== 'away') {
+        events.push(...this.createRoutedPersonMovedEvents(person.id, 'away', 'school', 'rule:school_location_consistency'));
+      }
+    }
+    return events;
+  }
+
   private applyAutonomousAgentPolicy(): TwinEvent[] {
     const events: TwinEvent[] = [];
     const minuteOfDay = minuteOfDayFromTime(this.state.snapshot.simClock.currentTime);
@@ -833,6 +885,7 @@ class Simulator implements VirtualHomeSimulator {
     events.push(...this.applyCommuterArrivalScene());
     events.push(...this.applySocialCoordination());
     events.push(...this.applyHumanActivityLighting());
+    events.push(...this.applyRoomClimateComfort());
     events.push(...this.applyChildHomeworkFocus());
     events.push(...this.applyRemoteWorkComfort());
     events.push(...this.applyFamilyDinnerReadiness());
@@ -1578,6 +1631,9 @@ class Simulator implements VirtualHomeSimulator {
     if (!child || child.location === 'away') {
       return 0;
     }
+    if (!this.currentCalendarContext().schoolDay) {
+      return child.activity === 'homework' ? 35 : 0;
+    }
     if (child.activity === 'homework') {
       return 48;
     }
@@ -1586,6 +1642,13 @@ class Simulator implements VirtualHomeSimulator {
       return 86;
     }
     return 42;
+  }
+
+  private currentCalendarContext(): ReturnType<typeof createExternalContext>['calendar'] {
+    return createExternalContext({
+      date: this.state.snapshot.simClock.currentTime.slice(0, 10),
+      seed: this.state.snapshot.runContext.seed
+    }).calendar;
   }
 
   private applyHumanActivityLighting(): TwinEvent[] {
@@ -1660,6 +1723,144 @@ class Simulator implements VirtualHomeSimulator {
     ];
   }
 
+  private applyRoomClimateComfort(): TwinEvent[] {
+    const events: TwinEvent[] = [];
+    for (const [roomId, deviceId] of Object.entries(roomClimateDevices) as Array<[RoomId, string]>) {
+      const ac = this.state.snapshot.devices[deviceId];
+      const room = this.state.snapshot.rooms[roomId];
+      if (!ac || !room) {
+        continue;
+      }
+
+      const occupants = room.people
+        .map((personId) => this.state.snapshot.people[personId])
+        .filter((person): person is PersonState => Boolean(person) && person.kind === 'human' && person.location !== 'away');
+      const temperatureC = Number(room.temperatureC ?? 25);
+      const humidityPercent = Number(room.humidityPercent ?? 55);
+      const roomOccupied = occupants.length > 0 && this.state.snapshot.homeState.mode !== 'away';
+      const climateRuleControlled = this.isClimateRuleControlled(ac.lastReason, roomId);
+
+      if (!roomOccupied) {
+        events.push(...this.setRoomClimateIfChanged({
+          deviceId,
+          roomId,
+          patch: { power: 'off', mode: 'auto' },
+          reason: `habit:climate:${roomId}:vacant_or_comfortable`,
+          explanation: `${roomId} is empty, so the twin releases rule-controlled air conditioning.`,
+          actions: [`turn_off_${roomId}_ac_when_vacant`],
+          occupants: [],
+          temperatureC,
+          humidityPercent,
+          allowedToChange: climateRuleControlled
+        }));
+        continue;
+      }
+
+      const awakeActor = occupants.find((person) => person.activity !== 'sleeping' && this.state.snapshot.homeState.mode !== 'sleeping');
+      const actorPrefix = awakeActor ? `operator:climate:${roomId}:${awakeActor.id}` : `automation:climate:${roomId}`;
+      if (temperatureC >= 28.5) {
+        events.push(...this.setRoomClimateIfChanged({
+          deviceId,
+          roomId,
+          patch: { power: 'on', targetC: 25, mode: 'cool' },
+          reason: `${actorPrefix}:occupied_cooling`,
+          explanation: `${roomId} is occupied and warm, so climate control cools the room to a conservative comfort target.`,
+          actions: [`set_${roomId}_ac_cooling_target`],
+          occupants,
+          actor: awakeActor,
+          temperatureC,
+          humidityPercent,
+          allowedToChange: true
+        }));
+        continue;
+      }
+
+      if (temperatureC <= 17.5) {
+        events.push(...this.setRoomClimateIfChanged({
+          deviceId,
+          roomId,
+          patch: { power: 'on', targetC: 21, mode: 'heat' },
+          reason: `${actorPrefix}:occupied_heating`,
+          explanation: `${roomId} is occupied and cold, so climate control warms the room to a conservative comfort target.`,
+          actions: [`set_${roomId}_ac_heating_target`],
+          occupants,
+          actor: awakeActor,
+          temperatureC,
+          humidityPercent,
+          allowedToChange: true
+        }));
+        continue;
+      }
+
+      events.push(...this.setRoomClimateIfChanged({
+        deviceId,
+        roomId,
+        patch: { power: 'off', mode: 'auto' },
+        reason: `habit:climate:${roomId}:vacant_or_comfortable`,
+        explanation: `${roomId} temperature is back in the comfort range, so the twin stops rule-controlled climate support.`,
+        actions: [`turn_off_${roomId}_ac_after_comfort_recovers`],
+        occupants,
+        temperatureC,
+        humidityPercent,
+        allowedToChange: climateRuleControlled
+      }));
+    }
+    return events;
+  }
+
+  private setRoomClimateIfChanged(input: {
+    deviceId: string;
+    roomId: RoomId;
+    patch: Record<string, string | number | boolean | null>;
+    reason: string;
+    explanation: string;
+    actions: string[];
+    occupants: PersonState[];
+    actor?: PersonState;
+    temperatureC: number;
+    humidityPercent: number;
+    allowedToChange: boolean;
+  }): TwinEvent[] {
+    if (!input.allowedToChange || !this.devicePatchChanges(input.deviceId, input.patch)) {
+      return [];
+    }
+
+    const events: TwinEvent[] = [];
+    if (input.actor) {
+      events.push(...this.createRoutedPersonMovedEvents(input.actor.id, input.roomId, `controlling_${input.deviceId}`, input.reason));
+    }
+    events.push(this.setDeviceState(input.deviceId, input.patch, input.reason));
+    events.push(this.createEvent({
+      type: 'AutomationTriggered',
+      ruleId: 'room_climate_comfort',
+      explanation: input.explanation,
+      actions: input.actions,
+      reason: input.reason,
+      eventExplanation: {
+        why: `${input.roomId} is ${input.temperatureC.toFixed(1)}C / ${input.humidityPercent.toFixed(0)}% with ${input.occupants.length} human occupant${input.occupants.length === 1 ? '' : 's'}.`,
+        actorIds: input.actor ? [input.actor.id] : input.occupants.map((person) => person.id),
+        affectedDeviceIds: [input.deviceId],
+        affectedRoomIds: [input.roomId],
+        relatedIntent: 'room_comfort',
+        expectedOutcome: 'Keep climate changes tied to room occupancy, user action, or sleep comfort instead of random device activity.'
+      }
+    }));
+    return events;
+  }
+
+  private isClimateRuleControlled(reason: string | undefined, roomId: RoomId): boolean {
+    return typeof reason === 'string' && (
+      reason.startsWith(`habit:climate:${roomId}:`) ||
+      reason.startsWith(`operator:climate:${roomId}:`) ||
+      reason.startsWith(`automation:climate:${roomId}:`)
+    );
+  }
+
+  private devicePatchChanges(deviceId: string, patch: Record<string, string | number | boolean | null>): boolean {
+    const device = this.state.snapshot.devices[deviceId];
+    return Boolean(device) && Object.entries(patch).some(([key, value]) => device.state[key] !== value);
+  }
+
   private applyCommuterArrivalScene(): TwinEvent[] {
     const commuter = this.state.snapshot.people.adult_1;
     if (
@@ -1697,7 +1898,7 @@ class Simulator implements VirtualHomeSimulator {
     const child = this.state.snapshot.people.child_1;
     if (
       !child ||
-      child.location !== 'child_bedroom' ||
+      child.location !== 'living_room' ||
       child.activity !== 'homework' ||
       this.state.triggeredRules.has('child_homework_focus')
     ) {
@@ -1712,14 +1913,14 @@ class Simulator implements VirtualHomeSimulator {
       this.createEvent({
         type: 'AutomationTriggered',
         ruleId: 'child_homework_focus',
-        explanation: 'The student is doing homework, so entertainment is kept quiet and the bedroom sleep pad reflects desk time.',
+        explanation: 'The student is doing homework in the living room, so entertainment is kept quiet while the bedroom sleep pad reflects out-of-bed time.',
         actions: ['mark_child_out_of_bed', 'turn_off_tv_for_homework', 'dim_living_light_for_homework'],
         reason: 'habit:child_1:homework',
         eventExplanation: {
           why: 'child_1 is in after_school with intent finish_homework.',
           actorIds: ['child_1'],
           affectedDeviceIds: ['child_sleep_01', 'tv_01', 'living_light_01'],
-          affectedRoomIds: ['child_bedroom', 'living_room'],
+          affectedRoomIds: ['living_room', 'child_bedroom'],
           relatedIntent: 'finish_homework',
           expectedOutcome: 'Reduce entertainment distraction while the student finishes homework.'
         }
@@ -2529,7 +2730,7 @@ class Simulator implements VirtualHomeSimulator {
   private generateTelemetry(): TwinEvent[] {
     const events: TwinEvent[] = [];
     for (const device of this.state.catalog.devices) {
-      if (!['temperature_humidity_sensor', 'air_quality_sensor', 'water_flow_sensor', 'soil_moisture_sensor', 'fridge', 'door_lock', 'water_leak_sensor', 'sleep_sensor', 'router', 'stove', 'dishwasher', 'washer'].includes(device.type)) {
+      if (!['temperature_humidity_sensor', 'air_quality_sensor', 'water_flow_sensor', 'soil_moisture_sensor', 'fridge', 'door_lock', 'water_leak_sensor', 'sleep_sensor', 'router', 'stove', 'dishwasher', 'washer', 'air_conditioner'].includes(device.type)) {
         continue;
       }
       const state = this.state.snapshot.devices[device.id].state;
@@ -2748,6 +2949,9 @@ class Simulator implements VirtualHomeSimulator {
         const moisturePercent = this.round(this.clamp((Number(state.moisturePercent) || 38) + (sprinklerOn ? 0.55 : -0.03) + this.state.random.range(-0.04, 0.04), 20, 75));
         state.moisturePercent = moisturePercent;
         measurements.moisture_percent = moisturePercent;
+      } else if (device.type === 'air_conditioner') {
+        measurements.power_on = state.power === 'on';
+        measurements.target_c = Number(state.targetC ?? 26);
       }
       if (sensorObservation) {
         this.state.sensorObservations.set(device.id, sensorObservation.observedState);
@@ -3761,7 +3965,7 @@ function createBehaviorContext(
       return { routinePhase: 'school_day', intent: 'attend_school', attentionTarget: 'away', energy: 72 };
     }
     if (activity === 'homework') {
-      return { routinePhase: 'after_school', intent: 'finish_homework', attentionTarget: 'child_bedroom', energy: 62 };
+      return { routinePhase: 'after_school', intent: 'finish_homework', attentionTarget: 'living_room', energy: 62 };
     }
     if (activity === 'watching_tv' || activity === 'playing' || activity === 'weekend_play') {
       return { routinePhase: 'free_time', intent: 'play_or_relax', attentionTarget: location, energy: 78 };

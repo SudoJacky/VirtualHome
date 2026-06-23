@@ -299,7 +299,7 @@ describe('long horizon simulation evaluation', () => {
       },
       activityId: 'study_homework',
       participants: ['child_1'],
-      roomId: 'child_bedroom'
+      roomId: 'living_room'
     };
     const conversation: ConversationOccurredEvent = {
       ...activityBase,
@@ -374,7 +374,7 @@ describe('long horizon simulation evaluation', () => {
       },
       activityId: 'study_homework',
       participants: ['child_1'],
-      roomId: 'child_bedroom'
+      roomId: 'living_room'
     };
     const sensorHomeworkStarted: ActivityStartedEvent = {
       ...homeworkStarted,

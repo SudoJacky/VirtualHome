@@ -73,7 +73,7 @@ describe('twin persistence', () => {
     const firstCheckpoint = db.getLatestSnapshotCheckpoint();
 
     expect(firstCheckpoint?.coveredSequence).toBe(firstSnapshot.simClock.sequence);
-    expect(db.getRecentEvents(100, firstSnapshot.runId).length).toBe(firstEvents.length);
+    expect(db.getRecentEvents(firstSnapshot.simClock.sequence, firstSnapshot.runId).length).toBe(firstEvents.length);
 
     simulator.advanceMinutes(1);
     const laterSnapshot = simulator.getSnapshot();
