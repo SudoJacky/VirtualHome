@@ -51,6 +51,7 @@ export interface FloorplanMovementSegment {
   fromRoomId: RoomId | 'away';
   toRoomId: RoomId | 'away';
   activity: string;
+  reason: string;
   startedAt: string;
   endedAt: string;
   travelMinutes: number;
@@ -158,6 +159,9 @@ export interface Floorplan3DModel {
 }
 
 export type FloorplanDeviceDisplayMode = 'active' | 'all' | 'abnormal' | 'sensor' | 'actuator' | 'appliance' | 'security' | 'lighting' | 'climate' | 'media' | 'mobile' | 'network';
+type PersonMovedEvent = Extract<TwinEvent, { type: 'PersonMoved' }>;
+
+const RECENT_MOVEMENT_WINDOW_MINUTES = 2;
 
 export function selectVisibleFloorplanDevices(
   devices: Floorplan3DDevice[],
@@ -182,21 +186,17 @@ export function createFloorplan3DModel(snapshot: TwinSnapshot, events: TwinEvent
     alertSeverityByRoom.set(alert.roomId, strongestSeverity(alertSeverityByRoom.get(alert.roomId), mapSeverity(alert.severity)));
   }
 
-  const recentlyMovedPeople = new Set(events
-    .filter((event) => event.type === 'PersonMoved')
-    .slice(-8)
-    .map((event) => event.personId));
+  const recentMoveEvents = events
+    .filter(isPersonMovedEvent)
+    .filter((event) => isRecentMovementEvent(event, snapshot.simClock.currentTime));
+  const recentlyMovedPeople = new Set(recentMoveEvents.map((event) => event.personId));
   const moveEventsByPerson = new Map<string, Array<Extract<TwinEvent, { type: 'PersonMoved' }>>>();
-  for (const event of events) {
-    if (event.type !== 'PersonMoved') {
-      continue;
-    }
+  for (const event of recentMoveEvents) {
     const personEvents = moveEventsByPerson.get(event.personId) ?? [];
     personEvents.push(event);
     moveEventsByPerson.set(event.personId, personEvents);
   }
-  const latestMoveByPerson = new Map(events
-    .filter((event) => event.type === 'PersonMoved')
+  const latestMoveByPerson = new Map(recentMoveEvents
     .map((event) => [event.personId, event]));
   const latestStateChangeByDevice = new Map<string, Extract<TwinEvent, { type: 'DeviceStateChanged' }>>();
   const latestSeenAtByDevice = new Map<string, string>();
@@ -258,7 +258,7 @@ export function createFloorplan3DModel(snapshot: TwinSnapshot, events: TwinEvent
           ? createMovementPath(person.id, roomId, anchor, index, latestMove)
           : wanderPath,
         movementSegments,
-        movementTrailVisible: movementSegments.some((segment) => segment.travelMinutes > 0),
+        movementTrailVisible: shouldShowMovementTrail(person.kind, movementSegments),
         visualStyle: getPersonVisualStyle(person.id, person.kind)
       };
     });
@@ -339,6 +339,29 @@ function interactionHintForOperability(operability: FloorplanDeviceOperability):
   return 'Ready for device controls.';
 }
 
+function isPersonMovedEvent(event: TwinEvent): event is PersonMovedEvent {
+  return event.type === 'PersonMoved';
+}
+
+function isRecentMovementEvent(event: PersonMovedEvent, currentTime: string): boolean {
+  const currentMs = new Date(currentTime).getTime();
+  const eventMs = new Date(event.simTime).getTime();
+  if (!Number.isFinite(currentMs) || !Number.isFinite(eventMs)) {
+    return false;
+  }
+  return currentMs - eventMs <= RECENT_MOVEMENT_WINDOW_MINUTES * 60 * 1000 && currentMs >= eventMs;
+}
+
+function shouldShowMovementTrail(kind: PersonKind, segments: FloorplanMovementSegment[]): boolean {
+  if (kind === 'pet') {
+    return false;
+  }
+  return segments.some((segment) => (
+    segment.travelMinutes > 0 &&
+    (segment.reason.startsWith('operator:') || segment.reason.startsWith('control:'))
+  ));
+}
+
 function defaultDeviceY(mount: DeviceMount | undefined): number {
   if (mount === 'ceiling') return 0.62;
   if (mount === 'wall') return 0.45;
@@ -373,12 +396,11 @@ function createMovementPath(
 function createMovementSegments(
   personId: string,
   index: number,
-  moves: Array<Extract<TwinEvent, { type: 'PersonMoved' }>>,
+  moves: PersonMovedEvent[],
   currentTime: string
 ): FloorplanMovementSegment[] {
   const nowMs = new Date(currentTime).getTime();
-  return moves
-    .slice(-8)
+  return latestMovementBurst(moves)
     .map((move) => {
       const travelMinutes = Math.max(0, Number(move.travelMinutes ?? 0));
       const endedAt = move.simTime;
@@ -393,6 +415,7 @@ function createMovementSegments(
         fromRoomId: move.from,
         toRoomId: move.to,
         activity: move.activity,
+        reason: move.reason ?? '',
         startedAt,
         endedAt,
         travelMinutes,
@@ -401,6 +424,39 @@ function createMovementSegments(
         progress: round(progress)
       };
     });
+}
+
+function latestMovementBurst(moves: PersonMovedEvent[]): PersonMovedEvent[] {
+  const sorted = [...moves].sort((left, right) => left.sequence - right.sequence);
+  const latest = sorted.at(-1);
+  if (!latest) {
+    return [];
+  }
+
+  const burst: PersonMovedEvent[] = [];
+  for (let index = sorted.length - 1; index >= 0; index -= 1) {
+    const move = sorted[index];
+    if (!isSameMovementBurst(move, latest)) {
+      break;
+    }
+    burst.unshift(move);
+  }
+  return removeConsecutiveDuplicateMoves(burst);
+}
+
+function isSameMovementBurst(move: PersonMovedEvent, latest: PersonMovedEvent): boolean {
+  return move.simTime === latest.simTime && (move.reason ?? '') === (latest.reason ?? '');
+}
+
+function removeConsecutiveDuplicateMoves(moves: PersonMovedEvent[]): PersonMovedEvent[] {
+  return moves.filter((move, index) => {
+    const previous = moves[index - 1];
+    return !previous ||
+      previous.from !== move.from ||
+      previous.to !== move.to ||
+      previous.activity !== move.activity ||
+      previous.reason !== move.reason;
+  });
 }
 
 function pointForMovementRoom(personId: string, roomId: RoomId | 'away', index: number, time: string): FloorplanPoint {
