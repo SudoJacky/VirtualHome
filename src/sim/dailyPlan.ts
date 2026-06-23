@@ -176,10 +176,7 @@ function createSeasonOpeningSteps(calendar: CalendarProfile): ScenarioStep[] {
   const climateState = seasonClimate(calendar.season);
   return [
     step(1, [
-      device('kitchen_temp_01', climateState, `season:${calendar.season}:baseline`),
-      ...(calendar.season === 'winter'
-        ? [device('living_light_01', { power: 'on', brightness: 74 }, 'season:winter:short_daylight')]
-        : [])
+      device('kitchen_temp_01', climateState, `season:${calendar.season}:baseline`)
     ])
   ];
 }

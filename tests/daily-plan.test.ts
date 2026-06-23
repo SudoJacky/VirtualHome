@@ -59,7 +59,8 @@ describe('calendar-driven daily plan generation', () => {
     expect(winter.calendar!.season).toBe('winter');
     expect(summer.steps.some((step) => step.actions.some((action) => action.kind === 'setDevice' && action.deviceId === 'sprinkler_01' && action.state.valveOpen === true))).toBe(true);
     expect(winter.steps.some((step) => step.actions.some((action) => action.kind === 'setDevice' && action.deviceId === 'sprinkler_01' && action.state.valveOpen === true))).toBe(false);
-    expect(winter.steps.some((step) => step.actions.some((action) => action.kind === 'setDevice' && action.deviceId === 'living_light_01' && Number(action.state.brightness ?? 0) >= 70))).toBe(true);
+    expect(winter.steps.some((step) => step.actions.some((action) => action.kind === 'setDevice' && action.deviceId === 'living_light_01' && action.reason === 'season:winter:short_daylight'))).toBe(false);
+    expect(winter.steps.some((step) => step.actions.some((action) => action.kind === 'setDevice' && action.deviceId === 'kitchen_light_01' && Number(action.state.brightness ?? 0) >= 80))).toBe(true);
   });
 
   it('uses weather context to replace rainy weekend outings with indoor activity', () => {
