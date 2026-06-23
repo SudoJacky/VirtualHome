@@ -61,14 +61,16 @@ export function HomeMemory3D({
           }
 
           return (
-            <Line
-              key={edge.id}
-              points={[toVector(from), toVector(to)]}
-              color={highlighted ? HIGHLIGHT_COLOR : edgeColor(edge.kind)}
-              lineWidth={highlighted ? 2.7 : edge.kind === 'supports' ? 1.2 : 0.9}
-              transparent
-              opacity={highlighted ? 0.96 : Math.max(0.2, Math.min(0.72, 0.22 + edge.strength / 8))}
-            />
+            <React.Fragment key={edge.id}>
+              <Line
+                points={[toVector(from), toVector(to)]}
+                color={highlighted ? HIGHLIGHT_COLOR : edgeColor(edge.kind)}
+                lineWidth={highlighted ? 2.7 : edge.kind === 'supports' ? 1.2 : 0.9}
+                transparent
+                opacity={highlighted ? 0.96 : Math.max(0.2, Math.min(0.72, 0.22 + edge.strength / 8))}
+              />
+              {highlighted ? <FlowPulse from={from} to={to} seed={edge.id.length} /> : null}
+            </React.Fragment>
           );
         })}
         {graph.nodes.map((node) => (
@@ -92,6 +94,39 @@ export function HomeMemory3D({
         target={[0, 0, 0]}
       />
     </Canvas>
+  );
+}
+
+function FlowPulse({
+  from,
+  to,
+  seed
+}: {
+  from: HomeMemoryGraphNode;
+  to: HomeMemoryGraphNode;
+  seed: number;
+}): React.ReactElement {
+  const meshRef = React.useRef<THREE.Mesh>(null);
+  const start = React.useMemo(() => new THREE.Vector3(...toVector(from)), [from]);
+  const end = React.useMemo(() => new THREE.Vector3(...toVector(to)), [to]);
+
+  useFrame(({ clock }) => {
+    if (!meshRef.current) return;
+    const progress = (clock.elapsedTime * 0.72 + seed * 0.07) % 1;
+    meshRef.current.position.copy(start).lerp(end, progress);
+    meshRef.current.scale.setScalar(0.82 + Math.sin(progress * Math.PI) * 0.34);
+  });
+
+  return (
+    <mesh ref={meshRef}>
+      <sphereGeometry args={[0.09, 18, 14]} />
+      <meshStandardMaterial
+        color="#ffd27a"
+        emissive="#f0a92e"
+        emissiveIntensity={0.7}
+        roughness={0.42}
+      />
+    </mesh>
   );
 }
 

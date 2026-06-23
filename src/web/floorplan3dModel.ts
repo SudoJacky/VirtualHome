@@ -561,7 +561,8 @@ function round(value: number): number {
 
 function formatShanghaiTime(date: Date): string {
   const pad = (value: number): string => String(value).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}+08:00`;
+  const shanghaiDate = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  return `${shanghaiDate.getUTCFullYear()}-${pad(shanghaiDate.getUTCMonth() + 1)}-${pad(shanghaiDate.getUTCDate())}T${pad(shanghaiDate.getUTCHours())}:${pad(shanghaiDate.getUTCMinutes())}:${pad(shanghaiDate.getUTCSeconds())}+08:00`;
 }
 
 function centeredHash(input: string): number {

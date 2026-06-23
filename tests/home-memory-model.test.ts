@@ -126,6 +126,377 @@ describe('home memory model', () => {
     });
   });
 
+  it('stores sensor telemetry as facts while keeping only meaningful profile evidence weight', () => {
+    const events = Array.from({ length: 30 }, (_, index) => deviceEvent({
+      id: `temperature_event_${index + 1}`,
+      sourceEventId: `source_temperature_${index + 1}`,
+      sequence: index + 1,
+      deviceId: 'temperature_01',
+      deviceType: 'temperature_sensor',
+      field: 'temperature',
+      value: 25 + index * 0.01
+    }));
+
+    const memory = reduceDeviceEvents(createHomeMemory(), events);
+
+    expect(memory.totalEvents).toBe(30);
+    expect(memory.profileEventCount).toBe(1);
+    expect(memory.profileEvidenceWeight).toBeCloseTo(0.05);
+    expect(memory.profileEvidenceByCategory).toMatchObject({
+      environment_context: 1
+    });
+    expect(memory.rooms.kitchen.profileEvidenceWeight).toBeCloseTo(0.05);
+    expect(memory.devices.temperature_01.profileEvidenceWeight).toBeCloseTo(0.05);
+    expect(memory.fields['temperature_01:temperature']).toMatchObject({
+      eventCount: 30,
+      changeCount: 1,
+      telemetryCount: 29,
+      lastMeaningfulChangeAt: '2026-06-22T00:00:00.000Z',
+      evidenceCategory: 'environment_context',
+      evidenceStrength: 'weak',
+      profileWeight: 0
+    });
+  });
+
+  it('tracks repeated same-value telemetry separately from meaningful changes', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'motion_event_1',
+        sourceEventId: 'source_motion_event_1',
+        sequence: 1,
+        deviceId: 'motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'motion_event_2',
+        sourceEventId: 'source_motion_event_2',
+        sequence: 2,
+        deviceId: 'motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'motion_event_3',
+        sourceEventId: 'source_motion_event_3',
+        sequence: 3,
+        deviceId: 'motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      })
+    ]);
+
+    expect(memory.totalEvents).toBe(3);
+    expect(memory.profileEventCount).toBe(1);
+    expect(memory.profileEvidenceWeight).toBeCloseTo(0.55);
+    expect(memory.fields['motion_01:motion']).toMatchObject({
+      eventCount: 3,
+      changeCount: 1,
+      telemetryCount: 2,
+      lastMeaningfulChangeAt: '2026-06-22T00:00:00.000Z',
+      profileEventCount: 1,
+      profileEvidenceWeight: 0.55
+    });
+    expect(memory.recentEvents[0]).toMatchObject({
+      meaningfulChange: false,
+      profileWeight: 0
+    });
+  });
+
+  it('ignores tiny numeric drift for profile confidence while preserving numeric facts', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'temperature_event_1',
+        sourceEventId: 'source_temperature_event_1',
+        sequence: 1,
+        deviceId: 'temperature_01',
+        deviceType: 'temperature_sensor',
+        field: 'temperature',
+        value: 25
+      }),
+      deviceEvent({
+        id: 'temperature_event_2',
+        sourceEventId: 'source_temperature_event_2',
+        sequence: 2,
+        deviceId: 'temperature_01',
+        deviceType: 'temperature_sensor',
+        field: 'temperature',
+        value: 25.2
+      }),
+      deviceEvent({
+        id: 'temperature_event_3',
+        sourceEventId: 'source_temperature_event_3',
+        sequence: 3,
+        ts: '2026-06-22T00:03:00.000Z',
+        deviceId: 'temperature_01',
+        deviceType: 'temperature_sensor',
+        field: 'temperature',
+        value: 25.8
+      })
+    ]);
+
+    expect(memory.profileEventCount).toBe(2);
+    expect(memory.profileEvidenceWeight).toBeCloseTo(0.1);
+    expect(memory.fields['temperature_01:temperature']).toMatchObject({
+      eventCount: 3,
+      changeCount: 2,
+      telemetryCount: 1,
+      lastMeaningfulChangeAt: '2026-06-22T00:03:00.000Z',
+      numericMin: 25,
+      numericMax: 25.8
+    });
+    expect(memory.recentEvents.map((event) => event.meaningfulChange)).toEqual([true, false, true]);
+    expect(memory.recentEvents.map((event) => event.profileWeight)).toEqual([0.05, 0, 0.05]);
+  });
+
+  it('compresses repeated motion activity into an occupancy episode', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'motion_event_1',
+        sourceEventId: 'source_motion_event_1',
+        sequence: 1,
+        ts: '2026-06-22T00:00:00.000Z',
+        simTime: '2026-06-22T08:00:00',
+        deviceId: 'motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'motion_event_2',
+        sourceEventId: 'source_motion_event_2',
+        sequence: 2,
+        ts: '2026-06-22T00:01:00.000Z',
+        simTime: '2026-06-22T08:01:00',
+        deviceId: 'motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'motion_event_3',
+        sourceEventId: 'source_motion_event_3',
+        sequence: 3,
+        ts: '2026-06-22T00:05:00.000Z',
+        simTime: '2026-06-22T08:05:00',
+        deviceId: 'motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: false
+      })
+    ]);
+
+    const episode = Object.values(memory.episodes)[0];
+
+    expect(memory.episodeCount).toBe(1);
+    expect(memory.activeEpisodeIds).toEqual({});
+    expect(episode).toMatchObject({
+      kind: 'occupancy',
+      status: 'closed',
+      roomId: 'kitchen',
+      deviceId: 'motion_01',
+      field: 'motion',
+      startedAt: '2026-06-22T00:00:00.000Z',
+      endedAt: '2026-06-22T00:05:00.000Z',
+      durationMinutes: 5,
+      eventCount: 3,
+      evidenceIds: ['motion_event_1', 'motion_event_2', 'motion_event_3']
+    });
+  });
+
+  it('compresses appliance power usage into an episode with peak value', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'power_event_1',
+        sourceEventId: 'source_power_event_1',
+        sequence: 1,
+        ts: '2026-06-22T00:00:00.000Z',
+        simTime: '2026-06-22T08:00:00',
+        deviceId: 'coffee_maker_01',
+        deviceType: 'coffee_maker',
+        field: 'powerW',
+        value: 0
+      }),
+      deviceEvent({
+        id: 'power_event_2',
+        sourceEventId: 'source_power_event_2',
+        sequence: 2,
+        ts: '2026-06-22T00:02:00.000Z',
+        simTime: '2026-06-22T08:02:00',
+        deviceId: 'coffee_maker_01',
+        deviceType: 'coffee_maker',
+        field: 'powerW',
+        value: 800
+      }),
+      deviceEvent({
+        id: 'power_event_3',
+        sourceEventId: 'source_power_event_3',
+        sequence: 3,
+        ts: '2026-06-22T00:04:00.000Z',
+        simTime: '2026-06-22T08:04:00',
+        deviceId: 'coffee_maker_01',
+        deviceType: 'coffee_maker',
+        field: 'powerW',
+        value: 820
+      }),
+      deviceEvent({
+        id: 'power_event_4',
+        sourceEventId: 'source_power_event_4',
+        sequence: 4,
+        ts: '2026-06-22T00:10:00.000Z',
+        simTime: '2026-06-22T08:10:00',
+        deviceId: 'coffee_maker_01',
+        deviceType: 'coffee_maker',
+        field: 'powerW',
+        value: 0
+      })
+    ]);
+
+    const episode = Object.values(memory.episodes)[0];
+
+    expect(memory.episodeCount).toBe(1);
+    expect(episode).toMatchObject({
+      kind: 'appliance_usage',
+      status: 'closed',
+      startedAt: '2026-06-22T00:02:00.000Z',
+      endedAt: '2026-06-22T00:10:00.000Z',
+      durationMinutes: 8,
+      eventCount: 3,
+      peakValue: 820,
+      startValue: 800,
+      latestValue: 0
+    });
+  });
+
+  it('does not create behavior episodes for environment telemetry drift', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'temperature_event_1',
+        sourceEventId: 'source_temperature_event_1',
+        sequence: 1,
+        deviceId: 'temperature_01',
+        deviceType: 'temperature_sensor',
+        field: 'temperature',
+        value: 25
+      }),
+      deviceEvent({
+        id: 'temperature_event_2',
+        sourceEventId: 'source_temperature_event_2',
+        sequence: 2,
+        deviceId: 'temperature_01',
+        deviceType: 'temperature_sensor',
+        field: 'temperature',
+        value: 25.8
+      })
+    ]);
+
+    expect(memory.episodeCount).toBe(0);
+    expect(memory.episodes).toEqual({});
+    expect(memory.activeEpisodeIds).toEqual({});
+  });
+
+  it('stores daily summaries across observed simulation days', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'kitchen_motion_day_1',
+        sourceEventId: 'source_kitchen_motion_day_1',
+        sequence: 1,
+        ts: '2026-06-22T00:00:00.000Z',
+        simTime: '2026-06-22T08:00:00',
+        roomId: 'kitchen',
+        deviceId: 'kitchen_motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'kitchen_motion_day_1_end',
+        sourceEventId: 'source_kitchen_motion_day_1_end',
+        sequence: 2,
+        ts: '2026-06-22T00:10:00.000Z',
+        simTime: '2026-06-22T08:10:00',
+        roomId: 'kitchen',
+        deviceId: 'kitchen_motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: false
+      }),
+      deviceEvent({
+        id: 'living_tv_day_2',
+        sourceEventId: 'source_living_tv_day_2',
+        sequence: 3,
+        ts: '2026-06-23T11:00:00.000Z',
+        simTime: '2026-06-23T19:00:00',
+        roomId: 'living',
+        deviceId: 'tv_01',
+        deviceType: 'tv',
+        field: 'power',
+        value: true
+      })
+    ]);
+
+    expect(memory.dailySummaryCount).toBe(2);
+    expect(memory.weeklySummaryCount).toBe(1);
+    expect(memory.dailySummaries['2026-06-22']).toMatchObject({
+      date: '2026-06-22',
+      eventCount: 2,
+      profileEventCount: 2,
+      episodeCount: 1,
+      activeRooms: ['kitchen'],
+      meaningfulRooms: ['kitchen'],
+      activeDevices: ['kitchen_motion_01'],
+      firstSeenAt: '2026-06-22T00:00:00.000Z',
+      lastSeenAt: '2026-06-22T00:10:00.000Z'
+    });
+    expect(memory.dailySummaries['2026-06-22'].timeBuckets).toMatchObject({
+      morning: 2
+    });
+    expect(memory.dailySummaries['2026-06-23']).toMatchObject({
+      date: '2026-06-23',
+      eventCount: 1,
+      profileEventCount: 1,
+      episodeCount: 1,
+      activeRooms: ['living'],
+      meaningfulRooms: ['living'],
+      activeDevices: ['tv_01']
+    });
+    expect(Object.values(memory.weeklySummaries)[0]).toMatchObject({
+      week: '2026-W26',
+      dates: ['2026-06-22', '2026-06-23'],
+      eventCount: 3,
+      episodeCount: 2,
+      activeRooms: ['kitchen', 'living'],
+      meaningfulRooms: ['kitchen', 'living'],
+      activeDevices: ['kitchen_motion_01', 'tv_01']
+    });
+  });
+
+  it('keeps ignored system telemetry out of profile evidence counts', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'battery_event_1',
+        sourceEventId: 'source_battery_event_1',
+        sequence: 1,
+        deviceId: 'temperature_01',
+        deviceType: 'temperature_sensor',
+        field: 'battery',
+        value: 88
+      })
+    ]);
+
+    expect(memory.totalEvents).toBe(1);
+    expect(memory.profileEventCount).toBe(0);
+    expect(memory.profileEvidenceWeight).toBe(0);
+    expect(memory.fields['temperature_01:battery']).toMatchObject({
+      evidenceCategory: 'system_status',
+      evidenceStrength: 'ignored',
+      profileWeight: 0
+    });
+  });
+
   it('does not mutate previous memory records when reducing another event', () => {
     const firstMemory = reduceDeviceEvent(createHomeMemory(), deviceEvent({
       id: 'power_event_1',

@@ -756,6 +756,28 @@ describe('dashboard view model', () => {
     expect(model.behaviorAudit.consistencyWarnings).not.toContain('All household members are still sleeping after the morning routine window.');
   });
 
+  it('keeps behavior audit commitment pressure independent of host timezone', () => {
+    const originalTimezone = process.env.TZ;
+    process.env.TZ = 'UTC';
+    try {
+      const simulator = createSimulator({ seed: 42 });
+      simulator.startScenario('weekday_normal');
+      simulator.advanceMinutes(605);
+
+      const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+      const childAudit = model.behaviorAudit.people.find((person) => person.personId === 'child_1');
+
+      expect(childAudit?.nextCommitment).toMatchObject({
+        activity: 'study homework',
+        roomName: 'Child Bedroom',
+        source: 'role'
+      });
+      expect(childAudit?.nextCommitment?.pressure ?? 0).toBeGreaterThan(0);
+    } finally {
+      process.env.TZ = originalTimezone;
+    }
+  });
+
   it('adds recent device event evidence to device control cards', () => {
     const simulator = createSimulator({ seed: 42 });
     simulator.startScenario('weekday_normal');

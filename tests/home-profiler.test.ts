@@ -196,6 +196,131 @@ describe('home profiler', () => {
     expect(householdSize?.summary).not.toMatch(/likely 1 resident/i);
   });
 
+  it('does not treat high-frequency environment telemetry as strong household activity', () => {
+    const rooms = ['kitchen', 'living', 'bedroom', 'bathroom', 'study'];
+    const events = Array.from({ length: 60 }, (_, index) => {
+      const roomId = rooms[index % rooms.length];
+      return deviceEvent({
+        id: `temperature_event_${index + 1}`,
+        sourceEventId: `source_temperature_${index + 1}`,
+        sequence: index + 1,
+        simTime: `2026-06-22T08:${String(index % 60).padStart(2, '0')}:00`,
+        roomId,
+        deviceId: `${roomId}_temperature_01`,
+        deviceType: 'temperature_sensor',
+        field: 'temperature',
+        value: 24 + index * 0.01
+      });
+    });
+    const memory = reduceDeviceEvents(createHomeMemory(), events);
+    const hypotheses = createHomeProfileHypotheses(memory);
+
+    const householdSize = hypotheses.find((hypothesis) => hypothesis.type === 'household_size');
+    const presence = hypotheses.find((hypothesis) => hypothesis.type === 'presence_signal');
+
+    expect(memory.totalEvents).toBe(60);
+    expect(memory.profileEventCount).toBe(5);
+    expect(memory.profileEvidenceWeight).toBeCloseTo(0.25);
+    expect(householdSize?.summary).toMatch(/environment|weak|uncertain/i);
+    expect(householdSize?.summary).not.toMatch(/2-5 residents/);
+    expect(householdSize?.confidence).toBeLessThanOrEqual(0.45);
+    expect(presence?.confidence).toBeLessThanOrEqual(0.45);
+  });
+
+  it('uses behavior episodes when explaining presence, room habits, and household size', () => {
+    const events = Array.from({ length: 20 }, (_, index) => deviceEvent({
+      id: `motion_event_${index + 1}`,
+      sourceEventId: `source_motion_${index + 1}`,
+      sequence: index + 1,
+      simTime: `2026-06-22T08:${String(index).padStart(2, '0')}:00`,
+      roomId: 'living',
+      deviceId: 'motion_01',
+      deviceType: 'motion_sensor',
+      field: 'motion',
+      value: true
+    }));
+    const memory = reduceDeviceEvents(createHomeMemory(), events);
+    const hypotheses = createHomeProfileHypotheses(memory);
+
+    const presence = hypotheses.find((hypothesis) => hypothesis.type === 'presence_signal');
+    const roomHabit = hypotheses.find((hypothesis) => hypothesis.type === 'room_habit');
+    const householdSize = hypotheses.find((hypothesis) => hypothesis.type === 'household_size');
+
+    expect(memory.totalEvents).toBe(20);
+    expect(memory.episodeCount).toBe(1);
+    expect(presence?.summary).toMatch(/1 behavior episode/i);
+    expect(roomHabit?.summary).toMatch(/1 behavior episode/i);
+    expect(householdSize?.summary).toMatch(/1 behavior episode/i);
+    expect(householdSize?.summary).not.toMatch(/2-5 residents/);
+  });
+
+  it('uses daily summaries for longer-window rhythm and household reasoning', () => {
+    const events = [
+      deviceEvent({
+        id: 'day_1_kitchen',
+        sourceEventId: 'source_day_1_kitchen',
+        sequence: 1,
+        ts: '2026-06-22T00:00:00.000Z',
+        simTime: '2026-06-22T07:30:00',
+        roomId: 'kitchen',
+        deviceId: 'kitchen_motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'day_1_living',
+        sourceEventId: 'source_day_1_living',
+        sequence: 2,
+        ts: '2026-06-22T11:00:00.000Z',
+        simTime: '2026-06-22T19:00:00',
+        roomId: 'living',
+        deviceId: 'tv_01',
+        deviceType: 'tv',
+        field: 'power',
+        value: true
+      }),
+      deviceEvent({
+        id: 'day_2_kitchen',
+        sourceEventId: 'source_day_2_kitchen',
+        sequence: 3,
+        ts: '2026-06-23T00:00:00.000Z',
+        simTime: '2026-06-23T07:45:00',
+        roomId: 'kitchen',
+        deviceId: 'kitchen_motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'day_2_study',
+        sourceEventId: 'source_day_2_study',
+        sequence: 4,
+        ts: '2026-06-23T12:00:00.000Z',
+        simTime: '2026-06-23T20:00:00',
+        roomId: 'study',
+        deviceId: 'desk_lamp_01',
+        deviceType: 'lamp',
+        field: 'power',
+        value: true
+      })
+    ];
+    const memory = reduceDeviceEvents(createHomeMemory(), events);
+    const hypotheses = createHomeProfileHypotheses(memory);
+
+    const morningRhythm = hypotheses.find((hypothesis) => hypothesis.id === 'rhythm:morning');
+    const householdSize = hypotheses.find((hypothesis) => hypothesis.type === 'household_size');
+
+    expect(memory.dailySummaryCount).toBe(2);
+    expect(memory.weeklySummaryCount).toBe(1);
+    expect(morningRhythm?.summary).toMatch(/2 observed days/i);
+    expect(morningRhythm?.summary).toMatch(/1 observed week/i);
+    expect(morningRhythm?.summary).toMatch(/2 day-level matches/i);
+    expect(householdSize?.summary).toMatch(/2 observed days/i);
+    expect(householdSize?.summary).toMatch(/1 observed week/i);
+    expect(householdSize?.summary).toMatch(/3 long-window room/i);
+  });
+
   it('returns no hypotheses for empty memory', () => {
     expect(createHomeProfileHypotheses(createHomeMemory())).toEqual([]);
   });

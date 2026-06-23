@@ -483,6 +483,28 @@ describe('3D floorplan layout and model', () => {
     expect(operator?.movementPath.at(-1)).toEqual({ x: operator?.x, z: operator?.z });
   });
 
+  it('keeps movement segment wall-clock times independent of host timezone', () => {
+    const originalTimezone = process.env.TZ;
+    process.env.TZ = 'UTC';
+    try {
+      const simulator = createSimulator({ seed: 42 });
+      simulator.commandDevice('tv_01', 'set_input', 'Game');
+
+      const model = createFloorplan3DModel(simulator.getSnapshot(), simulator.getEvents());
+      const operator = model.people.find((person) => person.id === 'adult_1');
+
+      expect(operator?.movementSegments.map((segment) => ({
+        startedAt: segment.startedAt.slice(11, 16),
+        endedAt: segment.endedAt.slice(11, 16)
+      }))).toEqual([
+        { startedAt: '00:00', endedAt: '00:01' },
+        { startedAt: '00:01', endedAt: '00:02' }
+      ]);
+    } finally {
+      process.env.TZ = originalTimezone;
+    }
+  });
+
   it('uses low-frequency room wander anchors instead of changing position every few minutes', () => {
     const simulator = createSimulator({ seed: 42 });
     const snapshot = simulator.getSnapshot();
