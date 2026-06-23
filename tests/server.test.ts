@@ -1302,6 +1302,39 @@ describe('server API', () => {
     await secondServer.close();
   });
 
+  it('does not restore a persisted snapshot whose household no longer matches the current home definition', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-stale-household-'));
+    dirs.push(dir);
+    const databasePath = path.join(dir, 'twin.db');
+    const legacyHomeDefinition = getHomeDefinition();
+    legacyHomeDefinition.people.push({
+      id: 'senior_1',
+      kind: 'human',
+      role: 'senior family member',
+      homeMember: true
+    });
+    const firstServer = createServer({ databasePath, autoTick: false, homeDefinition: legacyHomeDefinition });
+
+    await firstServer.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    const beforeRestart = (await firstServer.inject({ method: 'GET', url: '/api/state' })).json();
+    expect(Object.keys(beforeRestart.people)).toContain('senior_1');
+    await firstServer.close();
+
+    const secondServer = createServer({ databasePath, autoTick: false });
+    await secondServer.ready();
+    const restored = (await secondServer.inject({ method: 'GET', url: '/api/state' })).json();
+    const restoredRooms = restored.rooms as Record<string, { people: string[] }>;
+
+    expect(restored.runId).not.toBe(beforeRestart.runId);
+    expect(Object.keys(restored.people)).not.toContain('senior_1');
+    expect(Object.values(restoredRooms).flatMap((room) => room.people)).not.toContain('senior_1');
+
+    await secondServer.close();
+  });
+
   it('restores state by replaying events after the latest snapshot checkpoint', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-checkpoint-recovery-'));
     dirs.push(dir);

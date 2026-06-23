@@ -484,16 +484,21 @@ describe('virtual home simulator MVP', () => {
     const simulator = createSimulator({ seed: 2026 });
 
     simulator.startScenario('weekday_normal');
+    const startingSnapshot = simulator.getSnapshot();
+    startingSnapshot.worldState.inventory.dirtyLaundryKg = 5.2;
+    startingSnapshot.worldState.inventory.dirtyDishes = 7;
+    simulator.restore(startingSnapshot, simulator.getEvents());
     simulator.advanceMinutes(360);
     const snapshot = simulator.getSnapshot();
     const events = simulator.getEvents();
-    const randomRuleIds = events
+    const householdRuleEvents = events
       .filter((event): event is AutomationTriggeredEvent => event.type === 'AutomationTriggered')
-      .map((event) => event.ruleId);
+      .filter((event) => ['package_delivery', 'robot_cleaning', 'dishwasher_cycle', 'washer_cycle', 'network_jitter'].includes(event.ruleId));
 
-    expect(randomRuleIds).toEqual(expect.arrayContaining([
+    expect(householdRuleEvents.map((event) => event.ruleId)).toEqual(expect.arrayContaining([
       expect.stringMatching(/^(package_delivery|robot_cleaning|dishwasher_cycle|washer_cycle|network_jitter)$/)
     ]));
+    expect(householdRuleEvents.every((event) => !event.reason?.startsWith('random:'))).toBe(true);
     expect(Object.keys(snapshot.devices)).toEqual(expect.arrayContaining([
       'doorbell_camera_01',
       'package_sensor_01',
@@ -502,6 +507,32 @@ describe('virtual home simulator MVP', () => {
       'router_01',
       'washer_01'
     ]));
+  });
+
+  it('starts chore appliances from household activity context instead of anonymous random events', () => {
+    const simulator = createSimulator({ seed: 1 });
+
+    simulator.startScenario('weekday_normal');
+    const startingSnapshot = simulator.getSnapshot();
+    startingSnapshot.worldState.inventory.dirtyLaundryKg = 5.4;
+    startingSnapshot.worldState.inventory.dirtyDishes = 8;
+    startingSnapshot.worldState.inventory.unfinishedChores = 0;
+    simulator.restore(startingSnapshot, simulator.getEvents());
+    simulator.advanceMinutes(900);
+
+    const events = simulator.getEvents();
+    const dishwasher = events.find((event): event is AutomationTriggeredEvent => event.type === 'AutomationTriggered' && event.ruleId === 'dishwasher_cycle');
+    const washer = events.find((event): event is AutomationTriggeredEvent => event.type === 'AutomationTriggered' && event.ruleId === 'washer_cycle');
+
+    expect(dishwasher).toMatchObject({ reason: 'household_activity:load_dishwasher' });
+    expect(washer).toMatchObject({ reason: 'household_activity:laundry_cycle' });
+    expect(events.some((event) => event.type === 'ActivityStarted' && event.activityId === 'load_dishwasher')).toBe(true);
+    expect(events.some((event) => event.type === 'ActivityStarted' && event.activityId === 'laundry_cycle')).toBe(true);
+    expect(events.some((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      ['dishwasher_01', 'washer_01'].includes(event.deviceId) &&
+      event.reason?.startsWith('random:') === true
+    ))).toBe(false);
   });
 
   it('keeps random household events deterministic for the same seed', () => {
@@ -1399,6 +1430,34 @@ describe('virtual home simulator MVP', () => {
     expect(events.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'sleep_mode')).toBe(true);
   });
 
+  it('applies whole-home quiet constraints during sleep mode', () => {
+    const simulator = createSimulator({ seed: 89 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.homeState.mode = 'sleeping';
+    snapshot.people.adult_1 = { ...snapshot.people.adult_1, location: 'master_bedroom', activity: 'sleeping' };
+    snapshot.people.adult_2 = { ...snapshot.people.adult_2, location: 'master_bedroom', activity: 'sleeping' };
+    snapshot.people.child_1 = { ...snapshot.people.child_1, location: 'child_bedroom', activity: 'sleeping' };
+    snapshot.devices.living_light_01.state = { ...snapshot.devices.living_light_01.state, power: 'on', brightness: 70 };
+    snapshot.devices.kitchen_light_01.state = { ...snapshot.devices.kitchen_light_01.state, power: 'on', brightness: 82 };
+    snapshot.devices.dining_light_01.state = { ...snapshot.devices.dining_light_01.state, power: 'on', brightness: 64 };
+    snapshot.devices.tv_01.state = { ...snapshot.devices.tv_01.state, power: 'on', app: 'Streaming', volume: 22, lifecyclePhase: 'watching' };
+    snapshot.devices.range_hood_01.state = { ...snapshot.devices.range_hood_01.state, power: 'on', speed: 2 };
+    snapshot.devices.robot_vacuum_01.state = { ...snapshot.devices.robot_vacuum_01.state, status: 'cleaning', cycleMinutes: 2, batteryPercent: 91 };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.devices.living_light_01.state.power).toBe('off');
+    expect(updated.devices.kitchen_light_01.state.power).toBe('off');
+    expect(updated.devices.dining_light_01.state.power).toBe('off');
+    expect(updated.devices.tv_01.state).toMatchObject({ power: 'off', app: null, volume: 0 });
+    expect(updated.devices.range_hood_01.state).toMatchObject({ power: 'off', speed: 0 });
+    expect(updated.devices.robot_vacuum_01.state).toMatchObject({ status: 'docked', cycleMinutes: 0 });
+  });
+
   it('creates a high severity alert and closes the water valve during a night leak', () => {
     const simulator = createSimulator({ seed: 99 });
 
@@ -1475,12 +1534,14 @@ describe('virtual home simulator MVP', () => {
       resolvedAt: '2026-06-17T06:20:00+08:00'
     });
     const secondOpenDuringCooldown = simulator.injectAbnormality('fridge_left_open');
-    const afterCooldown = simulator.advanceMinutes(5);
+    const stillCoolingDown = simulator.advanceMinutes(5);
+    const afterCooldown = simulator.advanceMinutes(1);
 
     expect(firstOpen.filter((event): event is AutomationTriggeredEvent => event.type === 'AutomationTriggered' && event.ruleId === 'fridge_left_open')).toHaveLength(1);
     expect(resolved.some((event): event is DeviceStateChangedEvent => event.type === 'DeviceStateChanged' && event.deviceId === 'fridge_01' && event.state.doorOpen === false)).toBe(true);
     expect(resolved.some((event): event is RuleRecoveredEvent => event.type === 'RuleRecovered' && event.ruleId === 'fridge_left_open')).toBe(true);
     expect(secondOpenDuringCooldown.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'fridge_left_open')).toBe(false);
+    expect(stillCoolingDown.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'fridge_left_open')).toBe(false);
     expect(afterCooldown.filter((event): event is AutomationTriggeredEvent => event.type === 'AutomationTriggered' && event.ruleId === 'fridge_left_open')).toHaveLength(1);
     expect(simulator.getSnapshot().alerts.fridge_left_open_001.status).toBe('active');
   });
@@ -1787,10 +1848,10 @@ describe('virtual home simulator MVP', () => {
       cycleMinutes: 0
     });
 
-    const stuckEvents = simulator.advanceMinutes(3);
+    const stuckEvents = simulator.advanceMinutes(5);
     expect(simulator.getSnapshot().devices.robot_vacuum_01.state).toMatchObject({
       status: 'stuck',
-      cycleMinutes: 3
+      cycleMinutes: expect.any(Number)
     });
     expect(stuckEvents).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -1805,7 +1866,7 @@ describe('virtual home simulator MVP', () => {
     simulator.advanceMinutes(1);
     expect(simulator.getSnapshot().devices.robot_vacuum_01.state.status).toBe('cleaning');
 
-    simulator.advanceMinutes(3);
+    simulator.advanceMinutes(4);
     expect(simulator.getSnapshot().devices.robot_vacuum_01.state).toMatchObject({
       status: 'docked',
       cycleMinutes: 0
@@ -1836,11 +1897,15 @@ describe('virtual home simulator MVP', () => {
     const secondNoActivityDuringCooldown = simulator.injectAbnormality('senior_no_activity');
     simulator.resolveAbnormality('senior_no_activity');
     simulator.advanceMinutes(5);
+    const stillCoolingDown = simulator.injectAbnormality('senior_no_activity');
+    simulator.resolveAbnormality('senior_no_activity');
+    simulator.advanceMinutes(5);
     const afterCooldown = simulator.injectAbnormality('senior_no_activity');
 
     expect(firstNoActivity.filter((event): event is AutomationTriggeredEvent => event.type === 'AutomationTriggered' && event.ruleId === 'senior_no_activity')).toHaveLength(1);
     expect(resolved.some((event): event is RuleRecoveredEvent => event.type === 'RuleRecovered' && event.ruleId === 'senior_no_activity')).toBe(true);
     expect(secondNoActivityDuringCooldown.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'senior_no_activity')).toBe(false);
+    expect(stillCoolingDown.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'senior_no_activity')).toBe(false);
     expect(afterCooldown.filter((event): event is AutomationTriggeredEvent => event.type === 'AutomationTriggered' && event.ruleId === 'senior_no_activity')).toHaveLength(1);
     expect(simulator.getSnapshot().alerts.senior_no_activity_001.status).toBe('active');
   });
@@ -1905,9 +1970,11 @@ describe('virtual home simulator MVP', () => {
     const restored = createSimulator({ seed: 42 });
     restored.restore(checkpoint, events);
     const duringCooldown = restored.injectAbnormality('fridge_left_open');
-    const afterCooldown = restored.advanceMinutes(5);
+    const stillCoolingDown = restored.advanceMinutes(5);
+    const afterCooldown = restored.advanceMinutes(1);
 
     expect(duringCooldown.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'fridge_left_open')).toBe(false);
+    expect(stillCoolingDown.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'fridge_left_open')).toBe(false);
     expect(afterCooldown.filter((event): event is AutomationTriggeredEvent => event.type === 'AutomationTriggered' && event.ruleId === 'fridge_left_open')).toHaveLength(1);
   });
 

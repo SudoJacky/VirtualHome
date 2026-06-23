@@ -43,6 +43,38 @@ describe('dashboard view model', () => {
     expect(model.floorplanRooms.bathroom.devices.some((device) => device.id === 'water_valve_01' && !device.active)).toBe(true);
   });
 
+  it('does not surface senior-only UI state for the default household', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(30);
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const serialized = JSON.stringify(model);
+
+    expect(Object.keys(simulator.getSnapshot().people)).not.toContain('senior_1');
+    expect(serialized).not.toContain('senior_1');
+    expect(serialized).not.toContain('senior_no_activity');
+    expect(serialized).not.toContain('Senior family member');
+    expect(serialized).not.toContain('Senior resident');
+    expect(serialized).not.toContain('Senior inactivity');
+  });
+
+  it('hides stale senior-only events when the active household has no senior resident', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.injectAbnormality('senior_no_activity');
+
+    const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
+    const serialized = JSON.stringify(model);
+
+    expect(Object.keys(simulator.getSnapshot().people)).not.toContain('senior_1');
+    expect(serialized).not.toContain('senior_1');
+    expect(serialized).not.toContain('senior_no_activity');
+    expect(serialized).not.toContain('Senior family member');
+    expect(serialized).not.toContain('Senior resident');
+    expect(serialized).not.toContain('Senior inactivity');
+  });
+
   it('deduplicates event streams by event id when API and WebSocket overlap', () => {
     const simulator = createSimulator({ seed: 42 });
     simulator.startScenario('weekday_normal');
@@ -957,6 +989,9 @@ describe('dashboard view model', () => {
   it('surfaces expanded random household devices on the floorplan', () => {
     const simulator = createSimulator({ seed: 2026 });
     simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.worldState.inventory.dirtyLaundryKg = 5.2;
+    simulator.restore(snapshot, simulator.getEvents());
     simulator.advanceMinutes(360);
 
     const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());

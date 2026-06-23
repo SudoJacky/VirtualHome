@@ -550,25 +550,26 @@ const scenarioCards: ScenarioCard[] = [
 ];
 
 export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]): DashboardModel {
+  const visibleEvents = filterVisibleEventsForSnapshot(snapshot, events);
   const occupiedRooms = Object.values(snapshot.rooms)
     .filter((room) => room.occupancy)
     .map((room) => room.name);
   const activeDeviceCount = Object.values(snapshot.devices)
     .filter((device) => isDeviceTypeActive(device.type, device.state))
     .length;
-  const controlRecords = createControlRecords(events);
-  const automationExplanations = createAutomationExplanations(events, controlRecords);
-  const alertWorkflows = createAlertWorkflows(snapshot, events);
-  const telemetrySeries = createTelemetrySeries(events);
-  const deviceHealthCards = createDeviceHealthCards(snapshot, events);
+  const controlRecords = createControlRecords(visibleEvents);
+  const automationExplanations = createAutomationExplanations(visibleEvents, controlRecords);
+  const alertWorkflows = createAlertWorkflows(snapshot, visibleEvents);
+  const telemetrySeries = createTelemetrySeries(visibleEvents);
+  const deviceHealthCards = createDeviceHealthCards(snapshot, visibleEvents);
   const behaviorCards = createBehaviorCards(snapshot);
   const deviceLifecycleCards = createDeviceLifecycleCards(snapshot);
-  const causalEvents = createCausalEvents(snapshot, events);
-  const behaviorAudit = createBehaviorAudit(snapshot, events, behaviorCards, deviceLifecycleCards, causalEvents);
+  const causalEvents = createCausalEvents(snapshot, visibleEvents);
+  const behaviorAudit = createBehaviorAudit(snapshot, visibleEvents, behaviorCards, deviceLifecycleCards, causalEvents);
   const priorityQueue = createPriorityQueue(snapshot, controlRecords, automationExplanations, telemetrySeries, deviceHealthCards);
   const alertStatusSummary = createAlertStatusSummary(snapshot);
   const predictionCards = createPredictionCards(snapshot);
-  const twinInference = createTwinInferencePanel(snapshot, events);
+  const twinInference = createTwinInferencePanel(snapshot, visibleEvents);
   return {
     homeMode: snapshot.homeState.mode,
     simTime: snapshot.simClock.currentTime,
@@ -581,12 +582,12 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
     householdActivity: createHouseholdActivity(snapshot),
     controlRecords,
     controlRecordFilters: createControlRecordFilters(controlRecords),
-    deviceControlCards: createDeviceControlCards(snapshot, events),
+    deviceControlCards: createDeviceControlCards(snapshot, visibleEvents),
     automationExplanations,
     alertWorkflows,
     scenarioCards,
     demoSpotlight: createDemoSpotlight(snapshot, controlRecords, automationExplanations, alertWorkflows, priorityQueue),
-    recentEvents: events
+    recentEvents: visibleEvents
       .filter((event) => event.type !== 'DeviceTelemetry')
       .slice(-20)
       .reverse()
@@ -602,7 +603,7 @@ export function createDashboardModel(snapshot: TwinSnapshot, events: TwinEvent[]
     forecastCharts: predictionCards.map((card) => card.chart),
     insightCards: createInsightCards(snapshot, telemetrySeries, deviceHealthCards),
     telemetrySeries,
-    floorplanRooms: createFloorplanRooms(snapshot, events)
+    floorplanRooms: createFloorplanRooms(snapshot, visibleEvents)
   };
 }
 
@@ -610,6 +611,10 @@ function createTwinInferencePanel(snapshot: TwinSnapshot, events: TwinEvent[]): 
   const peopleIds = Object.values(snapshot.people)
     .filter((person) => person.kind === 'human')
     .map((person) => person.id);
+  const supportedRiskIds = new Set(['fridge_left_open', 'network_impact', 'stove_unattended', 'water_leak']);
+  if (hasSeniorResident(snapshot)) {
+    supportedRiskIds.add('senior_no_activity');
+  }
   const roomIds = Object.keys(snapshot.rooms) as RoomId[];
   const inference = inferTwinState(events, {
     currentTime: snapshot.simClock.currentTime,
@@ -644,6 +649,7 @@ function createTwinInferencePanel(snapshot: TwinSnapshot, events: TwinEvent[]): 
       };
     }),
     risks: Object.entries(inference.risks)
+      .filter(([id]) => supportedRiskIds.has(id))
       .map(([id, risk]) => ({
         id,
         probability: roundPercent(risk.probability),
@@ -653,7 +659,9 @@ function createTwinInferencePanel(snapshot: TwinSnapshot, events: TwinEvent[]): 
     forecasts: inference.forecasts.map((forecast) => ({
       horizonMinutes: forecast.horizonMinutes,
       inferredHomeMode: formatBehaviorText(forecast.homeMode.top),
-      risks: roundDistribution(forecast.risks)
+      risks: roundDistribution(Object.fromEntries(
+        Object.entries(forecast.risks).filter(([id]) => supportedRiskIds.has(id))
+      ))
     }))
   };
 }
@@ -675,8 +683,44 @@ function latestRunId(events: TwinEvent[]): string | undefined {
   return events.at(-1)?.runId ?? events[0]?.runId;
 }
 
+function filterVisibleEventsForSnapshot(snapshot: TwinSnapshot, events: TwinEvent[]): TwinEvent[] {
+  if (hasSeniorResident(snapshot)) {
+    return events;
+  }
+  return events.filter((event) => !isSeniorOnlyEvent(event));
+}
+
+function hasSeniorResident(snapshot: TwinSnapshot): boolean {
+  return Boolean(snapshot.people.senior_1);
+}
+
+function isSeniorOnlyEvent(event: TwinEvent): boolean {
+  if (event.reason?.includes('senior_1') || event.reason?.includes('senior_no_activity')) {
+    return true;
+  }
+  if ('ruleId' in event && typeof event.ruleId === 'string' && event.ruleId.startsWith('senior_')) {
+    return true;
+  }
+  if ('alertId' in event && typeof event.alertId === 'string' && event.alertId.startsWith('senior_')) {
+    return true;
+  }
+  if (event.type === 'AbnormalityInjected') {
+    return event.kind === 'senior_no_activity' || event.affectedEntities.includes('senior_1');
+  }
+  if (event.type === 'PersonMoved') {
+    return event.personId === 'senior_1';
+  }
+  if (event.type === 'ActivityStarted' || event.type === 'ActivityEnded') {
+    return event.participants.includes('senior_1');
+  }
+  if (event.type === 'ConversationOccurred') {
+    return event.speakerId === 'senior_1' || event.listenerIds.includes('senior_1');
+  }
+  return false;
+}
+
 function createAlertStatusSummary(snapshot: TwinSnapshot): AlertStatusSummary {
-  const alerts = Object.values(snapshot.alerts);
+  const alerts = alertsForSnapshot(snapshot);
   const summary: AlertStatusSummary = { new: 0, acknowledged: 0, unresolved: 0, resolved: 0, ignored: 0 };
   for (const alert of alerts) {
     const status = getAlertLifecycleStatus(alert);
@@ -2165,7 +2209,15 @@ function createAlertEvidence(alert: AlertState, events: TwinEvent[]): string[] {
 }
 
 function activeAlerts(snapshot: TwinSnapshot): AlertState[] {
-  return Object.values(snapshot.alerts).filter(isUnresolvedAlert);
+  return alertsForSnapshot(snapshot).filter(isUnresolvedAlert);
+}
+
+function alertsForSnapshot(snapshot: TwinSnapshot): AlertState[] {
+  return Object.values(snapshot.alerts).filter((alert) => hasSeniorResident(snapshot) || !isSeniorOnlyAlert(alert));
+}
+
+function isSeniorOnlyAlert(alert: AlertState): boolean {
+  return alert.id.startsWith('senior_') || alert.sourceRuleId?.startsWith('senior_') === true;
 }
 
 function isUnresolvedAlert(alert: AlertState): boolean {

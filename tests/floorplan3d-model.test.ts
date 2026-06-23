@@ -434,17 +434,39 @@ describe('3D floorplan layout and model', () => {
     });
   });
 
-  it('keeps recent person movement paths for smooth animation', () => {
+  it('keeps recent pet movement animation without drawing an ambient trail', () => {
     const simulator = createSimulator({ seed: 314 });
     simulator.startScenario('weekday_normal');
     simulator.advanceMinutes(14);
 
     const model = createFloorplan3DModel(simulator.getSnapshot(), simulator.getEvents());
-    const recentPerson = model.people.find((person) => person.recent);
+    const pet = model.people.find((person) => person.id === 'pet_1');
 
-    expect(recentPerson?.movementPath.length).toBeGreaterThanOrEqual(2);
-    expect(recentPerson?.movementTrailVisible).toBe(true);
-    expect(recentPerson?.movementPath.every((point) => Number.isFinite(point.x) && Number.isFinite(point.z))).toBe(true);
+    expect(pet).toMatchObject({
+      recent: true,
+      movementTrailVisible: false
+    });
+    expect(pet?.movementPath.length).toBeGreaterThanOrEqual(2);
+    expect(pet?.movementSegments.length).toBeGreaterThan(0);
+    expect(pet?.movementPath.every((point) => Number.isFinite(point.x) && Number.isFinite(point.z))).toBe(true);
+  });
+
+  it('limits frequent pet movement segments to the latest route burst', () => {
+    const simulator = createSimulator({ seed: 42 });
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(120);
+
+    const model = createFloorplan3DModel(simulator.getSnapshot(), simulator.getEvents());
+    const pet = model.people.find((person) => person.id === 'pet_1');
+    const latestPetMove = simulator.getEvents()
+      .filter((event) => event.type === 'PersonMoved' && event.personId === 'pet_1')
+      .at(-1);
+
+    expect(latestPetMove).toBeDefined();
+    expect(pet?.movementSegments.length).toBeGreaterThan(0);
+    expect(pet?.movementSegments.length).toBeLessThanOrEqual(2);
+    expect(new Set(pet?.movementSegments.map((segment) => segment.endedAt))).toEqual(new Set([latestPetMove!.simTime]));
+    expect(pet?.movementTrailVisible).toBe(false);
   });
 
   it('shows the selected adult returning after a manual device command while preserving the movement path', () => {
@@ -482,22 +504,16 @@ describe('3D floorplan layout and model', () => {
       from: segment.fromRoomId,
       to: segment.toRoomId,
       activity: segment.activity,
+      reason: segment.reason,
       travelMinutes: segment.travelMinutes,
       startedAt: segment.startedAt.slice(11, 16),
       endedAt: segment.endedAt.slice(11, 16)
     }))).toEqual([
       {
-        from: 'master_bedroom',
-        to: 'living_room',
-        activity: 'controlling_tv_01',
-        travelMinutes: 1,
-        startedAt: '00:00',
-        endedAt: '00:01'
-      },
-      {
         from: 'living_room',
         to: 'master_bedroom',
         activity: 'idle',
+        reason: 'operator:return_from_device:tv_01:set_input',
         travelMinutes: 1,
         startedAt: '00:01',
         endedAt: '00:02'
@@ -523,7 +539,6 @@ describe('3D floorplan layout and model', () => {
         startedAt: segment.startedAt.slice(11, 16),
         endedAt: segment.endedAt.slice(11, 16)
       }))).toEqual([
-        { startedAt: '00:00', endedAt: '00:01' },
         { startedAt: '00:01', endedAt: '00:02' }
       ]);
     } finally {
