@@ -65,7 +65,7 @@ export function applyActivityToInventory(inventory: HouseholdInventory, activity
     next.dirtyLaundryKg = Math.max(0, next.dirtyLaundryKg - 4);
     next.unfinishedChores = Math.max(0, next.unfinishedChores - 1);
     removePendingChore(next, 'laundry');
-  } else if (activityId === 'unload_dishwasher') {
+  } else if (activityId === 'load_dishwasher' || activityId === 'unload_dishwasher') {
     next.dirtyDishes = 0;
     next.unfinishedChores = Math.max(0, next.unfinishedChores - 1);
     removePendingChore(next, 'dishes');

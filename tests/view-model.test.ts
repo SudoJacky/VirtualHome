@@ -957,6 +957,9 @@ describe('dashboard view model', () => {
   it('surfaces expanded random household devices on the floorplan', () => {
     const simulator = createSimulator({ seed: 2026 });
     simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.worldState.inventory.dirtyLaundryKg = 5.2;
+    simulator.restore(snapshot, simulator.getEvents());
     simulator.advanceMinutes(360);
 
     const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
