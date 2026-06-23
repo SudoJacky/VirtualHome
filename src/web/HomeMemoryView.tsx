@@ -11,7 +11,13 @@ import {
 } from './deviceEventSocket';
 import { HomeMemory3D } from './HomeMemory3D';
 import { createHomeMemory, reduceDeviceEvents, type HomeMemory, type MemoryEvidence } from './homeMemoryModel';
-import { createHomeMemoryGraphModel, type HomeMemoryGraphNode } from './homeMemoryGraphModel';
+import {
+  createDeviceEvidenceGraphHighlight,
+  createFocusedNodeGraphHighlight,
+  createHomeMemoryGraphModel,
+  type HomeMemoryGraphHighlight,
+  type HomeMemoryGraphNode
+} from './homeMemoryGraphModel';
 import { createHomeProfileHypotheses, type ProfileHypothesis } from './homeProfiler';
 
 type MemorySocketStatus = 'connecting' | 'live' | 'reconnecting' | 'paused' | 'offline';
@@ -28,6 +34,7 @@ export function HomeMemoryView(): React.ReactElement {
   const [lastUpdateAt, setLastUpdateAt] = React.useState<string | null>(null);
   const [memoryWarning, setMemoryWarning] = React.useState<string | null>(null);
   const [cursor, setCursor] = React.useState<DeviceEventCursor | null>(null);
+  const [activeEvidenceEvent, setActiveEvidenceEvent] = React.useState<DeviceValueEvent | null>(null);
   const cursorRef = React.useRef<DeviceEventCursor | null>(null);
 
   React.useEffect(() => {
@@ -53,6 +60,7 @@ export function HomeMemoryView(): React.ReactElement {
       setRecentEvents([]);
       setSelectedNodeId(null);
       setMemoryWarning(null);
+      setActiveEvidenceEvent(null);
     }
 
     function connect(): void {
@@ -103,6 +111,7 @@ export function HomeMemoryView(): React.ReactElement {
               ...newestFirst(update.events),
               ...current
             ].slice(0, RECENT_DEVICE_EVENT_LIMIT));
+            setActiveEvidenceEvent(latestBySequence(update.events));
           }
           setSelectedNodeId(null);
           setMemoryWarning('Replay was incomplete; memory is showing the processed partial batch until the device stream catches up.');
@@ -120,6 +129,7 @@ export function HomeMemoryView(): React.ReactElement {
             ...newestFirst(update.events),
             ...current
           ].slice(0, RECENT_DEVICE_EVENT_LIMIT));
+          setActiveEvidenceEvent(latestBySequence(update.events));
         }
       });
       socket.addEventListener('close', () => {
@@ -152,6 +162,18 @@ export function HomeMemoryView(): React.ReactElement {
 
   const hypotheses = React.useMemo(() => createHomeProfileHypotheses(memory), [memory]);
   const graph = React.useMemo(() => createHomeMemoryGraphModel(memory, hypotheses), [hypotheses, memory]);
+  const evidenceHighlight = React.useMemo(
+    () => (activeEvidenceEvent ? createDeviceEvidenceGraphHighlight(graph, activeEvidenceEvent) : EMPTY_GRAPH_HIGHLIGHT),
+    [activeEvidenceEvent, graph]
+  );
+  const focusedHighlight = React.useMemo(
+    () => createFocusedNodeGraphHighlight(graph, selectedNodeId),
+    [graph, selectedNodeId]
+  );
+  const graphHighlight = React.useMemo(
+    () => mergeGraphHighlights(evidenceHighlight, focusedHighlight),
+    [evidenceHighlight, focusedHighlight]
+  );
   const selectedNode = React.useMemo(
     () => graph.nodes.find((node) => node.id === selectedNodeId) ?? null,
     [graph.nodes, selectedNodeId]
@@ -164,11 +186,24 @@ export function HomeMemoryView(): React.ReactElement {
     }
   }, [graph.nodes, selectedNodeId]);
 
+  React.useEffect(() => {
+    if (!activeEvidenceEvent) {
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => {
+      setActiveEvidenceEvent(null);
+    }, 4600);
+
+    return () => window.clearTimeout(timer);
+  }, [activeEvidenceEvent]);
+
   function clearMemory(): void {
     setMemory(createHomeMemory());
     setRecentEvents([]);
     setSelectedNodeId(null);
     setMemoryWarning(null);
+    setActiveEvidenceEvent(null);
   }
 
   return (
@@ -198,7 +233,20 @@ export function HomeMemoryView(): React.ReactElement {
 
       <div className="memory-main">
         <section className="memory-graph-canvas-shell" aria-label="Home memory 3D graph">
-          <HomeMemory3D graph={graph} selectedNodeId={selectedNodeId} onSelectNode={setSelectedNodeId} />
+          <HomeMemory3D
+            graph={graph}
+            highlightedEdgeIds={graphHighlight.edgeIds}
+            highlightedNodeIds={graphHighlight.nodeIds}
+            selectedNodeId={selectedNodeId}
+            onSelectNode={setSelectedNodeId}
+          />
+          <div className="memory-layer-legend" aria-label="Home memory graph layers">
+            <span><i className="home" /> Home</span>
+            <span><i className="room" /> Rooms</span>
+            <span><i className="device" /> Devices</span>
+            <span><i className="field" /> Fields</span>
+            <span><i className="hypothesis" /> Hypotheses</span>
+          </div>
           <div className="memory-cursor-strip" aria-label="Device event cursor">
             <span><Radio size={14} /> {cursor ? `Run ${cursor.runId}` : 'Waiting for device stream'}</span>
             <span>{cursor ? `Sequence ${cursor.sequence}` : 'No cursor yet'}</span>
@@ -226,6 +274,26 @@ export function HomeMemoryView(): React.ReactElement {
       <RecentDeviceEventStrip events={recentEvents} />
     </div>
   );
+}
+
+const EMPTY_GRAPH_HIGHLIGHT: HomeMemoryGraphHighlight = {
+  nodeIds: [],
+  edgeIds: []
+};
+
+function mergeGraphHighlights(...highlights: HomeMemoryGraphHighlight[]): HomeMemoryGraphHighlight {
+  return {
+    nodeIds: sortedUnique(highlights.flatMap((highlight) => highlight.nodeIds)),
+    edgeIds: sortedUnique(highlights.flatMap((highlight) => highlight.edgeIds))
+  };
+}
+
+function latestBySequence(events: DeviceValueEvent[]): DeviceValueEvent {
+  return [...events].sort((left, right) => right.sequence - left.sequence)[0];
+}
+
+function sortedUnique(values: string[]): string[] {
+  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
 
 function ProfileStatsPanel({

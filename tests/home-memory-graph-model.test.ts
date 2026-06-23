@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { DeviceValueEvent } from '../src/web/deviceEventSocket';
 import { createHomeMemory, reduceDeviceEvents } from '../src/web/homeMemoryModel';
 import type { ProfileHypothesis } from '../src/web/homeProfiler';
-import { createHomeMemoryGraphModel } from '../src/web/homeMemoryGraphModel';
+import {
+  createDeviceEvidenceGraphHighlight,
+  createFocusedNodeGraphHighlight,
+  createHomeMemoryGraphModel
+} from '../src/web/homeMemoryGraphModel';
 
 function deviceEvent(overrides: Partial<DeviceValueEvent> = {}): DeviceValueEvent {
   return {
@@ -166,6 +170,101 @@ describe('home memory graph model', () => {
     ]));
   });
 
+  it('exposes stable graph layers for the 3d renderer', () => {
+    const graph = createHomeMemoryGraphModel(graphMemory(), hypotheses());
+
+    expect(graph.layers).toEqual([
+      { kind: 'home', label: 'Home', radius: 0, z: 0 },
+      { kind: 'room', label: 'Rooms', radius: 5, z: 0 },
+      { kind: 'device', label: 'Devices', radius: 9, z: 1.5 },
+      { kind: 'field', label: 'Fields', radius: 13, z: -1.5 },
+      { kind: 'hypothesis', label: 'Hypotheses', radius: 17, z: 3 }
+    ]);
+  });
+
+  it('creates a device evidence highlight path through home, room, device, field, and related hypotheses', () => {
+    const graph = createHomeMemoryGraphModel(graphMemory(), hypotheses());
+
+    const highlight = createDeviceEvidenceGraphHighlight(graph, deviceEvent({
+      id: 'kitchen_coffee_power_2',
+      sourceEventId: 'source_kitchen_coffee_power_2',
+      sequence: 4,
+      deviceId: 'coffee_maker_01',
+      deviceType: 'coffee_maker',
+      field: 'powerW',
+      value: 0
+    }));
+
+    expect(highlight.nodeIds).toEqual([
+      'home:home_1',
+      'room:kitchen',
+      'device:coffee_maker_01',
+      'field:coffee_maker_01:powerW',
+      'hypothesis:presence:recent-activity',
+      'hypothesis:room:kitchen:habit'
+    ]);
+    expect(highlight.edgeIds).toEqual([
+      'contains:home:home_1:room:kitchen',
+      'contains:room:kitchen:device:coffee_maker_01',
+      'observes:device:coffee_maker_01:field:coffee_maker_01:powerW',
+      'supports:hypothesis:presence:recent-activity:device:coffee_maker_01',
+      'supports:hypothesis:presence:recent-activity:room:kitchen',
+      'supports:hypothesis:room:kitchen:habit:room:kitchen'
+    ]);
+  });
+
+  it('creates an empty evidence highlight when the event is not represented in the graph', () => {
+    const graph = createHomeMemoryGraphModel(graphMemory(), hypotheses());
+
+    expect(createDeviceEvidenceGraphHighlight(graph, deviceEvent({
+      roomId: 'garage',
+      deviceId: 'missing_device_01',
+      field: 'power'
+    }))).toEqual({
+      nodeIds: [],
+      edgeIds: []
+    });
+  });
+
+  it('creates a focused field highlight through its containing chain and related hypotheses', () => {
+    const graph = createHomeMemoryGraphModel(graphMemory(), hypotheses());
+
+    const highlight = createFocusedNodeGraphHighlight(graph, 'field:coffee_maker_01:powerW');
+
+    expect(highlight.nodeIds).toEqual([
+      'home:home_1',
+      'room:kitchen',
+      'device:coffee_maker_01',
+      'field:coffee_maker_01:powerW',
+      'hypothesis:presence:recent-activity',
+      'hypothesis:room:kitchen:habit'
+    ]);
+    expect(highlight.edgeIds).toEqual([
+      'contains:home:home_1:room:kitchen',
+      'contains:room:kitchen:device:coffee_maker_01',
+      'observes:device:coffee_maker_01:field:coffee_maker_01:powerW',
+      'supports:hypothesis:presence:recent-activity:device:coffee_maker_01',
+      'supports:hypothesis:presence:recent-activity:room:kitchen',
+      'supports:hypothesis:room:kitchen:habit:room:kitchen'
+    ]);
+  });
+
+  it('creates a focused hypothesis highlight across its supporting subjects', () => {
+    const graph = createHomeMemoryGraphModel(graphMemory(), hypotheses());
+
+    expect(createFocusedNodeGraphHighlight(graph, 'hypothesis:presence:recent-activity')).toEqual({
+      nodeIds: [
+        'hypothesis:presence:recent-activity',
+        'device:coffee_maker_01',
+        'room:kitchen'
+      ],
+      edgeIds: [
+        'supports:hypothesis:presence:recent-activity:device:coffee_maker_01',
+        'supports:hypothesis:presence:recent-activity:room:kitchen'
+      ]
+    });
+  });
+
   it('omits nonexistent hypothesis subjects from support edges and related ids', () => {
     const graph = createHomeMemoryGraphModel(graphMemory(), hypotheses());
     const hypothesis = graph.nodes.find((node) => node.id === 'hypothesis:room:kitchen:habit');
@@ -214,6 +313,7 @@ describe('home memory graph model', () => {
     const graph = createHomeMemoryGraphModel(createHomeMemory(), []);
 
     expect(graph).toEqual({
+      layers: expect.any(Array),
       nodes: [
         expect.objectContaining({
           id: 'home:unknown',

@@ -6,6 +6,8 @@ import type { HomeMemoryGraphModel, HomeMemoryGraphNode, HomeMemoryGraphNodeKind
 
 interface HomeMemory3DProps {
   graph: HomeMemoryGraphModel;
+  highlightedEdgeIds?: string[];
+  highlightedNodeIds?: string[];
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string | null) => void;
 }
@@ -18,11 +20,21 @@ const NODE_COLORS: Record<HomeMemoryGraphNodeKind, string> = {
   hypothesis: '#9b4d4d'
 };
 
-export function HomeMemory3D({ graph, selectedNodeId, onSelectNode }: HomeMemory3DProps): React.ReactElement {
+const HIGHLIGHT_COLOR = '#f0a92e';
+
+export function HomeMemory3D({
+  graph,
+  highlightedEdgeIds = [],
+  highlightedNodeIds = [],
+  selectedNodeId,
+  onSelectNode
+}: HomeMemory3DProps): React.ReactElement {
   const nodeById = React.useMemo(
     () => new Map(graph.nodes.map((node) => [node.id, node])),
     [graph.nodes]
   );
+  const highlightedNodeIdSet = React.useMemo(() => new Set(highlightedNodeIds), [highlightedNodeIds]);
+  const highlightedEdgeIdSet = React.useMemo(() => new Set(highlightedEdgeIds), [highlightedEdgeIds]);
 
   return (
     <Canvas
@@ -36,9 +48,13 @@ export function HomeMemory3D({ graph, selectedNodeId, onSelectNode }: HomeMemory
       <directionalLight position={[5, 9, 7]} intensity={1.35} />
       <hemisphereLight args={['#f8fbff', '#9fb3ad', 0.58]} />
       <group rotation={[-0.12, -0.28, 0]}>
+        {graph.layers.map((layer) => (
+          <MemoryLayerGuide key={layer.kind} kind={layer.kind} label={layer.label} radius={layer.radius} z={layer.z} />
+        ))}
         {graph.edges.map((edge) => {
           const from = nodeById.get(edge.from);
           const to = nodeById.get(edge.to);
+          const highlighted = highlightedEdgeIdSet.has(edge.id);
 
           if (!from || !to) {
             return null;
@@ -48,10 +64,10 @@ export function HomeMemory3D({ graph, selectedNodeId, onSelectNode }: HomeMemory
             <Line
               key={edge.id}
               points={[toVector(from), toVector(to)]}
-              color={edgeColor(edge.kind)}
-              lineWidth={edge.kind === 'supports' ? 1.2 : 0.9}
+              color={highlighted ? HIGHLIGHT_COLOR : edgeColor(edge.kind)}
+              lineWidth={highlighted ? 2.7 : edge.kind === 'supports' ? 1.2 : 0.9}
               transparent
-              opacity={Math.max(0.2, Math.min(0.72, 0.22 + edge.strength / 8))}
+              opacity={highlighted ? 0.96 : Math.max(0.2, Math.min(0.72, 0.22 + edge.strength / 8))}
             />
           );
         })}
@@ -59,6 +75,7 @@ export function HomeMemory3D({ graph, selectedNodeId, onSelectNode }: HomeMemory
           <MemoryNode
             key={node.id}
             node={node}
+            highlighted={highlightedNodeIdSet.has(node.id)}
             selected={node.id === selectedNodeId}
             related={selectedNodeId ? node.relatedIds.includes(selectedNodeId) : false}
             onSelect={() => onSelectNode(node.id)}
@@ -78,13 +95,65 @@ export function HomeMemory3D({ graph, selectedNodeId, onSelectNode }: HomeMemory
   );
 }
 
+function MemoryLayerGuide({
+  kind,
+  label,
+  radius,
+  z
+}: {
+  kind: HomeMemoryGraphNodeKind;
+  label: string;
+  radius: number;
+  z: number;
+}): React.ReactElement | null {
+  const scaledRadius = radius * 0.42;
+
+  if (kind === 'home') {
+    return (
+      <Text
+        anchorX="center"
+        anchorY="middle"
+        color="#4a5d5a"
+        fontSize={0.18}
+        outlineColor="#edf4f2"
+        outlineWidth={0.018}
+        position={[0, z * 0.82 - 0.42, 0.82]}
+      >
+        {label}
+      </Text>
+    );
+  }
+
+  return (
+    <group position={[0, z * 0.82 - 0.02, 0]}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[Math.max(0.1, scaledRadius - 0.025), scaledRadius + 0.025, 96]} />
+        <meshBasicMaterial color={NODE_COLORS[kind]} transparent opacity={0.18} />
+      </mesh>
+      <Text
+        anchorX="left"
+        anchorY="middle"
+        color={NODE_COLORS[kind]}
+        fontSize={0.18}
+        outlineColor="#edf4f2"
+        outlineWidth={0.02}
+        position={[scaledRadius + 0.42, 0.08, 0]}
+      >
+        {label}
+      </Text>
+    </group>
+  );
+}
+
 function MemoryNode({
   node,
+  highlighted,
   selected,
   related,
   onSelect
 }: {
   node: HomeMemoryGraphNode;
+  highlighted: boolean;
   selected: boolean;
   related: boolean;
   onSelect: () => void;
@@ -95,7 +164,7 @@ function MemoryNode({
 
   useFrame(({ clock }) => {
     if (!groupRef.current) return;
-    const pulse = selected ? 1 + Math.sin(clock.elapsedTime * 4.2) * 0.08 : 1;
+    const pulse = selected || highlighted ? 1 + Math.sin(clock.elapsedTime * 4.2) * (selected ? 0.08 : 0.05) : 1;
     groupRef.current.scale.setScalar(pulse);
   });
 
@@ -107,18 +176,22 @@ function MemoryNode({
   return (
     <group ref={groupRef} position={toVector(node)}>
       <mesh onClick={handleClick} castShadow>
-        <sphereGeometry args={[radius, 32, 24]} />
+        <sphereGeometry args={[highlighted ? radius + 0.05 : radius, 32, 24]} />
         <meshStandardMaterial
-          color={color}
-          emissive={color}
-          emissiveIntensity={selected ? 0.34 : related ? 0.16 : 0.05}
+          color={highlighted ? HIGHLIGHT_COLOR : color}
+          emissive={highlighted ? HIGHLIGHT_COLOR : color}
+          emissiveIntensity={selected ? 0.38 : highlighted ? 0.34 : related ? 0.16 : 0.05}
           roughness={0.62}
         />
       </mesh>
-      {selected || related ? (
+      {selected || related || highlighted ? (
         <mesh rotation={[-Math.PI / 2, 0, 0]}>
-          <ringGeometry args={[radius * 1.28, radius * 1.72, 42]} />
-          <meshBasicMaterial color={color} transparent opacity={selected ? 0.38 : 0.2} />
+          <ringGeometry args={[radius * 1.28, radius * 1.82, 42]} />
+          <meshBasicMaterial
+            color={highlighted ? HIGHLIGHT_COLOR : color}
+            transparent
+            opacity={selected ? 0.42 : highlighted ? 0.36 : 0.2}
+          />
         </mesh>
       ) : null}
       <Text

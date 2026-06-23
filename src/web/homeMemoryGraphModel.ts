@@ -1,3 +1,4 @@
+import type { DeviceValueEvent } from './deviceEventSocket';
 import type { DeviceMemory, FieldMemory, HomeMemory, RoomMemory } from './homeMemoryModel';
 import type { ProfileHypothesis } from './homeProfiler';
 
@@ -25,7 +26,20 @@ export interface HomeMemoryGraphEdge {
   strength: number;
 }
 
+export interface HomeMemoryGraphLayer {
+  kind: HomeMemoryGraphNodeKind;
+  label: string;
+  radius: number;
+  z: number;
+}
+
+export interface HomeMemoryGraphHighlight {
+  nodeIds: string[];
+  edgeIds: string[];
+}
+
 export interface HomeMemoryGraphModel {
+  layers: HomeMemoryGraphLayer[];
   nodes: HomeMemoryGraphNode[];
   edges: HomeMemoryGraphEdge[];
 }
@@ -55,6 +69,14 @@ const RING_Z_BY_KIND: Record<HomeMemoryGraphNodeKind, number> = {
   field: -1.5,
   hypothesis: 3
 };
+
+export const HOME_MEMORY_GRAPH_LAYERS: HomeMemoryGraphLayer[] = [
+  { kind: 'home', label: 'Home', radius: RING_RADIUS_BY_KIND.home, z: RING_Z_BY_KIND.home },
+  { kind: 'room', label: 'Rooms', radius: RING_RADIUS_BY_KIND.room, z: RING_Z_BY_KIND.room },
+  { kind: 'device', label: 'Devices', radius: RING_RADIUS_BY_KIND.device, z: RING_Z_BY_KIND.device },
+  { kind: 'field', label: 'Fields', radius: RING_RADIUS_BY_KIND.field, z: RING_Z_BY_KIND.field },
+  { kind: 'hypothesis', label: 'Hypotheses', radius: RING_RADIUS_BY_KIND.hypothesis, z: RING_Z_BY_KIND.hypothesis }
+];
 
 export function createHomeMemoryGraphModel(memory: HomeMemory, hypotheses: ProfileHypothesis[]): HomeMemoryGraphModel {
   const homeId = `home:${memory.homeId ?? 'unknown'}`;
@@ -100,8 +122,93 @@ export function createHomeMemoryGraphModel(memory: HomeMemory, hypotheses: Profi
   ];
 
   return {
+    layers: HOME_MEMORY_GRAPH_LAYERS,
     nodes,
     edges
+  };
+}
+
+export function createDeviceEvidenceGraphHighlight(
+  graph: HomeMemoryGraphModel,
+  event: Pick<DeviceValueEvent, 'homeId' | 'roomId' | 'deviceId' | 'field'>
+): HomeMemoryGraphHighlight {
+  const nodeIds = new Set(graph.nodes.map((node) => node.id));
+  const edgeIds = new Set(graph.edges.map((edgeItem) => edgeItem.id));
+  const homeId = `home:${event.homeId}`;
+  const roomId = `room:${event.roomId}`;
+  const deviceId = `device:${event.deviceId}`;
+  const fieldId = `field:${event.deviceId}:${event.field}`;
+  const chainNodeIds = [homeId, roomId, deviceId, fieldId];
+
+  if (!chainNodeIds.every((nodeId) => nodeIds.has(nodeId))) {
+    return { nodeIds: [], edgeIds: [] };
+  }
+
+  const chainEdgeIds = [
+    edge('contains', homeId, roomId, 0).id,
+    edge('contains', roomId, deviceId, 0).id,
+    edge('observes', deviceId, fieldId, 0).id
+  ].filter((edgeId) => edgeIds.has(edgeId));
+  const pathNodeIds = new Set(chainNodeIds);
+  const supportEdges = graph.edges.filter((edgeItem) => (
+    edgeItem.kind === 'supports'
+    && pathNodeIds.has(edgeItem.to)
+    && nodeIds.has(edgeItem.from)
+  ));
+  const supportNodeIds = sortedUnique(supportEdges.map((edgeItem) => edgeItem.from));
+
+  return {
+    nodeIds: [...chainNodeIds, ...supportNodeIds],
+    edgeIds: [...chainEdgeIds, ...supportEdges.map((edgeItem) => edgeItem.id)]
+  };
+}
+
+export function createFocusedNodeGraphHighlight(graph: HomeMemoryGraphModel, nodeId: string | null): HomeMemoryGraphHighlight {
+  if (!nodeId || !graph.nodes.some((node) => node.id === nodeId)) {
+    return { nodeIds: [], edgeIds: [] };
+  }
+
+  const selectedNode = graph.nodes.find((node) => node.id === nodeId);
+  if (selectedNode?.kind === 'hypothesis') {
+    const supportEdges = graph.edges.filter((edgeItem) => (
+      edgeItem.kind === 'supports'
+      && edgeItem.from === nodeId
+    ));
+
+    return {
+      nodeIds: [nodeId, ...supportEdges.map((edgeItem) => edgeItem.to)],
+      edgeIds: supportEdges.map((edgeItem) => edgeItem.id)
+    };
+  }
+
+  const chainNodeIds = [nodeId];
+  const chainEdgeIds: string[] = [];
+  let currentNodeId = nodeId;
+
+  while (currentNodeId) {
+    const incoming = graph.edges.find((edgeItem) => (
+      (edgeItem.kind === 'contains' || edgeItem.kind === 'observes')
+      && edgeItem.to === currentNodeId
+    ));
+
+    if (!incoming) {
+      break;
+    }
+
+    chainNodeIds.unshift(incoming.from);
+    chainEdgeIds.unshift(incoming.id);
+    currentNodeId = incoming.from;
+  }
+
+  const pathNodeIds = new Set(chainNodeIds);
+  const supportEdges = graph.edges.filter((edgeItem) => (
+    edgeItem.kind === 'supports'
+    && pathNodeIds.has(edgeItem.to)
+  ));
+
+  return {
+    nodeIds: [...chainNodeIds, ...sortedUnique(supportEdges.map((edgeItem) => edgeItem.from))],
+    edgeIds: [...chainEdgeIds, ...supportEdges.map((edgeItem) => edgeItem.id)]
   };
 }
 

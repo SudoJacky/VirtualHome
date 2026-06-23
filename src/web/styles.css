@@ -448,6 +448,57 @@ button:hover {
   width: 100% !important;
 }
 
+.memory-layer-legend {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(74, 93, 98, 0.14);
+  border-radius: 8px;
+  color: #40555b;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 10px;
+  left: 14px;
+  max-width: calc(100% - 28px);
+  padding: 8px 10px;
+  position: absolute;
+  top: 14px;
+}
+
+.memory-layer-legend span {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.memory-layer-legend i {
+  border-radius: 999px;
+  display: inline-block;
+  height: 9px;
+  width: 9px;
+}
+
+.memory-layer-legend .home {
+  background: #20343b;
+}
+
+.memory-layer-legend .room {
+  background: #267e71;
+}
+
+.memory-layer-legend .device {
+  background: #2f6f9f;
+}
+
+.memory-layer-legend .field {
+  background: #8a6f2a;
+}
+
+.memory-layer-legend .hypothesis {
+  background: #9b4d4d;
+}
+
 .memory-cursor-strip {
   align-items: center;
   background: rgba(255, 255, 255, 0.88);
