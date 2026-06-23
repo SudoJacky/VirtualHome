@@ -690,6 +690,47 @@ describe('server API', () => {
     await server.close();
   });
 
+  it('advances device-events replay cursor over raw events with no device values', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-device-events-empty-replay-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false, snapshotIntervalEvents: 1000 });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    for (let index = 0; index < 501; index += 1) {
+      await server.inject({
+        method: 'POST',
+        url: index % 2 === 0 ? '/api/control/pause' : '/api/control/resume'
+      });
+    }
+    const currentState = (await server.inject({ method: 'GET', url: '/api/state' })).json() as { runId: string; simClock: { sequence: number } };
+    const nextUpdate = createNthTypedMessagePromise('device.update', 1);
+    const ws = await server.injectWS(`/ws/device-events?runId=${currentState.runId}&afterSequence=0`, {}, {
+      onInit: nextUpdate.attach
+    });
+    const update = await nextUpdate.value as {
+      type: string;
+      runId: string;
+      sequence: number;
+      replayComplete: boolean;
+      events: Array<Record<string, unknown>>;
+    };
+
+    expect(update).toMatchObject({
+      type: 'device.update',
+      runId: currentState.runId,
+      replayComplete: false,
+      events: []
+    });
+    expect(update.sequence).toBeGreaterThan(0);
+    expect(update.sequence).toBeLessThan(currentState.simClock.sequence);
+
+    ws.close();
+    await server.close();
+  });
+
   it('projects public state without exposing private household member details', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-privacy-'));
     dirs.push(dir);

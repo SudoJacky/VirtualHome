@@ -11,7 +11,7 @@ import { getDeviceCapability, getDeviceCapabilityMetadata } from '../shared/devi
 import { getDeviceSupportedCommands } from '../shared/deviceInstanceCapabilities';
 import type { HomeDefinition, StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { createDeviceAccessRecords } from './deviceAccess';
-import { projectDeviceValueEvents } from './deviceEventStream';
+import { buildDeviceReplayPage, projectDeviceValueEvents } from './deviceEventStream';
 import { loadHomeDefinitionFromFile } from './homeDefinitionLoader';
 import { buildOpenApiDocument } from './openapi';
 import { TwinDatabase } from './persistence';
@@ -429,17 +429,21 @@ export function createServer(options: ServerOptions): FastifyInstance {
         socket.on('close', () => deviceEventSockets.delete(client));
         return;
       }
-      const replayCandidates = result.success && result.data.runId && result.data.afterSequence !== undefined
-        ? db.getEventsAfter(result.data.runId, result.data.afterSequence, websocketReplayLimit + 1)
-        : [];
-      const replayComplete = replayCandidates.length <= websocketReplayLimit;
-      const replayEvents = replayCandidates.slice(0, websocketReplayLimit);
+      const replayPage = result.success && result.data.runId && result.data.afterSequence !== undefined
+        ? buildDeviceReplayPage({
+          runId: result.data.runId,
+          afterSequence: result.data.afterSequence,
+          currentSequence: snapshot.simClock.sequence,
+          replayLimit: websocketReplayLimit,
+          getEventsAfter: (runId, sequence, limit) => db.getEventsAfter(runId, sequence, limit)
+        })
+        : { sequence: snapshot.simClock.sequence, replayComplete: true, events: [] };
       socket.send(JSON.stringify({
         type: 'device.update',
         runId: snapshot.runId,
-        sequence: snapshot.simClock.sequence,
-        replayComplete,
-        events: projectDeviceValueEvents(replayEvents)
+        sequence: replayPage.sequence,
+        replayComplete: replayPage.replayComplete,
+        events: replayPage.events
       }));
       socket.on('close', () => deviceEventSockets.delete(client));
     });
