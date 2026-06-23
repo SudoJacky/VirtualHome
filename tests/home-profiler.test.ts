@@ -196,6 +196,36 @@ describe('home profiler', () => {
     expect(householdSize?.summary).not.toMatch(/likely 1 resident/i);
   });
 
+  it('does not treat high-frequency environment telemetry as strong household activity', () => {
+    const rooms = ['kitchen', 'living', 'bedroom', 'bathroom', 'study'];
+    const events = Array.from({ length: 60 }, (_, index) => {
+      const roomId = rooms[index % rooms.length];
+      return deviceEvent({
+        id: `temperature_event_${index + 1}`,
+        sourceEventId: `source_temperature_${index + 1}`,
+        sequence: index + 1,
+        simTime: `2026-06-22T08:${String(index % 60).padStart(2, '0')}:00`,
+        roomId,
+        deviceId: `${roomId}_temperature_01`,
+        deviceType: 'temperature_sensor',
+        field: 'temperature',
+        value: 24 + index * 0.01
+      });
+    });
+    const memory = reduceDeviceEvents(createHomeMemory(), events);
+    const hypotheses = createHomeProfileHypotheses(memory);
+
+    const householdSize = hypotheses.find((hypothesis) => hypothesis.type === 'household_size');
+    const presence = hypotheses.find((hypothesis) => hypothesis.type === 'presence_signal');
+
+    expect(memory.totalEvents).toBe(60);
+    expect(memory.profileEvidenceWeight).toBeCloseTo(3);
+    expect(householdSize?.summary).toMatch(/environment|weak|uncertain/i);
+    expect(householdSize?.summary).not.toMatch(/2-5 residents/);
+    expect(householdSize?.confidence).toBeLessThanOrEqual(0.45);
+    expect(presence?.confidence).toBeLessThanOrEqual(0.45);
+  });
+
   it('returns no hypotheses for empty memory', () => {
     expect(createHomeProfileHypotheses(createHomeMemory())).toEqual([]);
   });

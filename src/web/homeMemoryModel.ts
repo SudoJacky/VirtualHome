@@ -1,8 +1,14 @@
 import type { DeviceEventValue, DeviceValueEvent } from './deviceEventSocket';
+import {
+  classifyDeviceEvidence,
+  type EvidenceCategory,
+  type EvidenceStrength
+} from './homeEvidenceClassifier';
 
 export type TimeBucket = 'morning' | 'daytime' | 'evening' | 'night';
 
 type TimeBucketCounts = Record<TimeBucket, number>;
+export type ProfileEvidenceCategoryCounts = Record<EvidenceCategory, number>;
 
 export interface MemoryEvidence {
   id: string;
@@ -19,6 +25,10 @@ export interface MemoryEvidence {
   field: string;
   value: DeviceEventValue;
   timeBucket: TimeBucket;
+  evidenceCategory: EvidenceCategory;
+  evidenceStrength: EvidenceStrength;
+  profileWeight: number;
+  evidenceReason: string;
 }
 
 export interface FieldMemory {
@@ -35,6 +45,13 @@ export interface FieldMemory {
   firstSeenAt: string;
   lastSeenAt: string;
   recentEvents: MemoryEvidence[];
+  evidenceCategory: EvidenceCategory;
+  evidenceStrength: EvidenceStrength;
+  profileWeight: number;
+  evidenceReason: string;
+  profileEventCount: number;
+  profileEvidenceWeight: number;
+  profileEvidenceByCategory: ProfileEvidenceCategoryCounts;
   numericMin?: number;
   numericMax?: number;
   trueCount?: number;
@@ -52,6 +69,9 @@ export interface DeviceMemory {
   lastSeenAt: string;
   timeBuckets: TimeBucketCounts;
   recentEvents: MemoryEvidence[];
+  profileEventCount: number;
+  profileEvidenceWeight: number;
+  profileEvidenceByCategory: ProfileEvidenceCategoryCounts;
 }
 
 export interface RoomMemory {
@@ -63,6 +83,9 @@ export interface RoomMemory {
   lastSeenAt: string;
   timeBuckets: TimeBucketCounts;
   recentEvents: MemoryEvidence[];
+  profileEventCount: number;
+  profileEvidenceWeight: number;
+  profileEvidenceByCategory: ProfileEvidenceCategoryCounts;
 }
 
 export interface HomeMemory {
@@ -73,6 +96,9 @@ export interface HomeMemory {
   devices: Record<string, DeviceMemory>;
   fields: Record<string, FieldMemory>;
   recentEvents: MemoryEvidence[];
+  profileEventCount: number;
+  profileEvidenceWeight: number;
+  profileEvidenceByCategory: ProfileEvidenceCategoryCounts;
 }
 
 const ROOT_RECENT_LIMIT = 50;
@@ -86,7 +112,10 @@ export function createHomeMemory(): HomeMemory {
     rooms: {},
     devices: {},
     fields: {},
-    recentEvents: []
+    recentEvents: [],
+    profileEventCount: 0,
+    profileEvidenceWeight: 0,
+    profileEvidenceByCategory: emptyProfileEvidenceCategories()
   };
 }
 
@@ -116,7 +145,8 @@ export function reduceDeviceEvents(memory: HomeMemory, events: DeviceValueEvent[
 export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): HomeMemory {
   const baseMemory = memory.runId !== null && memory.runId !== event.runId ? createHomeMemory() : memory;
   const timeBucket = getTimeBucket(event.simTime);
-  const evidence = toEvidence(event, timeBucket);
+  const classification = classifyDeviceEvidence(event);
+  const evidence = toEvidence(event, timeBucket, classification);
   const fieldId = getFieldId(event.deviceId, event.field);
   const fieldMemory = updateFieldMemory(baseMemory.fields[fieldId], event, evidence, fieldId);
   const deviceMemory = updateDeviceMemory(baseMemory.devices[event.deviceId], event, evidence, fieldId, timeBucket);
@@ -139,7 +169,10 @@ export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): 
       ...baseMemory.fields,
       [fieldId]: fieldMemory
     },
-    recentEvents: appendBounded(baseMemory.recentEvents, evidence, ROOT_RECENT_LIMIT)
+    recentEvents: appendBounded(baseMemory.recentEvents, evidence, ROOT_RECENT_LIMIT),
+    profileEventCount: incrementProfileEventCount(baseMemory.profileEventCount, evidence),
+    profileEvidenceWeight: roundWeight(baseMemory.profileEvidenceWeight + evidence.profileWeight),
+    profileEvidenceByCategory: incrementProfileEvidenceCategory(baseMemory.profileEvidenceByCategory, evidence)
   };
 }
 
@@ -159,7 +192,10 @@ function updateRoomMemory(
       firstSeenAt: event.ts,
       lastSeenAt: event.ts,
       timeBuckets: incrementBucket(emptyBuckets(), timeBucket),
-      recentEvents: [evidence]
+      recentEvents: [evidence],
+      profileEventCount: incrementProfileEventCount(0, evidence),
+      profileEvidenceWeight: evidence.profileWeight,
+      profileEvidenceByCategory: incrementProfileEvidenceCategory(emptyProfileEvidenceCategories(), evidence)
     };
   }
 
@@ -170,7 +206,10 @@ function updateRoomMemory(
     eventCount: current.eventCount + 1,
     lastSeenAt: event.ts,
     timeBuckets: incrementBucket(current.timeBuckets, timeBucket),
-    recentEvents: appendBounded(current.recentEvents, evidence, ROOT_RECENT_LIMIT)
+    recentEvents: appendBounded(current.recentEvents, evidence, ROOT_RECENT_LIMIT),
+    profileEventCount: incrementProfileEventCount(current.profileEventCount, evidence),
+    profileEvidenceWeight: roundWeight(current.profileEvidenceWeight + evidence.profileWeight),
+    profileEvidenceByCategory: incrementProfileEvidenceCategory(current.profileEvidenceByCategory, evidence)
   };
 }
 
@@ -192,7 +231,10 @@ function updateDeviceMemory(
       firstSeenAt: event.ts,
       lastSeenAt: event.ts,
       timeBuckets: incrementBucket(emptyBuckets(), timeBucket),
-      recentEvents: [evidence]
+      recentEvents: [evidence],
+      profileEventCount: incrementProfileEventCount(0, evidence),
+      profileEvidenceWeight: evidence.profileWeight,
+      profileEvidenceByCategory: incrementProfileEvidenceCategory(emptyProfileEvidenceCategories(), evidence)
     };
   }
 
@@ -208,7 +250,10 @@ function updateDeviceMemory(
     eventCount: current.eventCount + 1,
     lastSeenAt: event.ts,
     timeBuckets: incrementBucket(current.timeBuckets, timeBucket),
-    recentEvents: appendBounded(current.recentEvents, evidence, ROOT_RECENT_LIMIT)
+    recentEvents: appendBounded(current.recentEvents, evidence, ROOT_RECENT_LIMIT),
+    profileEventCount: incrementProfileEventCount(current.profileEventCount, evidence),
+    profileEvidenceWeight: roundWeight(current.profileEvidenceWeight + evidence.profileWeight),
+    profileEvidenceByCategory: incrementProfileEvidenceCategory(current.profileEvidenceByCategory, evidence)
   };
 }
 
@@ -235,6 +280,13 @@ function updateFieldMemory(
       firstSeenAt: event.ts,
       lastSeenAt: event.ts,
       recentEvents: [evidence],
+      evidenceCategory: evidence.evidenceCategory,
+      evidenceStrength: evidence.evidenceStrength,
+      profileWeight: evidence.profileWeight,
+      evidenceReason: evidence.evidenceReason,
+      profileEventCount: incrementProfileEventCount(0, evidence),
+      profileEvidenceWeight: evidence.profileWeight,
+      profileEvidenceByCategory: incrementProfileEvidenceCategory(emptyProfileEvidenceCategories(), evidence),
       ...numericStats,
       ...booleanStats
     };
@@ -251,12 +303,23 @@ function updateFieldMemory(
     eventCount: current.eventCount + 1,
     lastSeenAt: event.ts,
     recentEvents: appendBounded(current.recentEvents, evidence, FIELD_RECENT_LIMIT),
+    evidenceCategory: evidence.evidenceCategory,
+    evidenceStrength: evidence.evidenceStrength,
+    profileWeight: evidence.profileWeight,
+    evidenceReason: evidence.evidenceReason,
+    profileEventCount: incrementProfileEventCount(current.profileEventCount, evidence),
+    profileEvidenceWeight: roundWeight(current.profileEvidenceWeight + evidence.profileWeight),
+    profileEvidenceByCategory: incrementProfileEvidenceCategory(current.profileEvidenceByCategory, evidence),
     ...numericStats,
     ...booleanStats
   };
 }
 
-function toEvidence(event: DeviceValueEvent, timeBucket: TimeBucket): MemoryEvidence {
+function toEvidence(
+  event: DeviceValueEvent,
+  timeBucket: TimeBucket,
+  classification: ReturnType<typeof classifyDeviceEvidence>
+): MemoryEvidence {
   return {
     id: event.id,
     sourceEventId: event.sourceEventId,
@@ -271,7 +334,11 @@ function toEvidence(event: DeviceValueEvent, timeBucket: TimeBucket): MemoryEvid
     deviceType: event.deviceType,
     field: event.field,
     value: event.value,
-    timeBucket
+    timeBucket,
+    evidenceCategory: classification.category,
+    evidenceStrength: classification.strength,
+    profileWeight: classification.profileWeight,
+    evidenceReason: classification.reason
   };
 }
 
@@ -288,6 +355,15 @@ function emptyBuckets(): TimeBucketCounts {
   };
 }
 
+function emptyProfileEvidenceCategories(): ProfileEvidenceCategoryCounts {
+  return {
+    human_activity: 0,
+    device_usage: 0,
+    environment_context: 0,
+    system_status: 0
+  };
+}
+
 function incrementBucket(buckets: TimeBucketCounts, bucket: TimeBucket): TimeBucketCounts {
   return {
     ...buckets,
@@ -301,6 +377,28 @@ function unique(values: string[]): string[] {
 
 function appendBounded<T>(items: T[], item: T, limit: number): T[] {
   return [item, ...items].slice(0, limit);
+}
+
+function incrementProfileEventCount(current: number, evidence: MemoryEvidence): number {
+  return evidence.profileWeight > 0 ? current + 1 : current;
+}
+
+function incrementProfileEvidenceCategory(
+  current: ProfileEvidenceCategoryCounts,
+  evidence: MemoryEvidence
+): ProfileEvidenceCategoryCounts {
+  if (evidence.profileWeight <= 0) {
+    return current;
+  }
+
+  return {
+    ...current,
+    [evidence.evidenceCategory]: current[evidence.evidenceCategory] + 1
+  };
+}
+
+function roundWeight(value: number): number {
+  return Number(value.toFixed(3));
 }
 
 function getNumericStats(current: FieldMemory | undefined, value: DeviceEventValue): Partial<FieldMemory> {

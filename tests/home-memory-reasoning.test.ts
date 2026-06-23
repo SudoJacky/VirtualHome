@@ -105,6 +105,11 @@ describe('home memory reasoning flow', () => {
       'Evidence aggregate',
       'Hypothesis update'
     ]);
+    expect(flow.steps[0].metrics).toEqual([
+      { label: 'Category', value: 'human activity' },
+      { label: 'Strength', value: 'medium' },
+      { label: 'Profile weight', value: '0.55' }
+    ]);
     expect(flow.steps[1].detail).toContain('bathroom / bathroom_motion_01 / motion');
     expect(flow.steps[2].metrics).toEqual([
       { label: 'Room events', value: '1' },
@@ -127,11 +132,12 @@ describe('home memory reasoning flow', () => {
 
     expect(reasoning.title).toBe('Probable household size');
     expect(reasoning.inputs).toEqual([
-      { label: 'Active rooms', value: '4' },
-      { label: 'Total events', value: '5' }
+      { label: 'Meaningful rooms', value: '4' },
+      { label: 'Weighted evidence', value: '2.6' },
+      { label: 'Raw events', value: '5' }
     ]);
-    expect(reasoning.rule).toBe('Otherwise default to a broad 1-3 resident range.');
-    expect(reasoning.result).toBe('1-3 residents');
+    expect(reasoning.rule).toBe('Sparse evidence keeps the resident count uncertain.');
+    expect(reasoning.result).toBe('Uncertain resident count');
     expect(reasoning.steps.map((step) => step.label)).toEqual([
       'Collect room activity',
       'Count observed events',

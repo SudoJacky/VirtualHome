@@ -126,6 +126,58 @@ describe('home memory model', () => {
     });
   });
 
+  it('stores sensor telemetry as facts while keeping weak profile evidence weight', () => {
+    const events = Array.from({ length: 30 }, (_, index) => deviceEvent({
+      id: `temperature_event_${index + 1}`,
+      sourceEventId: `source_temperature_${index + 1}`,
+      sequence: index + 1,
+      deviceId: 'temperature_01',
+      deviceType: 'temperature_sensor',
+      field: 'temperature',
+      value: 25 + index * 0.01
+    }));
+
+    const memory = reduceDeviceEvents(createHomeMemory(), events);
+
+    expect(memory.totalEvents).toBe(30);
+    expect(memory.profileEventCount).toBe(30);
+    expect(memory.profileEvidenceWeight).toBeCloseTo(1.5);
+    expect(memory.profileEvidenceByCategory).toMatchObject({
+      environment_context: 30
+    });
+    expect(memory.rooms.kitchen.profileEvidenceWeight).toBeCloseTo(1.5);
+    expect(memory.devices.temperature_01.profileEvidenceWeight).toBeCloseTo(1.5);
+    expect(memory.fields['temperature_01:temperature']).toMatchObject({
+      eventCount: 30,
+      evidenceCategory: 'environment_context',
+      evidenceStrength: 'weak',
+      profileWeight: 0.05
+    });
+  });
+
+  it('keeps ignored system telemetry out of profile evidence counts', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'battery_event_1',
+        sourceEventId: 'source_battery_event_1',
+        sequence: 1,
+        deviceId: 'temperature_01',
+        deviceType: 'temperature_sensor',
+        field: 'battery',
+        value: 88
+      })
+    ]);
+
+    expect(memory.totalEvents).toBe(1);
+    expect(memory.profileEventCount).toBe(0);
+    expect(memory.profileEvidenceWeight).toBe(0);
+    expect(memory.fields['temperature_01:battery']).toMatchObject({
+      evidenceCategory: 'system_status',
+      evidenceStrength: 'ignored',
+      profileWeight: 0
+    });
+  });
+
   it('does not mutate previous memory records when reducing another event', () => {
     const firstMemory = reduceDeviceEvent(createHomeMemory(), deviceEvent({
       id: 'power_event_1',

@@ -55,7 +55,12 @@ export function createEventEvidenceFlow(
     steps: [
       {
         label: 'Device event',
-        detail: `${event.roomId} reported ${event.deviceId}.${event.field} = ${formatValue(event.value)}.`
+        detail: `${event.roomId} reported ${event.deviceId}.${event.field} = ${formatValue(event.value)}. ${event.evidenceReason}`,
+        metrics: [
+          { label: 'Category', value: event.evidenceCategory.replaceAll('_', ' ') },
+          { label: 'Strength', value: event.evidenceStrength },
+          { label: 'Profile weight', value: formatWeight(event.profileWeight) }
+        ]
       },
       {
         label: 'Fact memory',
@@ -111,29 +116,32 @@ export function createHypothesisReasoning(memory: HomeMemory, hypothesis: Profil
 }
 
 function createHouseholdSizeReasoning(memory: HomeMemory, hypothesis: ProfileHypothesis): HypothesisReasoning {
-  const activeRoomCount = Object.values(memory.rooms).filter((room) => room.eventCount > 0).length;
+  const meaningfulRooms = Object.values(memory.rooms).filter((room) => meaningfulWeightOfRoom(room) > 0);
+  const activeRoomCount = meaningfulRooms.length;
+  const weightedEvidence = meaningfulRooms.reduce((total, room) => total + meaningfulWeightOfRoom(room), 0);
   const totalEvents = memory.totalEvents;
-  const sparseEvidence = totalEvents <= 3;
+  const sparseEvidence = weightedEvidence <= 3;
   const result = sparseEvidence
     ? 'Uncertain resident count'
-    : estimateHouseholdSize(activeRoomCount, totalEvents);
+    : estimateHouseholdSize(activeRoomCount, weightedEvidence);
 
   return {
     title: hypothesis.label,
     inputs: [
-      { label: 'Active rooms', value: String(activeRoomCount) },
-      { label: 'Total events', value: String(totalEvents) }
+      { label: 'Meaningful rooms', value: String(activeRoomCount) },
+      { label: 'Weighted evidence', value: formatWeight(weightedEvidence) },
+      { label: 'Raw events', value: String(totalEvents) }
     ],
-    rule: householdSizeRule(activeRoomCount, totalEvents),
+    rule: householdSizeRule(activeRoomCount, weightedEvidence),
     result,
     steps: [
       {
         label: 'Collect room activity',
-        detail: `${activeRoomCount} room${plural(activeRoomCount)} have at least one observed device event.`
+        detail: `${activeRoomCount} room${plural(activeRoomCount)} have meaningful human activity or device usage evidence.`
       },
       {
         label: 'Count observed events',
-        detail: `${totalEvents} total device event${plural(totalEvents)} are available in runtime memory.`
+        detail: `${totalEvents} raw device event${plural(totalEvents)} reduce to ${formatWeight(weightedEvidence)} weighted profile evidence.`
       },
       {
         label: 'Evaluate household size rule',
@@ -151,10 +159,15 @@ function householdSizeRule(activeRoomCount: number, totalEvents: number): string
   if (activeRoomCount >= 5 && totalEvents >= 20) {
     return 'If active rooms >= 5 and total events >= 20, suggest 2-5 residents.';
   }
-  if (activeRoomCount <= 1 && totalEvents <= 3) {
+  if (totalEvents <= 3) {
     return 'Sparse evidence keeps the resident count uncertain.';
   }
   return 'Otherwise default to a broad 1-3 resident range.';
+}
+
+function meaningfulWeightOfRoom(room: HomeMemory['rooms'][string]): number {
+  const weakContextWeight = room.profileEvidenceByCategory.environment_context * 0.05;
+  return Math.max(0, Number((room.profileEvidenceWeight - weakContextWeight).toFixed(3)));
 }
 
 function estimateHouseholdSize(activeRoomCount: number, totalEvents: number): string {
@@ -179,6 +192,10 @@ function formatValue(value: DeviceEventValue): string {
   if (value === null) return 'null';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   return String(value);
+}
+
+function formatWeight(value: number): string {
+  return Number(value.toFixed(2)).toString();
 }
 
 function plural(count: number): string {

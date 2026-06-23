@@ -46,13 +46,14 @@ function createDailyRhythms(memory: HomeMemory): ProfileHypothesis[] {
       const evidence = memory.recentEvents.filter((event) => event.timeBucket === bucket);
       const rooms = sortedUnique(evidence.map((event) => event.roomId));
       const eventCount = evidence.length;
+      const evidenceWeight = weightOf(evidence);
 
       return hypothesis({
         id: `rhythm:${bucket}`,
         type: 'daily_rhythm',
         label: `${titleCase(bucket)} activity rhythm`,
-        summary: `${eventCount} recent ${bucket} event${plural(eventCount)} across ${formatList(rooms)}.`,
-        confidence: confidenceFromCount(eventCount, memory.totalEvents, 0.9),
+        summary: `${eventCount} recent ${bucket} event${plural(eventCount)} across ${formatList(rooms)}, weighted ${formatWeight(evidenceWeight)} for profile inference.`,
+        confidence: confidenceFromCount(evidenceWeight, memory.profileEvidenceWeight, 0.9, evidenceWeight),
         subjectIds: toRoomSubjectIds(rooms),
         evidence
       });
@@ -67,8 +68,8 @@ function createRoomHabit(room: RoomMemory, totalEvents: number): ProfileHypothes
     id: `room:${room.roomId}:habit`,
     type: 'room_habit',
     label: `${titleCase(room.roomId)} habit`,
-    summary: `${room.roomId} activity is strongest during ${strongestBucket}, based on ${room.eventCount} event${plural(room.eventCount)}.`,
-    confidence: confidenceFromCount(room.eventCount, totalEvents, 0.85),
+    summary: `${room.roomId} activity is strongest during ${strongestBucket}, based on ${room.eventCount} event${plural(room.eventCount)} and ${formatWeight(room.profileEvidenceWeight)} weighted profile evidence.`,
+    confidence: confidenceFromCount(room.profileEvidenceWeight, totalEvents, 0.85, room.profileEvidenceWeight),
     subjectIds: [`room:${room.roomId}`, ...toDeviceSubjectIds(devices)],
     evidence: room.recentEvents
   });
@@ -83,7 +84,7 @@ function createDeviceRoutine(room: RoomMemory, totalEvents: number): ProfileHypo
     type: 'device_routine',
     label: `${titleCase(room.roomId)} device routine`,
     summary: `${devices.length} devices in ${room.roomId} show multi-device activity, strongest during ${strongestBucket}.`,
-    confidence: confidenceFromCount(room.eventCount + devices.length, totalEvents + devices.length, 0.8, room.eventCount),
+    confidence: confidenceFromCount(room.profileEvidenceWeight + devices.length, totalEvents + devices.length, 0.8, room.profileEvidenceWeight),
     subjectIds: [`room:${room.roomId}`, ...toDeviceSubjectIds(devices)],
     evidence: room.recentEvents
   });
@@ -92,15 +93,22 @@ function createDeviceRoutine(room: RoomMemory, totalEvents: number): ProfileHypo
 function createPresenceSignal(memory: HomeMemory): ProfileHypothesis {
   const rooms = sortedUnique(memory.recentEvents.map((event) => event.roomId));
   const activeRoomCount = rooms.length;
+  const presenceEvidence = meaningfulEvidence(memory.recentEvents);
+  const meaningfulRoomCount = sortedUnique(presenceEvidence.map((event) => event.roomId)).length;
+  const meaningfulWeight = weightOf(presenceEvidence);
 
   return hypothesis({
     id: 'presence:recent-activity',
     type: 'presence_signal',
     label: 'Recent presence signal',
-    summary: `Recent device activity may indicate presence across ${activeRoomCount} active room${plural(activeRoomCount)}.`,
+    summary: meaningfulWeight > 0
+      ? `Recent meaningful device activity may indicate presence across ${meaningfulRoomCount} active room${plural(meaningfulRoomCount)}.`
+      : `Recent activity across ${activeRoomCount} room${plural(activeRoomCount)} is mostly weak environment context; presence remains uncertain.`,
     confidence: confidenceWithSampleSize(
-      0.35 + Math.min(0.45, memory.recentEvents.length / 20) + Math.min(0.15, activeRoomCount / 20),
-      memory.recentEvents.length
+      meaningfulWeight > 0
+        ? 0.25 + Math.min(0.45, meaningfulWeight / 8) + Math.min(0.15, meaningfulRoomCount / 20)
+        : 0.2,
+      meaningfulWeight
     ),
     subjectIds: toRoomSubjectIds(rooms),
     evidence: memory.recentEvents
@@ -109,20 +117,27 @@ function createPresenceSignal(memory: HomeMemory): ProfileHypothesis {
 
 function createHouseholdSize(memory: HomeMemory, activeRooms: RoomMemory[]): ProfileHypothesis {
   const rooms = activeRooms.map((room) => room.roomId);
-  const activeRoomCount = rooms.length;
-  const estimate = estimateHouseholdSize(activeRoomCount, memory.totalEvents);
-  const sparseEvidence = memory.totalEvents <= 3;
+  const meaningfulRooms = activeRooms.filter((room) => meaningfulWeightOfRoom(room) > 0);
+  const activeRoomCount = meaningfulRooms.length;
+  const meaningfulWeight = meaningfulRooms.reduce((total, room) => total + meaningfulWeightOfRoom(room), 0);
+  const estimate = estimateHouseholdSize(activeRoomCount, meaningfulWeight);
+  const sparseEvidence = meaningfulWeight <= 3;
+  const mostlyWeakContext = activeRoomCount === 0;
 
   return hypothesis({
     id: 'household:size',
     type: 'household_size',
     label: 'Probable household size',
-    summary: sparseEvidence
-      ? `Activity across ${activeRoomCount} active room${plural(activeRoomCount)} and ${memory.totalEvents} event${plural(memory.totalEvents)} is sparse; resident count remains uncertain.`
-      : `Activity across ${activeRoomCount} active room${plural(activeRoomCount)} and ${memory.totalEvents} event${plural(memory.totalEvents)} suggests likely ${estimate}; this is probabilistic, not a confirmed resident count.`,
+    summary: mostlyWeakContext
+      ? `Observed activity is mostly weak environment context across ${rooms.length} room${plural(rooms.length)}; resident count remains uncertain.`
+      : sparseEvidence
+        ? `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence is sparse; resident count remains uncertain.`
+        : `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence suggests likely ${estimate}; this is probabilistic, not a confirmed resident count.`,
     confidence: confidenceWithSampleSize(
-      0.3 + Math.min(0.3, activeRoomCount / 10) + Math.min(0.25, memory.totalEvents / 40),
-      memory.totalEvents
+      mostlyWeakContext
+        ? 0.25
+        : 0.3 + Math.min(0.3, activeRoomCount / 10) + Math.min(0.25, meaningfulWeight / 20),
+      meaningfulWeight
     ),
     subjectIds: toRoomSubjectIds(rooms),
     evidence: memory.recentEvents
@@ -160,6 +175,19 @@ function estimateHouseholdSize(activeRoomCount: number, totalEvents: number): st
     return '1 resident';
   }
   return '1-3 residents';
+}
+
+function meaningfulEvidence(events: HomeMemory['recentEvents']): HomeMemory['recentEvents'] {
+  return events.filter((event) => event.evidenceCategory === 'human_activity' || event.evidenceCategory === 'device_usage');
+}
+
+function meaningfulWeightOfRoom(room: RoomMemory): number {
+  const weakContextWeight = room.profileEvidenceByCategory.environment_context * 0.05;
+  return Math.max(0, Number((room.profileEvidenceWeight - weakContextWeight).toFixed(3)));
+}
+
+function weightOf(events: HomeMemory['recentEvents']): number {
+  return Number(events.reduce((total, event) => total + event.profileWeight, 0).toFixed(3));
 }
 
 function confidenceFromCount(count: number, total: number, max: number, sampleSize = count): number {
@@ -210,6 +238,10 @@ function formatList(values: string[]): string {
     return 'no rooms';
   }
   return values.join(', ');
+}
+
+function formatWeight(value: number): string {
+  return Number(value.toFixed(2)).toString();
 }
 
 function plural(count: number): string {
