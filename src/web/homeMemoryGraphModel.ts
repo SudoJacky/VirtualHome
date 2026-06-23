@@ -89,7 +89,7 @@ export function createHomeMemoryGraphModel(memory: HomeMemory, hypotheses: Profi
       id: homeId,
       kind: 'home',
       label: memory.homeId ? titleCase(memory.homeId) : 'Unknown Home',
-      summary: `${memory.totalEvents} total observed event${plural(memory.totalEvents)}.`,
+      summary: `${memory.totalEvents} total observed event${plural(memory.totalEvents)} across ${memory.dailySummaryCount} observed day${plural(memory.dailySummaryCount)} and ${memory.weeklySummaryCount} observed week${plural(memory.weeklySummaryCount)}.`,
       activity: memory.totalEvents,
       relatedIds: rooms.map((room) => `room:${room.roomId}`)
     },

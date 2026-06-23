@@ -356,6 +356,8 @@ function ProfileStatsPanel({
         <Stat label="Devices" value={Object.keys(memory.devices).length} />
         <Stat label="Fields" value={Object.keys(memory.fields).length} />
         <Stat label="Episodes" value={memory.episodeCount} />
+        <Stat label="Days" value={memory.dailySummaryCount} />
+        <Stat label="Weeks" value={memory.weeklySummaryCount} />
         <Stat label="Hypotheses" value={hypotheses.length} />
         <Stat label="Graph" value={`${nodeCount}/${edgeCount}`} />
       </div>
@@ -575,6 +577,7 @@ function selectedDetails(
             { label: 'Devices', value: String(room.devices.length) },
             { label: 'Fields', value: String(room.activeFields.length) },
             { label: 'Episodes', value: episodesForRoom(memory, room.roomId).length.toString() },
+            { label: 'Active days', value: dailySummariesForRoom(memory, room.roomId).length.toString() },
             { label: 'Last seen', value: formatTime(room.lastSeenAt) }
           ]
         : [],
@@ -626,7 +629,10 @@ function selectedDetails(
     rows: [
       { label: 'Rooms', value: Object.keys(memory.rooms).length.toString() },
       { label: 'Devices', value: Object.keys(memory.devices).length.toString() },
-      { label: 'Episodes', value: memory.episodeCount.toString() }
+      { label: 'Episodes', value: memory.episodeCount.toString() },
+      { label: 'Observed days', value: memory.dailySummaryCount.toString() },
+      { label: 'Observed weeks', value: memory.weeklySummaryCount.toString() },
+      { label: 'Long-window rooms', value: longWindowRooms(memory).length.toString() }
     ],
     evidence: memory.recentEvents
   };
@@ -642,6 +648,17 @@ function episodesForDevice(memory: HomeMemory, deviceId: string): HomeMemory['ep
 
 function episodesForField(memory: HomeMemory, fieldId: string): HomeMemory['episodes'][string][] {
   return Object.values(memory.episodes).filter((episode) => episode.fieldId === fieldId);
+}
+
+function dailySummariesForRoom(memory: HomeMemory, roomId: string): HomeMemory['dailySummaries'][string][] {
+  return Object.values(memory.dailySummaries).filter((summary) => summary.activeRooms.includes(roomId));
+}
+
+function longWindowRooms(memory: HomeMemory): string[] {
+  return [...new Set([
+    ...Object.values(memory.dailySummaries).flatMap((summary) => summary.meaningfulRooms),
+    ...Object.values(memory.weeklySummaries).flatMap((summary) => summary.meaningfulRooms)
+  ])].sort((left, right) => left.localeCompare(right));
 }
 
 function newestFirst(events: DeviceValueEvent[]): DeviceValueEvent[] {

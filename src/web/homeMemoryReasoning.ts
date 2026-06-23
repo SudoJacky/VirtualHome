@@ -119,12 +119,20 @@ export function createHypothesisReasoning(memory: HomeMemory, hypothesis: Profil
 function createHouseholdSizeReasoning(memory: HomeMemory, hypothesis: ProfileHypothesis): HypothesisReasoning {
   const episodes = Object.values(memory.episodes);
   const episodeRooms = new Set(episodes.map((episode) => episode.roomId));
+  const dailySummaries = Object.values(memory.dailySummaries);
+  const weeklySummaries = Object.values(memory.weeklySummaries);
+  const longWindowRooms = new Set([
+    ...dailySummaries.flatMap((summary) => summary.meaningfulRooms),
+    ...weeklySummaries.flatMap((summary) => summary.meaningfulRooms)
+  ]);
   const meaningfulRooms = Object.values(memory.rooms).filter((room) => (
-    meaningfulWeightOfRoom(room) > 0 || episodeRooms.has(room.roomId)
+    meaningfulWeightOfRoom(room) > 0 || episodeRooms.has(room.roomId) || longWindowRooms.has(room.roomId)
   ));
   const activeRoomCount = meaningfulRooms.length;
   const weightedEvidence = meaningfulRooms.reduce((total, room) => total + meaningfulWeightOfRoom(room), 0);
-  const behaviorSignal = weightedEvidence + episodes.length;
+  const multiDaySignal = dailySummaries.length > 1 ? dailySummaries.length : 0;
+  const multiWeekSignal = weeklySummaries.length > 1 ? weeklySummaries.length : 0;
+  const behaviorSignal = weightedEvidence + episodes.length + multiDaySignal + multiWeekSignal;
   const totalEvents = memory.totalEvents;
   const sparseEvidence = behaviorSignal <= 3;
   const result = sparseEvidence
@@ -135,6 +143,9 @@ function createHouseholdSizeReasoning(memory: HomeMemory, hypothesis: ProfileHyp
     title: hypothesis.label,
     inputs: [
       { label: 'Meaningful rooms', value: String(activeRoomCount) },
+      { label: 'Long-window rooms', value: String(longWindowRooms.size) },
+      { label: 'Observed days', value: String(dailySummaries.length) },
+      { label: 'Observed weeks', value: String(weeklySummaries.length) },
       { label: 'Weighted evidence', value: formatWeight(weightedEvidence) },
       { label: 'Behavior episodes', value: String(episodes.length) },
       { label: 'Raw events', value: String(totalEvents) }
@@ -144,11 +155,11 @@ function createHouseholdSizeReasoning(memory: HomeMemory, hypothesis: ProfileHyp
     steps: [
       {
         label: 'Collect room activity',
-        detail: `${activeRoomCount} room${plural(activeRoomCount)} have meaningful human activity, device usage evidence, or behavior episodes.`
+        detail: `${activeRoomCount} room${plural(activeRoomCount)} have meaningful human activity, device usage evidence, behavior episodes, or long-window daily summary support.`
       },
       {
         label: 'Count observed events',
-        detail: `${totalEvents} raw device event${plural(totalEvents)} reduce to ${formatWeight(weightedEvidence)} weighted profile evidence and ${episodes.length} behavior episode${plural(episodes.length)}.`
+        detail: `${totalEvents} raw device event${plural(totalEvents)} reduce to ${formatWeight(weightedEvidence)} weighted profile evidence, ${episodes.length} behavior episode${plural(episodes.length)}, ${dailySummaries.length} observed day${plural(dailySummaries.length)}, and ${weeklySummaries.length} observed week${plural(weeklySummaries.length)}.`
       },
       {
         label: 'Evaluate household size rule',

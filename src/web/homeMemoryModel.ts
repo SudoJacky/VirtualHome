@@ -92,6 +92,43 @@ export interface MemoryEpisode {
   profileWeight: number;
 }
 
+export interface DailyProfileSummary {
+  date: string;
+  homeId: string;
+  runId: string;
+  eventCount: number;
+  profileEventCount: number;
+  profileEvidenceWeight: number;
+  profileEvidenceByCategory: ProfileEvidenceCategoryCounts;
+  episodeCount: number;
+  activeRooms: string[];
+  meaningfulRooms: string[];
+  activeDevices: string[];
+  activeFields: string[];
+  timeBuckets: TimeBucketCounts;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+export interface WeeklyProfileSummary {
+  week: string;
+  homeId: string;
+  runId: string;
+  dates: string[];
+  eventCount: number;
+  profileEventCount: number;
+  profileEvidenceWeight: number;
+  profileEvidenceByCategory: ProfileEvidenceCategoryCounts;
+  episodeCount: number;
+  activeRooms: string[];
+  meaningfulRooms: string[];
+  activeDevices: string[];
+  activeFields: string[];
+  timeBuckets: TimeBucketCounts;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
 export interface DeviceMemory {
   deviceId: string;
   roomId: string;
@@ -132,6 +169,10 @@ export interface HomeMemory {
   episodes: Record<string, MemoryEpisode>;
   activeEpisodeIds: Record<string, string>;
   episodeCount: number;
+  dailySummaries: Record<string, DailyProfileSummary>;
+  dailySummaryCount: number;
+  weeklySummaries: Record<string, WeeklyProfileSummary>;
+  weeklySummaryCount: number;
   recentEvents: MemoryEvidence[];
   profileEventCount: number;
   profileEvidenceWeight: number;
@@ -152,6 +193,10 @@ export function createHomeMemory(): HomeMemory {
     episodes: {},
     activeEpisodeIds: {},
     episodeCount: 0,
+    dailySummaries: {},
+    dailySummaryCount: 0,
+    weeklySummaries: {},
+    weeklySummaryCount: 0,
     recentEvents: [],
     profileEventCount: 0,
     profileEvidenceWeight: 0,
@@ -193,6 +238,8 @@ export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): 
   const deviceMemory = updateDeviceMemory(baseMemory.devices[event.deviceId], event, evidence, fieldId, timeBucket);
   const roomMemory = updateRoomMemory(baseMemory.rooms[event.roomId], event, evidence, fieldId, timeBucket);
   const episodeMemory = updateEpisodeMemory(baseMemory, event, evidence, fieldId, timeBucket);
+  const dailySummaries = updateDailySummaries(baseMemory.dailySummaries, event, evidence, fieldId, timeBucket, episodeMemory.startedEpisode);
+  const weeklySummaries = updateWeeklySummaries(baseMemory.weeklySummaries, event, evidence, fieldId, timeBucket, episodeMemory.startedEpisode);
 
   return {
     ...baseMemory,
@@ -214,6 +261,10 @@ export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): 
     episodes: episodeMemory.episodes,
     activeEpisodeIds: episodeMemory.activeEpisodeIds,
     episodeCount: episodeMemory.episodeCount,
+    dailySummaries,
+    dailySummaryCount: Object.keys(dailySummaries).length,
+    weeklySummaries,
+    weeklySummaryCount: Object.keys(weeklySummaries).length,
     recentEvents: appendBounded(baseMemory.recentEvents, evidence, ROOT_RECENT_LIMIT),
     profileEventCount: incrementProfileEventCount(baseMemory.profileEventCount, evidence),
     profileEvidenceWeight: roundWeight(baseMemory.profileEvidenceWeight + evidence.profileWeight),
@@ -400,6 +451,7 @@ interface EpisodeMemoryUpdate {
   episodes: Record<string, MemoryEpisode>;
   activeEpisodeIds: Record<string, string>;
   episodeCount: number;
+  startedEpisode?: MemoryEpisode;
 }
 
 interface EpisodeSignal {
@@ -451,7 +503,8 @@ function updateEpisodeMemory(
         ...memory.activeEpisodeIds,
         [activeKey]: episode.id
       },
-      episodeCount: memory.episodeCount + 1
+      episodeCount: memory.episodeCount + 1,
+      startedEpisode: episode
     };
   }
 
@@ -474,6 +527,153 @@ function updateEpisodeMemory(
     },
     activeEpisodeIds,
     episodeCount: memory.episodeCount
+  };
+}
+
+function updateDailySummaries(
+  summaries: Record<string, DailyProfileSummary>,
+  event: DeviceValueEvent,
+  evidence: MemoryEvidence,
+  fieldId: string,
+  timeBucket: TimeBucket,
+  startedEpisode: MemoryEpisode | undefined
+): Record<string, DailyProfileSummary> {
+  const date = getSummaryDate(event);
+  const current = summaries[date];
+  const next = current ? updateDailySummary(current, event, evidence, fieldId, timeBucket, startedEpisode) : createDailySummary(date, event, evidence, fieldId, timeBucket, startedEpisode);
+
+  return {
+    ...summaries,
+    [date]: next
+  };
+}
+
+function createDailySummary(
+  date: string,
+  event: DeviceValueEvent,
+  evidence: MemoryEvidence,
+  fieldId: string,
+  timeBucket: TimeBucket,
+  startedEpisode: MemoryEpisode | undefined
+): DailyProfileSummary {
+  return {
+    date,
+    homeId: event.homeId,
+    runId: event.runId,
+    eventCount: 1,
+    profileEventCount: incrementProfileEventCount(0, evidence),
+    profileEvidenceWeight: evidence.profileWeight,
+    profileEvidenceByCategory: incrementProfileEvidenceCategory(emptyProfileEvidenceCategories(), evidence),
+    episodeCount: startedEpisode ? 1 : 0,
+    activeRooms: [event.roomId],
+    meaningfulRooms: meaningfulRoomIdsForEvent(event, evidence, startedEpisode),
+    activeDevices: [event.deviceId],
+    activeFields: [fieldId],
+    timeBuckets: incrementBucket(emptyBuckets(), timeBucket),
+    firstSeenAt: event.ts,
+    lastSeenAt: event.ts
+  };
+}
+
+function updateDailySummary(
+  current: DailyProfileSummary,
+  event: DeviceValueEvent,
+  evidence: MemoryEvidence,
+  fieldId: string,
+  timeBucket: TimeBucket,
+  startedEpisode: MemoryEpisode | undefined
+): DailyProfileSummary {
+  return {
+    ...current,
+    homeId: event.homeId,
+    runId: event.runId,
+    eventCount: current.eventCount + 1,
+    profileEventCount: incrementProfileEventCount(current.profileEventCount, evidence),
+    profileEvidenceWeight: roundWeight(current.profileEvidenceWeight + evidence.profileWeight),
+    profileEvidenceByCategory: incrementProfileEvidenceCategory(current.profileEvidenceByCategory, evidence),
+    episodeCount: current.episodeCount + (startedEpisode ? 1 : 0),
+    activeRooms: unique([...current.activeRooms, event.roomId]).sort((left, right) => left.localeCompare(right)),
+    meaningfulRooms: unique([...current.meaningfulRooms, ...meaningfulRoomIdsForEvent(event, evidence, startedEpisode)]).sort((left, right) => left.localeCompare(right)),
+    activeDevices: unique([...current.activeDevices, event.deviceId]).sort((left, right) => left.localeCompare(right)),
+    activeFields: unique([...current.activeFields, fieldId]).sort((left, right) => left.localeCompare(right)),
+    timeBuckets: incrementBucket(current.timeBuckets, timeBucket),
+    lastSeenAt: event.ts
+  };
+}
+
+function updateWeeklySummaries(
+  summaries: Record<string, WeeklyProfileSummary>,
+  event: DeviceValueEvent,
+  evidence: MemoryEvidence,
+  fieldId: string,
+  timeBucket: TimeBucket,
+  startedEpisode: MemoryEpisode | undefined
+): Record<string, WeeklyProfileSummary> {
+  const date = getSummaryDate(event);
+  const week = getSummaryWeek(date);
+  const current = summaries[week];
+  const next = current ? updateWeeklySummary(current, date, event, evidence, fieldId, timeBucket, startedEpisode) : createWeeklySummary(week, date, event, evidence, fieldId, timeBucket, startedEpisode);
+
+  return {
+    ...summaries,
+    [week]: next
+  };
+}
+
+function createWeeklySummary(
+  week: string,
+  date: string,
+  event: DeviceValueEvent,
+  evidence: MemoryEvidence,
+  fieldId: string,
+  timeBucket: TimeBucket,
+  startedEpisode: MemoryEpisode | undefined
+): WeeklyProfileSummary {
+  return {
+    week,
+    homeId: event.homeId,
+    runId: event.runId,
+    dates: [date],
+    eventCount: 1,
+    profileEventCount: incrementProfileEventCount(0, evidence),
+    profileEvidenceWeight: evidence.profileWeight,
+    profileEvidenceByCategory: incrementProfileEvidenceCategory(emptyProfileEvidenceCategories(), evidence),
+    episodeCount: startedEpisode ? 1 : 0,
+    activeRooms: [event.roomId],
+    meaningfulRooms: meaningfulRoomIdsForEvent(event, evidence, startedEpisode),
+    activeDevices: [event.deviceId],
+    activeFields: [fieldId],
+    timeBuckets: incrementBucket(emptyBuckets(), timeBucket),
+    firstSeenAt: event.ts,
+    lastSeenAt: event.ts
+  };
+}
+
+function updateWeeklySummary(
+  current: WeeklyProfileSummary,
+  date: string,
+  event: DeviceValueEvent,
+  evidence: MemoryEvidence,
+  fieldId: string,
+  timeBucket: TimeBucket,
+  startedEpisode: MemoryEpisode | undefined
+): WeeklyProfileSummary {
+  return {
+    ...current,
+    homeId: event.homeId,
+    runId: event.runId,
+    dates: unique([...current.dates, date]).sort((left, right) => left.localeCompare(right)),
+    eventCount: current.eventCount + 1,
+    profileEventCount: incrementProfileEventCount(current.profileEventCount, evidence),
+    profileEvidenceWeight: roundWeight(current.profileEvidenceWeight + evidence.profileWeight),
+    profileEvidenceByCategory: incrementProfileEvidenceCategory(current.profileEvidenceByCategory, evidence),
+    episodeCount: current.episodeCount + (startedEpisode ? 1 : 0),
+    activeRooms: unique([...current.activeRooms, event.roomId]).sort((left, right) => left.localeCompare(right)),
+    meaningfulRooms: unique([...current.meaningfulRooms, ...meaningfulRoomIdsForEvent(event, evidence, startedEpisode)]).sort((left, right) => left.localeCompare(right)),
+    activeDevices: unique([...current.activeDevices, event.deviceId]).sort((left, right) => left.localeCompare(right)),
+    activeFields: unique([...current.activeFields, fieldId]).sort((left, right) => left.localeCompare(right)),
+    timeBuckets: incrementBucket(current.timeBuckets, timeBucket),
+    lastSeenAt: event.ts
   };
 }
 
@@ -621,6 +821,17 @@ function maxOptional(left: number | undefined, right: number | undefined): numbe
   return Math.max(left, right);
 }
 
+function meaningfulRoomIdsForEvent(
+  event: DeviceValueEvent,
+  evidence: MemoryEvidence,
+  startedEpisode: MemoryEpisode | undefined
+): string[] {
+  if (startedEpisode || (evidence.profileWeight > 0 && (evidence.evidenceCategory === 'human_activity' || evidence.evidenceCategory === 'device_usage'))) {
+    return [event.roomId];
+  }
+  return [];
+}
+
 function durationMinutes(startedAt: string, endedAt: string): number | undefined {
   const startMs = Date.parse(startedAt);
   const endMs = Date.parse(endedAt);
@@ -630,6 +841,29 @@ function durationMinutes(startedAt: string, endedAt: string): number | undefined
   }
 
   return roundWeight(Math.max(0, (endMs - startMs) / 60000));
+}
+
+function getSummaryDate(event: DeviceValueEvent): string {
+  const writtenDate = /^(\d{4}-\d{2}-\d{2})T/.exec(event.simTime)?.[1];
+  if (writtenDate) {
+    return writtenDate;
+  }
+  return event.ts.slice(0, 10);
+}
+
+function getSummaryWeek(date: string): string {
+  const parsedDate = new Date(`${date}T00:00:00.000Z`);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return `${date.slice(0, 4)}-W00`;
+  }
+
+  const utcDate = new Date(Date.UTC(parsedDate.getUTCFullYear(), parsedDate.getUTCMonth(), parsedDate.getUTCDate()));
+  const day = utcDate.getUTCDay() || 7;
+  utcDate.setUTCDate(utcDate.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(utcDate.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((utcDate.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+
+  return `${utcDate.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
 }
 
 interface FieldChangeAnalysis {

@@ -40,6 +40,11 @@ export function createHomeProfileHypotheses(memory: HomeMemory): ProfileHypothes
 }
 
 function createDailyRhythms(memory: HomeMemory): ProfileHypothesis[] {
+  const dailySummaries = sortedDailySummaries(memory);
+  const weeklySummaries = sortedWeeklySummaries(memory);
+  const observedDayCount = dailySummaries.length;
+  const observedWeekCount = weeklySummaries.length;
+
   return TIME_BUCKETS
     .filter((bucket) => memory.recentEvents.some((event) => event.timeBucket === bucket))
     .map((bucket) => {
@@ -47,13 +52,15 @@ function createDailyRhythms(memory: HomeMemory): ProfileHypothesis[] {
       const rooms = sortedUnique(evidence.map((event) => event.roomId));
       const eventCount = evidence.length;
       const evidenceWeight = weightOf(evidence);
+      const matchingDayCount = dailySummaries.filter((summary) => summary.timeBuckets[bucket] > 0).length;
+      const multiWeekSignal = observedWeekCount > 1 ? observedWeekCount : 0;
 
       return hypothesis({
         id: `rhythm:${bucket}`,
         type: 'daily_rhythm',
         label: `${titleCase(bucket)} activity rhythm`,
-        summary: `${eventCount} recent ${bucket} event${plural(eventCount)} across ${formatList(rooms)}, weighted ${formatWeight(evidenceWeight)} for profile inference.`,
-        confidence: confidenceFromCount(evidenceWeight, memory.profileEvidenceWeight, 0.9, evidenceWeight),
+        summary: `${eventCount} recent ${bucket} event${plural(eventCount)} across ${formatList(rooms)}, weighted ${formatWeight(evidenceWeight)} for profile inference, with ${matchingDayCount} day-level ${matchWord(matchingDayCount)} across ${observedDayCount} observed day${plural(observedDayCount)} and ${observedWeekCount} observed week${plural(observedWeekCount)}.`,
+        confidence: confidenceFromCount(evidenceWeight + matchingDayCount + multiWeekSignal, memory.profileEvidenceWeight + observedDayCount + multiWeekSignal, 0.9, behaviorSampleSize(evidenceWeight, matchingDayCount + multiWeekSignal)),
         subjectIds: toRoomSubjectIds(rooms),
         evidence
       });
@@ -129,10 +136,23 @@ function createHouseholdSize(memory: HomeMemory, activeRooms: RoomMemory[]): Pro
   const rooms = activeRooms.map((room) => room.roomId);
   const episodes = behaviorEpisodes(memory);
   const episodeRooms = sortedUnique(episodes.map((episode) => episode.roomId));
+  const dailySummaries = sortedDailySummaries(memory);
+  const weeklySummaries = sortedWeeklySummaries(memory);
+  const observedDayCount = dailySummaries.length;
+  const observedWeekCount = weeklySummaries.length;
+  const longWindowRooms = sortedUnique([
+    ...dailySummaries.flatMap((summary) => summary.meaningfulRooms),
+    ...weeklySummaries.flatMap((summary) => summary.meaningfulRooms)
+  ]);
   const meaningfulRooms = activeRooms.filter((room) => meaningfulWeightOfRoom(room) > 0 || episodeRooms.includes(room.roomId));
-  const activeRoomCount = meaningfulRooms.length;
+  const activeRoomCount = sortedUnique([
+    ...meaningfulRooms.map((room) => room.roomId),
+    ...longWindowRooms
+  ]).length;
   const meaningfulWeight = meaningfulRooms.reduce((total, room) => total + meaningfulWeightOfRoom(room), 0);
-  const behaviorSignal = meaningfulWeight + episodes.length;
+  const multiDaySignal = observedDayCount > 1 ? observedDayCount : 0;
+  const multiWeekSignal = observedWeekCount > 1 ? observedWeekCount : 0;
+  const behaviorSignal = meaningfulWeight + episodes.length + multiDaySignal + multiWeekSignal;
   const estimate = estimateHouseholdSize(activeRoomCount, behaviorSignal);
   const sparseEvidence = behaviorSignal <= 3;
   const mostlyWeakContext = activeRoomCount === 0;
@@ -142,10 +162,10 @@ function createHouseholdSize(memory: HomeMemory, activeRooms: RoomMemory[]): Pro
     type: 'household_size',
     label: 'Probable household size',
     summary: mostlyWeakContext
-      ? `Observed activity is mostly weak environment context across ${rooms.length} room${plural(rooms.length)}; resident count remains uncertain.`
+        ? `Observed activity is mostly weak environment context across ${rooms.length} room${plural(rooms.length)}; resident count remains uncertain.`
       : sparseEvidence
-        ? `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence and ${episodes.length} behavior episode${plural(episodes.length)} is sparse; resident count remains uncertain.`
-        : `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence and ${episodes.length} behavior episode${plural(episodes.length)} suggests likely ${estimate}; this is probabilistic, not a confirmed resident count.`,
+        ? `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence, ${episodes.length} behavior episode${plural(episodes.length)}, ${observedDayCount} observed day${plural(observedDayCount)}, and ${observedWeekCount} observed week${plural(observedWeekCount)} is sparse; ${longWindowRooms.length} long-window room${plural(longWindowRooms.length)} remain insufficient, so resident count remains uncertain.`
+        : `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence, ${episodes.length} behavior episode${plural(episodes.length)}, ${observedDayCount} observed day${plural(observedDayCount)}, and ${observedWeekCount} observed week${plural(observedWeekCount)} suggests likely ${estimate}; this uses ${longWindowRooms.length} long-window room${plural(longWindowRooms.length)} and is probabilistic, not a confirmed resident count.`,
     confidence: confidenceWithSampleSize(
       mostlyWeakContext
         ? 0.25
@@ -188,6 +208,14 @@ function estimateHouseholdSize(activeRoomCount: number, totalEvents: number): st
     return '1 resident';
   }
   return '1-3 residents';
+}
+
+function sortedDailySummaries(memory: HomeMemory): HomeMemory['dailySummaries'][string][] {
+  return Object.values(memory.dailySummaries).sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function sortedWeeklySummaries(memory: HomeMemory): HomeMemory['weeklySummaries'][string][] {
+  return Object.values(memory.weeklySummaries).sort((left, right) => left.week.localeCompare(right.week));
 }
 
 function meaningfulEvidence(events: HomeMemory['recentEvents']): HomeMemory['recentEvents'] {
@@ -267,6 +295,10 @@ function formatList(values: string[]): string {
 
 function formatWeight(value: number): string {
   return Number(value.toFixed(2)).toString();
+}
+
+function matchWord(count: number): string {
+  return count === 1 ? 'match' : 'matches';
 }
 
 function plural(count: number): string {

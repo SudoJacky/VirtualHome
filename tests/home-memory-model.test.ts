@@ -398,6 +398,82 @@ describe('home memory model', () => {
     expect(memory.activeEpisodeIds).toEqual({});
   });
 
+  it('stores daily summaries across observed simulation days', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'kitchen_motion_day_1',
+        sourceEventId: 'source_kitchen_motion_day_1',
+        sequence: 1,
+        ts: '2026-06-22T00:00:00.000Z',
+        simTime: '2026-06-22T08:00:00',
+        roomId: 'kitchen',
+        deviceId: 'kitchen_motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'kitchen_motion_day_1_end',
+        sourceEventId: 'source_kitchen_motion_day_1_end',
+        sequence: 2,
+        ts: '2026-06-22T00:10:00.000Z',
+        simTime: '2026-06-22T08:10:00',
+        roomId: 'kitchen',
+        deviceId: 'kitchen_motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: false
+      }),
+      deviceEvent({
+        id: 'living_tv_day_2',
+        sourceEventId: 'source_living_tv_day_2',
+        sequence: 3,
+        ts: '2026-06-23T11:00:00.000Z',
+        simTime: '2026-06-23T19:00:00',
+        roomId: 'living',
+        deviceId: 'tv_01',
+        deviceType: 'tv',
+        field: 'power',
+        value: true
+      })
+    ]);
+
+    expect(memory.dailySummaryCount).toBe(2);
+    expect(memory.weeklySummaryCount).toBe(1);
+    expect(memory.dailySummaries['2026-06-22']).toMatchObject({
+      date: '2026-06-22',
+      eventCount: 2,
+      profileEventCount: 2,
+      episodeCount: 1,
+      activeRooms: ['kitchen'],
+      meaningfulRooms: ['kitchen'],
+      activeDevices: ['kitchen_motion_01'],
+      firstSeenAt: '2026-06-22T00:00:00.000Z',
+      lastSeenAt: '2026-06-22T00:10:00.000Z'
+    });
+    expect(memory.dailySummaries['2026-06-22'].timeBuckets).toMatchObject({
+      morning: 2
+    });
+    expect(memory.dailySummaries['2026-06-23']).toMatchObject({
+      date: '2026-06-23',
+      eventCount: 1,
+      profileEventCount: 1,
+      episodeCount: 1,
+      activeRooms: ['living'],
+      meaningfulRooms: ['living'],
+      activeDevices: ['tv_01']
+    });
+    expect(Object.values(memory.weeklySummaries)[0]).toMatchObject({
+      week: '2026-W26',
+      dates: ['2026-06-22', '2026-06-23'],
+      eventCount: 3,
+      episodeCount: 2,
+      activeRooms: ['kitchen', 'living'],
+      meaningfulRooms: ['kitchen', 'living'],
+      activeDevices: ['kitchen_motion_01', 'tv_01']
+    });
+  });
+
   it('keeps ignored system telemetry out of profile evidence counts', () => {
     const memory = reduceDeviceEvents(createHomeMemory(), [
       deviceEvent({

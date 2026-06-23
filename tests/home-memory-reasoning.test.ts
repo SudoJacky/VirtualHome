@@ -134,6 +134,9 @@ describe('home memory reasoning flow', () => {
     expect(reasoning.title).toBe('Probable household size');
     expect(reasoning.inputs).toEqual([
       { label: 'Meaningful rooms', value: '4' },
+      { label: 'Long-window rooms', value: '4' },
+      { label: 'Observed days', value: '1' },
+      { label: 'Observed weeks', value: '1' },
       { label: 'Weighted evidence', value: '2.6' },
       { label: 'Behavior episodes', value: '4' },
       { label: 'Raw events', value: '5' }

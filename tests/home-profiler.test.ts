@@ -254,6 +254,73 @@ describe('home profiler', () => {
     expect(householdSize?.summary).not.toMatch(/2-5 residents/);
   });
 
+  it('uses daily summaries for longer-window rhythm and household reasoning', () => {
+    const events = [
+      deviceEvent({
+        id: 'day_1_kitchen',
+        sourceEventId: 'source_day_1_kitchen',
+        sequence: 1,
+        ts: '2026-06-22T00:00:00.000Z',
+        simTime: '2026-06-22T07:30:00',
+        roomId: 'kitchen',
+        deviceId: 'kitchen_motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'day_1_living',
+        sourceEventId: 'source_day_1_living',
+        sequence: 2,
+        ts: '2026-06-22T11:00:00.000Z',
+        simTime: '2026-06-22T19:00:00',
+        roomId: 'living',
+        deviceId: 'tv_01',
+        deviceType: 'tv',
+        field: 'power',
+        value: true
+      }),
+      deviceEvent({
+        id: 'day_2_kitchen',
+        sourceEventId: 'source_day_2_kitchen',
+        sequence: 3,
+        ts: '2026-06-23T00:00:00.000Z',
+        simTime: '2026-06-23T07:45:00',
+        roomId: 'kitchen',
+        deviceId: 'kitchen_motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'day_2_study',
+        sourceEventId: 'source_day_2_study',
+        sequence: 4,
+        ts: '2026-06-23T12:00:00.000Z',
+        simTime: '2026-06-23T20:00:00',
+        roomId: 'study',
+        deviceId: 'desk_lamp_01',
+        deviceType: 'lamp',
+        field: 'power',
+        value: true
+      })
+    ];
+    const memory = reduceDeviceEvents(createHomeMemory(), events);
+    const hypotheses = createHomeProfileHypotheses(memory);
+
+    const morningRhythm = hypotheses.find((hypothesis) => hypothesis.id === 'rhythm:morning');
+    const householdSize = hypotheses.find((hypothesis) => hypothesis.type === 'household_size');
+
+    expect(memory.dailySummaryCount).toBe(2);
+    expect(memory.weeklySummaryCount).toBe(1);
+    expect(morningRhythm?.summary).toMatch(/2 observed days/i);
+    expect(morningRhythm?.summary).toMatch(/1 observed week/i);
+    expect(morningRhythm?.summary).toMatch(/2 day-level matches/i);
+    expect(householdSize?.summary).toMatch(/2 observed days/i);
+    expect(householdSize?.summary).toMatch(/1 observed week/i);
+    expect(householdSize?.summary).toMatch(/3 long-window room/i);
+  });
+
   it('returns no hypotheses for empty memory', () => {
     expect(createHomeProfileHypotheses(createHomeMemory())).toEqual([]);
   });
