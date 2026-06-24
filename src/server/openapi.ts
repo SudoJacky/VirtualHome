@@ -1067,6 +1067,108 @@ const telemetrySummarySchema: JsonSchema = {
   }
 };
 
+const memoryEvidenceSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'sourceEventId', 'runId', 'sequence', 'simTime', 'homeId', 'roomId', 'deviceId', 'deviceType', 'field', 'value', 'evidenceCategory', 'evidenceStrength', 'profileWeight', 'evidenceReason'],
+  properties: {
+    id: stringSchema,
+    sourceEventId: stringSchema,
+    sourceEventType: { type: 'string', enum: ['DeviceTelemetry', 'DeviceStateChanged'] },
+    runId: stringSchema,
+    sequence: { type: 'integer', minimum: 1 },
+    ts: isoDateTimeSchema,
+    simTime: isoDateTimeSchema,
+    homeId: stringSchema,
+    roomId: roomIdSchema,
+    deviceId: stringSchema,
+    deviceType: stringSchema,
+    field: stringSchema,
+    value: {
+      anyOf: [
+        stringSchema,
+        { type: 'number' },
+        { type: 'boolean' },
+        { type: 'null' }
+      ]
+    },
+    timeBucket: { type: 'string', enum: ['morning', 'daytime', 'evening', 'night'] },
+    evidenceCategory: { type: 'string', enum: ['human_activity', 'device_usage', 'environment_context', 'system_status'] },
+    evidenceStrength: { type: 'string', enum: ['strong', 'medium', 'weak', 'ignored'] },
+    meaningfulChange: { type: 'boolean' },
+    valueDelta: { type: 'number' },
+    profileWeight: { type: 'number' },
+    evidenceReason: stringSchema
+  }
+};
+
+const memoryHypothesisSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'type', 'label', 'summary', 'confidence', 'updatedAt', 'evidenceCount', 'subjectIds'],
+  properties: {
+    id: stringSchema,
+    type: { type: 'string', enum: ['household_size', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster'] },
+    label: stringSchema,
+    summary: stringSchema,
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
+    updatedAt: isoDateTimeSchema,
+    evidenceCount: { type: 'integer', minimum: 0 },
+    subjectIds: {
+      type: 'array',
+      items: stringSchema
+    },
+    evidence: {
+      type: 'array',
+      items: { $ref: '#/components/schemas/MemoryEvidence' }
+    }
+  }
+};
+
+const memorySummarySchema: JsonSchema = {
+  type: 'object',
+  required: ['homeId', 'runId', 'totalEvents', 'profileEventCount', 'profileEvidenceWeight', 'activeRooms', 'activeDevices', 'activeEpisodes', 'topPatterns', 'recentHighlights', 'updatedAt'],
+  properties: {
+    homeId: { anyOf: [stringSchema, { type: 'null' }] },
+    runId: { anyOf: [stringSchema, { type: 'null' }] },
+    totalEvents: { type: 'integer', minimum: 0 },
+    profileEventCount: { type: 'integer', minimum: 0 },
+    profileEvidenceWeight: { type: 'number', minimum: 0 },
+    activeRooms: {
+      type: 'array',
+      items: stringSchema
+    },
+    activeDevices: {
+      type: 'array',
+      items: stringSchema
+    },
+    activeEpisodes: {
+      type: 'array',
+      items: { type: 'object', additionalProperties: true }
+    },
+    topPatterns: {
+      type: 'array',
+      items: { $ref: '#/components/schemas/MemoryHypothesis' }
+    },
+    recentHighlights: {
+      type: 'array',
+      items: { $ref: '#/components/schemas/MemoryEvidence' }
+    },
+    updatedAt: { anyOf: [isoDateTimeSchema, { type: 'null' }] }
+  }
+};
+
+const memoryListResponseSchema = (itemSchema: JsonSchema): JsonSchema => ({
+  type: 'object',
+  required: ['runId', 'items'],
+  properties: {
+    runId: stringSchema,
+    kind: stringSchema,
+    items: {
+      type: 'array',
+      items: itemSchema
+    }
+  }
+});
+
 export function buildOpenApiDocument(): Record<string, unknown> {
   return {
     openapi: '3.1.0',
@@ -1139,6 +1241,99 @@ export function buildOpenApiDocument(): Record<string, unknown> {
             schema: { type: 'integer', minimum: 1, maximum: 1000, default: 500 }
           }, runIdParameter()],
           responses: okResponse({ $ref: '#/components/schemas/TelemetrySummary' }, true)
+        }
+      },
+      '/api/memory/summary': {
+        get: {
+          summary: 'Get compact home memory context for external agents',
+          parameters: [runIdParameter()],
+          responses: okResponse({ $ref: '#/components/schemas/MemorySummary' }, true)
+        }
+      },
+      '/api/memory/entities': {
+        get: {
+          summary: 'Query room, device, or field memory entities',
+          parameters: [
+            runIdParameter(),
+            {
+              name: 'kind',
+              in: 'query',
+              required: true,
+              schema: { type: 'string', enum: ['room', 'device', 'field'] }
+            },
+            optionalStringParameter('roomId'),
+            optionalStringParameter('deviceId'),
+            optionalStringParameter('field'),
+            optionalBooleanParameter('meaningfulOnly')
+          ],
+          responses: okResponse(memoryListResponseSchema({ type: 'object', additionalProperties: true }), true)
+        }
+      },
+      '/api/memory/episodes': {
+        get: {
+          summary: 'Query behavior episodes recorded in home memory',
+          parameters: [
+            runIdParameter(),
+            {
+              name: 'kind',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', enum: ['occupancy', 'contact_activity', 'device_usage', 'appliance_usage'] }
+            },
+            {
+              name: 'status',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', enum: ['open', 'closed'] }
+            },
+            optionalStringParameter('roomId'),
+            optionalStringParameter('deviceId'),
+            optionalStringParameter('field'),
+            limitParameter(200)
+          ],
+          responses: okResponse(memoryListResponseSchema({ type: 'object', additionalProperties: true }), true)
+        }
+      },
+      '/api/memory/evidence': {
+        get: {
+          summary: 'Query recent memory evidence with deterministic filters',
+          parameters: [
+            runIdParameter(),
+            {
+              name: 'category',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', enum: ['human_activity', 'device_usage', 'environment_context', 'system_status'] }
+            },
+            {
+              name: 'strength',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', enum: ['strong', 'medium', 'weak', 'ignored'] }
+            },
+            optionalStringParameter('roomId'),
+            optionalStringParameter('deviceId'),
+            optionalStringParameter('field'),
+            optionalBooleanParameter('meaningfulOnly'),
+            limitParameter(200)
+          ],
+          responses: okResponse(memoryListResponseSchema({ $ref: '#/components/schemas/MemoryEvidence' }), true)
+        }
+      },
+      '/api/memory/profile/hypotheses': {
+        get: {
+          summary: 'Query profile hypotheses inferred from home memory',
+          parameters: [
+            runIdParameter(),
+            {
+              name: 'type',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', enum: ['household_size', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster'] }
+            },
+            optionalBooleanParameter('includeEvidence')
+          ],
+          responses: okResponse(memoryListResponseSchema({ $ref: '#/components/schemas/MemoryHypothesis' }), true)
         }
       },
       '/api/device-twins': {
@@ -1325,6 +1520,9 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         DeviceAccessRecord: deviceAccessRecordSchema,
         DeviceCapability: deviceCapabilitySchema,
         TelemetrySummary: telemetrySummarySchema,
+        MemoryEvidence: memoryEvidenceSchema,
+        MemoryHypothesis: memoryHypothesisSchema,
+        MemorySummary: memorySummarySchema,
         AccessAuditRecord: accessAuditRecordSchema,
         UpdateResponse: updateResponseSchema,
         TwinSocketUpdateMessage: twinSocketUpdateMessageSchema,
@@ -1456,12 +1654,30 @@ function alertLifecycleStatusSchema(): JsonSchema {
   };
 }
 
-function limitParameter(): Record<string, unknown> {
+function limitParameter(maximum = 500): Record<string, unknown> {
   return {
     name: 'limit',
     in: 'query',
     required: false,
-    schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 }
+    schema: { type: 'integer', minimum: 1, maximum: maximum, default: 100 }
+  };
+}
+
+function optionalStringParameter(name: string): Record<string, unknown> {
+  return {
+    name,
+    in: 'query',
+    required: false,
+    schema: stringSchema
+  };
+}
+
+function optionalBooleanParameter(name: string): Record<string, unknown> {
+  return {
+    name,
+    in: 'query',
+    required: false,
+    schema: { type: 'boolean' }
   };
 }
 

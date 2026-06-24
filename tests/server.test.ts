@@ -48,6 +48,70 @@ describe('server API', () => {
     await server.close();
   });
 
+  it('exposes queryable home memory views for external agents', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-memory-api-'));
+    dirs.push(dir);
+    const server = createServer({ databasePath: path.join(dir, 'twin.db'), autoTick: false });
+
+    const start = await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    expect(start.statusCode).toBe(200);
+
+    const advance = await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 30 }
+    });
+    expect(advance.statusCode).toBe(200);
+
+    const summary = await server.inject({ method: 'GET', url: '/api/memory/summary' });
+    expect(summary.statusCode).toBe(200);
+    expect(summary.json()).toMatchObject({
+      homeId: 'default_home',
+      runId: expect.any(String),
+      totalEvents: expect.any(Number),
+      profileEventCount: expect.any(Number)
+    });
+    expect(summary.json().activeRooms.length).toBeGreaterThan(0);
+    expect(summary.json().activeDevices.length).toBeGreaterThan(0);
+    expect(summary.json().recentHighlights.length).toBeGreaterThan(0);
+
+    const rooms = await server.inject({ method: 'GET', url: '/api/memory/entities?kind=room' });
+    expect(rooms.statusCode).toBe(200);
+    expect(rooms.json().kind).toBe('room');
+    expect(rooms.json().items.some((room: { roomId: string }) => room.roomId === 'kitchen')).toBe(true);
+
+    const kitchenFields = await server.inject({ method: 'GET', url: '/api/memory/entities?kind=field&roomId=kitchen' });
+    expect(kitchenFields.statusCode).toBe(200);
+    expect(kitchenFields.json().items.length).toBeGreaterThan(0);
+    expect(kitchenFields.json().items.every((field: { roomId: string }) => field.roomId === 'kitchen')).toBe(true);
+
+    const episodes = await server.inject({ method: 'GET', url: '/api/memory/episodes?status=closed&limit=10' });
+    expect(episodes.statusCode).toBe(200);
+    expect(episodes.json().items.length).toBeLessThanOrEqual(10);
+    expect(episodes.json().items.every((episode: { status: string }) => episode.status === 'closed')).toBe(true);
+
+    const evidence = await server.inject({ method: 'GET', url: '/api/memory/evidence?roomId=kitchen&meaningfulOnly=true&limit=5' });
+    expect(evidence.statusCode).toBe(200);
+    expect(evidence.json().items.length).toBeLessThanOrEqual(5);
+    expect(evidence.json().items.every((item: { roomId: string; profileWeight: number }) => (
+      item.roomId === 'kitchen' && item.profileWeight > 0
+    ))).toBe(true);
+
+    const hypotheses = await server.inject({ method: 'GET', url: '/api/memory/profile/hypotheses?type=presence_signal' });
+    expect(hypotheses.statusCode).toBe(200);
+    expect(hypotheses.json().items).toHaveLength(1);
+    expect(hypotheses.json().items[0]).toMatchObject({
+      type: 'presence_signal',
+      confidence: expect.any(Number),
+      evidenceCount: expect.any(Number)
+    });
+
+    await server.close();
+  });
+
   it('serves an OpenAPI document for REST and WebSocket clients', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-openapi-'));
     dirs.push(dir);
@@ -63,6 +127,11 @@ describe('server API', () => {
       '/api/state',
       '/api/events',
       '/api/telemetry',
+      '/api/memory/summary',
+      '/api/memory/entities',
+      '/api/memory/episodes',
+      '/api/memory/evidence',
+      '/api/memory/profile/hypotheses',
       '/api/device-twins',
       '/api/device-capabilities',
       '/api/home-definition',
