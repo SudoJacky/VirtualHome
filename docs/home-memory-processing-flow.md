@@ -1,6 +1,6 @@
 # 家庭 Memory 处理流程
 
-本文说明 VirtualHome 如何把设备可观测事件转换成家庭 memory、画像假设、图视图和查询 API 响应。内容基于当前实现：`src/server/deviceEventStream.ts`、`src/web/homeMemoryModel.ts`、`src/web/homeProfiler.ts`、`src/web/homeMemoryReasoning.ts`、`src/server/memoryQuery.ts` 和 `src/web/HomeMemoryView.tsx`。
+本文说明 VirtualHome 如何把设备可观测事件转换成家庭 memory、画像假设、图视图和查询 API 响应。内容基于当前实现：`src/server/deviceEventStream.ts`、`src/web/homeMemoryModel.ts`、`src/web/homeProfiler.ts`、`src/web/homeHouseholdSizeEstimator.ts`、`src/web/homeMemoryReasoning.ts`、`src/server/memoryQuery.ts` 和 `src/web/HomeMemoryView.tsx`。
 
 ![家庭 Memory 架构](./assets/home-memory-architecture.png)
 
@@ -162,7 +162,159 @@ flowchart TD
 - `room_habit`：识别每个房间中最强的活动时间桶。
 - `device_routine`：识别同时具有多个活跃设备且事件数足够的房间。
 - `presence_signal`：使用近期有意义设备活动和行为 episode 作为较弱的在家 evidence。
-- `household_size`：根据有意义房间、episode、每日摘要和每周摘要估计粗粒度居住人数范围。
+- `household_size`：根据并发活动下界、睡眠区、日常 routine cluster、弱环境上下文占比、episode、每日摘要和每周摘要估计居住人数概率分布。
+
+## 各类结论的推断逻辑
+
+画像结论不是直接读取模拟真值，也不是把事件交给大模型总结。当前实现使用可解释规则从 `HomeMemory` 派生 `ProfileHypothesis`。每个结论都会保留 `evidence`、`subjectIds` 和 `confidence`，因此 UI 可以展示“这个结论从哪些房间、设备、字段和事件得来”。
+
+### `daily_rhythm`
+
+实现位置：`createDailyRhythms()`。
+
+输入特征：
+
+- `MemoryEvidence.timeBucket`，由 `simTime` 映射到 `morning`、`daytime`、`evening`、`night`。
+- 当前 bucket 下的最近事件数量。
+- 当前 bucket 涉及的房间集合。
+- 每日摘要中有多少天命中过该 bucket。
+- 每周摘要数量，用来提升跨周稳定性。
+- bucket 内 evidence 的 `profileWeight` 总和。
+
+推断方式：
+
+1. 只要最近事件中出现某个时间桶，就为该时间桶创建节律假设。
+2. 统计这个时间桶的事件数、房间数、加权 evidence、命中的天数和周数。
+3. 用 `confidenceFromCount()` 根据“该时间桶信号 / 全局画像信号”计算置信度。
+4. 样本很少时，`sampleSizeConfidenceCap()` 会限制最高置信度。
+
+输出含义：
+
+- 表示“家在某个时间段有稳定活动迹象”。
+- 它不直接说明有几个人，只说明活动节律。
+
+### `room_habit`
+
+实现位置：`createRoomHabit()`。
+
+输入特征：
+
+- 房间级 `eventCount`。
+- 房间级 `timeBuckets`，用于找到最强活动时间段。
+- 房间内设备列表。
+- 房间级 `profileEvidenceWeight`。
+- 该房间中的行为 episode 数量。
+
+推断方式：
+
+1. 对每个有事件的房间创建一个房间习惯假设。
+2. 从 `timeBuckets` 中选择事件最多的时间段作为 `strongestBucket`。
+3. 把房间画像权重和 episode 数量合并成该房间的行为信号。
+4. 用房间信号相对于全屋信号的比例计算置信度。
+
+输出含义：
+
+- 表示“某个房间最常在什么时间段活跃”。
+- 例如 kitchen 在 morning 最强，可能是早餐或晨间设备使用。
+- 这个结论仍是房间层面的，不会直接声明具体用户身份。
+
+### `device_routine`
+
+实现位置：`createDeviceRoutine()`。
+
+触发条件：
+
+- 房间内设备数 `>= 2`。
+- 房间事件数 `>= 3`。
+
+输入特征：
+
+- 房间内活跃设备集合。
+- 房间最强时间桶。
+- 房间 `profileEvidenceWeight`。
+- 全屋总事件数。
+
+推断方式：
+
+1. 只有多设备、足够事件的房间才会生成 device routine。
+2. 结论描述该房间存在多设备活动，并标记最强时间段。
+3. 置信度由房间画像权重和设备数量共同决定。
+
+输出含义：
+
+- 表示“某个房间出现稳定的多设备使用模式”。
+- 它比单设备事件更可信，但仍不能直接等价为某个人的固定习惯。
+
+### `presence_signal`
+
+实现位置：`createPresenceSignal()`。
+
+输入特征：
+
+- 最近事件涉及的房间。
+- `human_activity` 和 `device_usage` 这两类有意义 evidence。
+- 行为 episode，例如 occupancy、contact activity、device usage、appliance usage。
+- 有意义 evidence 的 `profileWeight`。
+
+推断方式：
+
+1. 如果有 `human_activity` 或 `device_usage`，再加上 episode，会生成较强 presence 描述。
+2. 如果只有环境传感器上下文，例如温度、湿度、普通传感器遥测，则 presence 保持不确定。
+3. 置信度由有意义 evidence 权重、episode 数和活跃房间数共同决定。
+
+输出含义：
+
+- 表示“最近可能有人在家或有行为活动”。
+- 环境传感器可以作为上下文，但不会单独形成强 presence。
+
+### `household_size`
+
+实现位置：`createHouseholdSize()` 和 `estimateHouseholdSizeFromMemory()`。
+
+这个结论现在输出的是概率估计，而不是单一范围。核心输出包括：
+
+- `estimate`：最可能的人数，当前限制在 1-5。
+- `lowerBound`：由并发活动或睡眠区推出来的最低人数。
+- `distribution`：1-5 人的概率分布。
+- `confidence`：样本量、证据强度和弱上下文比例共同约束后的置信度。
+- `features`：用于解释的中间特征。
+
+输入特征：
+
+| 特征 | 来源 | 作用 |
+| --- | --- | --- |
+| 并发活动窗口 | 最近 evidence 按 10 分钟窗口聚合，统计同窗口活跃房间数 | 推断最低人数下界 |
+| 睡眠区 | `sleep_sensor`、`inBed`、夜间 bedroom occupancy episode | 识别稳定睡眠位置，提升常住人口判断 |
+| routine cluster | kitchen meal、study/work、living evening、bathroom hygiene、entry、child/main sleep | 识别不同生活模式是否共存 |
+| 有意义房间数 | `human_activity`、`device_usage` 或 episode 支持的房间 | 衡量活动覆盖范围 |
+| 长窗口房间数 | daily/weekly summary 中的 meaningfulRooms | 避免只看最近几十条事件 |
+| 弱环境上下文占比 | `environment_context / profileEventCount` | 防止温湿度等高频传感器误判人数 |
+| 行为 episode 数 | occupancy/contact/device/appliance episode | 把重复低层事件压缩成行为片段 |
+
+推断步骤：
+
+1. 先筛选用于人数推断的 evidence。强设备使用、人类活动直接参与；高 CO2、高 PM2.5、正向水流和睡眠传感器会作为占用上下文参与，但普通温湿度不会强行推人数。
+2. 按 10 分钟窗口计算并发活动房间数。若同窗口有 3 个独立房间的强信号，则 `lowerBound` 至少为 3。
+3. 收集睡眠区。多个稳定睡眠区会提高最低人数和分布中较高人数的概率。
+4. 抽取 routine cluster。厨房用餐、书房工作、客厅晚间活动、浴室用水、入口活动、儿童/主卧睡眠等 cluster 会影响最可能人数。
+5. 计算 1-5 人的打分，并归一化为概率分布。
+6. 根据分布峰值选出 `estimate`。
+7. 根据样本量、lower bound、弱环境上下文占比给 `confidence` 加上上限，避免少量事件看起来过于确定。
+
+典型解释：
+
+```text
+Estimated 3 residents with lower bound 2 and 64% confidence.
+Distribution 1:5%, 2:28%, 3:46%, 4:18%, 5:3%.
+Evidence: 2-room concurrent activity lower bound; 2 recurring sleep zones; 4 routine clusters.
+```
+
+边界处理：
+
+- 高频温湿度、普通环境遥测会被保存为事实 memory，但不会强推家庭人数。
+- 单房间少量事件会保持低置信度。
+- 多房间连续事件不一定代表多人；只有同一 10 分钟窗口内的独立房间活动才提高下界。
+- 输出仍是概率画像，不是身份识别或真实人口确认。
 
 每个假设包含：
 
