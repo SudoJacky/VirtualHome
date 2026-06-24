@@ -17,6 +17,7 @@ const NODE_COLORS: Record<HomeMemoryGraphNodeKind, string> = {
   room: '#267e71',
   device: '#2f6f9f',
   field: '#8a6f2a',
+  semantic: '#7353a8',
   hypothesis: '#9b4d4d'
 };
 
@@ -229,18 +230,20 @@ function MemoryNode({
           />
         </mesh>
       ) : null}
-      <Text
-        anchorX="center"
-        anchorY="middle"
-        color="#17202a"
-        fontSize={labelSize(node.kind)}
-        maxWidth={node.kind === 'hypothesis' ? 3.8 : 2.5}
-        outlineColor="#f7fbfb"
-        outlineWidth={0.025}
-        position={[0, radius + 0.34, 0]}
-      >
-        {node.label}
-      </Text>
+      {shouldShowNodeLabel(node.kind, selected, related, highlighted) ? (
+        <Text
+          anchorX="center"
+          anchorY="middle"
+          color="#17202a"
+          fontSize={labelSize(node.kind)}
+          maxWidth={node.kind === 'hypothesis' ? 3.8 : node.kind === 'semantic' ? 3.1 : 2.5}
+          outlineColor="#f7fbfb"
+          outlineWidth={0.025}
+          position={[0, radius + 0.34, 0]}
+        >
+          {node.label}
+        </Text>
+      ) : null}
     </group>
   );
 }
@@ -253,18 +256,25 @@ function nodeRadius(node: HomeMemoryGraphNode): number {
   const activityBoost = Math.min(0.22, Math.max(0, node.activity) * 0.012);
   if (node.kind === 'home') return 0.52 + activityBoost;
   if (node.kind === 'hypothesis') return 0.32 + activityBoost;
+  if (node.kind === 'semantic') return 0.26 + activityBoost;
   if (node.kind === 'field') return 0.22 + activityBoost;
   return 0.28 + activityBoost;
+}
+
+function shouldShowNodeLabel(kind: HomeMemoryGraphNodeKind, selected: boolean, related: boolean, highlighted: boolean): boolean {
+  return selected || related || highlighted || kind === 'home' || kind === 'room' || kind === 'hypothesis';
 }
 
 function labelSize(kind: HomeMemoryGraphNodeKind): number {
   if (kind === 'home') return 0.28;
   if (kind === 'hypothesis') return 0.2;
+  if (kind === 'semantic') return 0.18;
   return 0.18;
 }
 
 function edgeColor(kind: string): string {
   if (kind === 'supports') return '#9b4d4d';
+  if (kind === 'interprets') return '#7353a8';
   if (kind === 'observes') return '#8a6f2a';
   if (kind === 'co-occurs') return '#2f6f9f';
   return '#697b78';
