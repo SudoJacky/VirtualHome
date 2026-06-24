@@ -10,7 +10,7 @@ import {
   type DeviceValueEvent
 } from './deviceEventSocket';
 import { HomeMemory3D } from './HomeMemory3D';
-import { createHomeMemory, reduceDeviceEvents, type HomeMemory, type MemoryEvidence } from './homeMemoryModel';
+import { createHomeMemory, reduceDeviceEvents, type HomeMemory, type MemoryEvidence, type SemanticSignal } from './homeMemoryModel';
 import {
   createDeviceEvidenceGraphHighlight,
   createFocusedNodeGraphHighlight,
@@ -268,6 +268,7 @@ export function HomeMemoryView(): React.ReactElement {
             <span><i className="room" /> Rooms</span>
             <span><i className="device" /> Devices</span>
             <span><i className="field" /> Fields</span>
+            <span><i className="semantic" /> Semantic</span>
             <span><i className="hypothesis" /> Hypotheses</span>
           </div>
           <div className="memory-cursor-strip" aria-label="Device event cursor">
@@ -670,6 +671,26 @@ function selectedDetails(
       evidence: field?.recentEvents ?? []
     };
   }
+  if (node.kind === 'semantic') {
+    const signals = semanticSignalsForNode(memory, node.id);
+    const latestSignal = signals[0];
+    const evidence = evidenceForSemanticSignals(memory, signals);
+
+    return {
+      rows: latestSignal
+        ? [
+            { label: 'Type', value: latestSignal.type.replaceAll('_', ' ') },
+            { label: 'Room', value: latestSignal.roomId },
+            { label: 'Device', value: latestSignal.deviceId },
+            { label: 'Field', value: latestSignal.field },
+            { label: 'Signals', value: signals.length.toString() },
+            { label: 'Weight', value: sumSignalWeight(signals).toString() },
+            { label: 'Latest', value: formatTime(latestSignal.simTime) }
+          ]
+        : [],
+      evidence
+    };
+  }
   if (node.kind === 'hypothesis') {
     const hypothesis = hypotheses.find((candidate) => `hypothesis:${candidate.id}` === node.id);
     return {
@@ -695,6 +716,28 @@ function selectedDetails(
     ],
     evidence: memory.recentEvents
   };
+}
+
+function semanticSignalsForNode(memory: HomeMemory, nodeId: string): SemanticSignal[] {
+  return memory.semanticSignals
+    .filter((signal) => semanticSignalNodeId(signal) === nodeId)
+    .sort((left, right) => right.simTime.localeCompare(left.simTime));
+}
+
+function semanticSignalNodeId(signal: SemanticSignal): string {
+  return `semantic:${signal.type}:${signal.roomId}:${signal.deviceId}:${signal.field}`;
+}
+
+function evidenceForSemanticSignals(memory: HomeMemory, signals: SemanticSignal[]): MemoryEvidence[] {
+  const evidenceIds = new Set(signals.flatMap((signal) => signal.sourceEvidenceIds));
+  return Object.values(memory.fields)
+    .flatMap((field) => field.recentEvents)
+    .filter((event) => evidenceIds.has(event.id))
+    .sort((left, right) => right.simTime.localeCompare(left.simTime));
+}
+
+function sumSignalWeight(signals: SemanticSignal[]): number {
+  return Number(signals.reduce((total, signal) => total + signal.profileWeight, 0).toFixed(3));
 }
 
 function episodesForRoom(memory: HomeMemory, roomId: string): HomeMemory['episodes'][string][] {

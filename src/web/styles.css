@@ -505,6 +505,10 @@ button:hover {
   background: #8a6f2a;
 }
 
+.memory-layer-legend .semantic {
+  background: #7353a8;
+}
+
 .memory-layer-legend .hypothesis {
   background: #9b4d4d;
 }

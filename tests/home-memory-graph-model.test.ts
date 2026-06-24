@@ -132,6 +132,12 @@ describe('home memory graph model', () => {
         activity: 2
       }),
       expect.objectContaining({
+        id: 'semantic:cooking_signal:kitchen:coffee_maker_01:powerW',
+        kind: 'semantic',
+        label: 'Cooking Signal',
+        activity: expect.any(Number)
+      }),
+      expect.objectContaining({
         id: 'hypothesis:room:kitchen:habit',
         kind: 'hypothesis',
         label: 'Kitchen habit',
@@ -167,6 +173,18 @@ describe('home memory graph model', () => {
         strength: 2
       }),
       expect.objectContaining({
+        id: 'interprets:field:coffee_maker_01:powerW:semantic:cooking_signal:kitchen:coffee_maker_01:powerW',
+        from: 'field:coffee_maker_01:powerW',
+        to: 'semantic:cooking_signal:kitchen:coffee_maker_01:powerW',
+        kind: 'interprets'
+      }),
+      expect.objectContaining({
+        id: 'supports:hypothesis:presence:recent-activity:semantic:cooking_signal:kitchen:coffee_maker_01:powerW',
+        from: 'hypothesis:presence:recent-activity',
+        to: 'semantic:cooking_signal:kitchen:coffee_maker_01:powerW',
+        kind: 'supports'
+      }),
+      expect.objectContaining({
         id: 'supports:hypothesis:room:kitchen:habit:room:kitchen',
         from: 'hypothesis:room:kitchen:habit',
         to: 'room:kitchen',
@@ -184,7 +202,8 @@ describe('home memory graph model', () => {
       { kind: 'room', label: 'Rooms', radius: 5, z: 0 },
       { kind: 'device', label: 'Devices', radius: 9, z: 1.5 },
       { kind: 'field', label: 'Fields', radius: 13, z: -1.5 },
-      { kind: 'hypothesis', label: 'Hypotheses', radius: 17, z: 3 }
+      { kind: 'semantic', label: 'Semantic Signals', radius: 17, z: 2.2 },
+      { kind: 'hypothesis', label: 'Hypotheses', radius: 22, z: 3.4 }
     ]);
   });
 
@@ -206,6 +225,7 @@ describe('home memory graph model', () => {
       'room:kitchen',
       'device:coffee_maker_01',
       'field:coffee_maker_01:powerW',
+      'semantic:cooking_signal:kitchen:coffee_maker_01:powerW',
       'hypothesis:presence:recent-activity',
       'hypothesis:room:kitchen:habit'
     ]);
@@ -213,6 +233,8 @@ describe('home memory graph model', () => {
       'contains:home:home_1:room:kitchen',
       'contains:room:kitchen:device:coffee_maker_01',
       'observes:device:coffee_maker_01:field:coffee_maker_01:powerW',
+      'interprets:field:coffee_maker_01:powerW:semantic:cooking_signal:kitchen:coffee_maker_01:powerW',
+      'supports:hypothesis:presence:recent-activity:semantic:cooking_signal:kitchen:coffee_maker_01:powerW',
       'supports:hypothesis:presence:recent-activity:device:coffee_maker_01',
       'supports:hypothesis:presence:recent-activity:room:kitchen',
       'supports:hypothesis:room:kitchen:habit:room:kitchen'
@@ -242,6 +264,7 @@ describe('home memory graph model', () => {
       'room:kitchen',
       'device:coffee_maker_01',
       'field:coffee_maker_01:powerW',
+      'semantic:cooking_signal:kitchen:coffee_maker_01:powerW',
       'hypothesis:presence:recent-activity',
       'hypothesis:room:kitchen:habit'
     ]);
@@ -249,6 +272,8 @@ describe('home memory graph model', () => {
       'contains:home:home_1:room:kitchen',
       'contains:room:kitchen:device:coffee_maker_01',
       'observes:device:coffee_maker_01:field:coffee_maker_01:powerW',
+      'interprets:field:coffee_maker_01:powerW:semantic:cooking_signal:kitchen:coffee_maker_01:powerW',
+      'supports:hypothesis:presence:recent-activity:semantic:cooking_signal:kitchen:coffee_maker_01:powerW',
       'supports:hypothesis:presence:recent-activity:device:coffee_maker_01',
       'supports:hypothesis:presence:recent-activity:room:kitchen',
       'supports:hypothesis:room:kitchen:habit:room:kitchen'
@@ -261,14 +286,67 @@ describe('home memory graph model', () => {
     expect(createFocusedNodeGraphHighlight(graph, 'hypothesis:presence:recent-activity')).toEqual({
       nodeIds: [
         'hypothesis:presence:recent-activity',
+        'semantic:cooking_signal:kitchen:coffee_maker_01:powerW',
         'device:coffee_maker_01',
         'room:kitchen'
       ],
       edgeIds: [
+        'supports:hypothesis:presence:recent-activity:semantic:cooking_signal:kitchen:coffee_maker_01:powerW',
         'supports:hypothesis:presence:recent-activity:device:coffee_maker_01',
         'supports:hypothesis:presence:recent-activity:room:kitchen'
       ]
     });
+  });
+
+  it('keeps semantic focus limited to the selected semantic signal', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'front_door_unlock_1',
+        sourceEventId: 'source_front_door_unlock_1',
+        sequence: 1,
+        roomId: 'entrance',
+        deviceId: 'front_door_lock_01',
+        deviceType: 'smart_lock',
+        field: 'lock',
+        value: 'unlocked'
+      })
+    ]);
+    const graph = createHomeMemoryGraphModel(memory, []);
+
+    expect(createFocusedNodeGraphHighlight(graph, 'semantic:access_signal:entrance:front_door_lock_01:lock')).toEqual({
+      nodeIds: [
+        'home:home_1',
+        'room:entrance',
+        'device:front_door_lock_01',
+        'field:front_door_lock_01:lock',
+        'semantic:access_signal:entrance:front_door_lock_01:lock'
+      ],
+      edgeIds: [
+        'contains:home:home_1:room:entrance',
+        'contains:room:entrance:device:front_door_lock_01',
+        'observes:device:front_door_lock_01:field:front_door_lock_01:lock',
+        'interprets:field:front_door_lock_01:lock:semantic:access_signal:entrance:front_door_lock_01:lock'
+      ]
+    });
+  });
+
+  it('spreads crowded graph layers across adaptive sub-rings', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), Array.from({ length: 18 }, (_, index) => deviceEvent({
+      id: `kitchen_plug_${index}`,
+      sourceEventId: `source_kitchen_plug_${index}`,
+      sequence: index + 1,
+      deviceId: `kitchen_plug_${String(index).padStart(2, '0')}`,
+      deviceType: 'smart_plug',
+      field: 'powerW',
+      value: 100 + index
+    })));
+
+    const graph = createHomeMemoryGraphModel(memory, []);
+    const deviceRadii = graph.nodes
+      .filter((node) => node.kind === 'device')
+      .map((node) => Number(Math.hypot(node.x, node.y).toFixed(3)));
+
+    expect(new Set(deviceRadii).size).toBeGreaterThan(1);
   });
 
   it('omits nonexistent hypothesis subjects from support edges and related ids', () => {

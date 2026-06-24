@@ -1,9 +1,9 @@
 import type { DeviceValueEvent } from './deviceEventSocket';
-import type { DeviceMemory, FieldMemory, HomeMemory, RoomMemory } from './homeMemoryModel';
+import type { DeviceMemory, FieldMemory, HomeMemory, RoomMemory, SemanticSignal, SemanticSignalType } from './homeMemoryModel';
 import type { ProfileHypothesis } from './homeProfiler';
 
-export type HomeMemoryGraphNodeKind = 'home' | 'room' | 'device' | 'field' | 'hypothesis';
-export type HomeMemoryGraphEdgeKind = 'contains' | 'observes' | 'supports' | 'co-occurs';
+export type HomeMemoryGraphNodeKind = 'home' | 'room' | 'device' | 'field' | 'semantic' | 'hypothesis';
+export type HomeMemoryGraphEdgeKind = 'contains' | 'observes' | 'interprets' | 'supports' | 'co-occurs';
 
 export interface HomeMemoryGraphNode {
   id: string;
@@ -54,12 +54,27 @@ interface PositionedNodeInput {
   relatedIds: string[];
 }
 
+interface SemanticSignalGroup {
+  id: string;
+  type: SemanticSignalType;
+  roomId: string;
+  deviceId: string;
+  field: string;
+  deviceType: string;
+  count: number;
+  totalWeight: number;
+  latestSimTime: string;
+  sourceEvidenceIds: string[];
+  reasons: string[];
+}
+
 const RING_RADIUS_BY_KIND: Record<HomeMemoryGraphNodeKind, number> = {
   home: 0,
   room: 5,
   device: 9,
   field: 13,
-  hypothesis: 17
+  semantic: 17,
+  hypothesis: 22
 };
 
 const RING_Z_BY_KIND: Record<HomeMemoryGraphNodeKind, number> = {
@@ -67,7 +82,8 @@ const RING_Z_BY_KIND: Record<HomeMemoryGraphNodeKind, number> = {
   room: 0,
   device: 1.5,
   field: -1.5,
-  hypothesis: 3
+  semantic: 2.2,
+  hypothesis: 3.4
 };
 
 export const HOME_MEMORY_GRAPH_LAYERS: HomeMemoryGraphLayer[] = [
@@ -75,6 +91,7 @@ export const HOME_MEMORY_GRAPH_LAYERS: HomeMemoryGraphLayer[] = [
   { kind: 'room', label: 'Rooms', radius: RING_RADIUS_BY_KIND.room, z: RING_Z_BY_KIND.room },
   { kind: 'device', label: 'Devices', radius: RING_RADIUS_BY_KIND.device, z: RING_Z_BY_KIND.device },
   { kind: 'field', label: 'Fields', radius: RING_RADIUS_BY_KIND.field, z: RING_Z_BY_KIND.field },
+  { kind: 'semantic', label: 'Semantic Signals', radius: RING_RADIUS_BY_KIND.semantic, z: RING_Z_BY_KIND.semantic },
   { kind: 'hypothesis', label: 'Hypotheses', radius: RING_RADIUS_BY_KIND.hypothesis, z: RING_Z_BY_KIND.hypothesis }
 ];
 
@@ -83,6 +100,7 @@ export function createHomeMemoryGraphModel(memory: HomeMemory, hypotheses: Profi
   const rooms = sortedValues(memory.rooms, (room) => room.roomId);
   const devices = sortedValues(memory.devices, (device) => device.deviceId);
   const fields = sortedValues(memory.fields, (field) => field.id);
+  const semanticGroups = createSemanticSignalGroups(memory.semanticSignals);
   const sortedHypotheses = [...hypotheses].sort((left, right) => left.id.localeCompare(right.id));
   const nodeInputs: PositionedNodeInput[] = [
     {
@@ -96,6 +114,7 @@ export function createHomeMemoryGraphModel(memory: HomeMemory, hypotheses: Profi
     ...rooms.map((room) => roomNodeInput(room)),
     ...devices.map((device) => deviceNodeInput(device)),
     ...fields.map((field) => fieldNodeInput(field)),
+    ...semanticGroups.map((group) => semanticNodeInput(group, sortedHypotheses)),
     ...sortedHypotheses.map((hypothesis) => hypothesisNodeInput(hypothesis))
   ];
   const positionedNodes = assignPositions(nodeInputs);
@@ -112,10 +131,17 @@ export function createHomeMemoryGraphModel(memory: HomeMemory, hypotheses: Profi
     ...fields
       .filter((field) => nodeIds.has(`device:${field.deviceId}`))
       .map((field) => edge('observes', `device:${field.deviceId}`, `field:${field.deviceId}:${field.field}`, field.eventCount)),
+    ...semanticGroups
+      .filter((group) => nodeIds.has(`field:${group.deviceId}:${group.field}`))
+      .map((group) => edge('interprets', `field:${group.deviceId}:${group.field}`, group.id, group.totalWeight)),
     ...sortedHypotheses.flatMap((hypothesis) => {
       const hypothesisNodeId = `hypothesis:${hypothesis.id}`;
 
-      return sortedUnique(hypothesis.subjectIds)
+      const semanticSubjectIds = semanticGroups
+        .filter((group) => semanticGroupSupportsHypothesis(group, hypothesis))
+        .map((group) => group.id);
+
+      return [...sortedUnique(semanticSubjectIds), ...sortedUnique(hypothesis.subjectIds)]
         .filter((subjectId) => nodeIds.has(subjectId))
         .map((subjectId) => edge('supports', hypothesisNodeId, subjectId, hypothesis.confidence));
     })
@@ -149,7 +175,9 @@ export function createDeviceEvidenceGraphHighlight(
     edge('contains', roomId, deviceId, 0).id,
     edge('observes', deviceId, fieldId, 0).id
   ].filter((edgeId) => edgeIds.has(edgeId));
-  const pathNodeIds = new Set(chainNodeIds);
+  const semanticEdges = graph.edges.filter((edgeItem) => edgeItem.kind === 'interprets' && edgeItem.from === fieldId);
+  const semanticNodeIds = sortedUnique(semanticEdges.map((edgeItem) => edgeItem.to));
+  const pathNodeIds = new Set([...chainNodeIds, ...semanticNodeIds]);
   const supportEdges = graph.edges.filter((edgeItem) => (
     edgeItem.kind === 'supports'
     && pathNodeIds.has(edgeItem.to)
@@ -158,8 +186,8 @@ export function createDeviceEvidenceGraphHighlight(
   const supportNodeIds = sortedUnique(supportEdges.map((edgeItem) => edgeItem.from));
 
   return {
-    nodeIds: [...chainNodeIds, ...supportNodeIds],
-    edgeIds: [...chainEdgeIds, ...supportEdges.map((edgeItem) => edgeItem.id)]
+    nodeIds: [...chainNodeIds, ...semanticNodeIds, ...supportNodeIds],
+    edgeIds: [...chainEdgeIds, ...semanticEdges.map((edgeItem) => edgeItem.id), ...supportEdges.map((edgeItem) => edgeItem.id)]
   };
 }
 
@@ -187,7 +215,7 @@ export function createFocusedNodeGraphHighlight(graph: HomeMemoryGraphModel, nod
 
   while (currentNodeId) {
     const incoming = graph.edges.find((edgeItem) => (
-      (edgeItem.kind === 'contains' || edgeItem.kind === 'observes')
+      (edgeItem.kind === 'contains' || edgeItem.kind === 'observes' || edgeItem.kind === 'interprets')
       && edgeItem.to === currentNodeId
     ));
 
@@ -200,15 +228,19 @@ export function createFocusedNodeGraphHighlight(graph: HomeMemoryGraphModel, nod
     currentNodeId = incoming.from;
   }
 
-  const pathNodeIds = new Set(chainNodeIds);
+  const semanticEdges = selectedNode?.kind === 'semantic'
+    ? []
+    : graph.edges.filter((edgeItem) => edgeItem.kind === 'interprets' && chainNodeIds.includes(edgeItem.from));
+  const semanticNodeIds = sortedUnique(semanticEdges.map((edgeItem) => edgeItem.to));
+  const pathNodeIds = new Set([...chainNodeIds, ...semanticNodeIds]);
   const supportEdges = graph.edges.filter((edgeItem) => (
     edgeItem.kind === 'supports'
     && pathNodeIds.has(edgeItem.to)
   ));
 
   return {
-    nodeIds: [...chainNodeIds, ...sortedUnique(supportEdges.map((edgeItem) => edgeItem.from))],
-    edgeIds: [...chainEdgeIds, ...supportEdges.map((edgeItem) => edgeItem.id)]
+    nodeIds: [...chainNodeIds, ...semanticNodeIds, ...sortedUnique(supportEdges.map((edgeItem) => edgeItem.from))],
+    edgeIds: [...chainEdgeIds, ...semanticEdges.map((edgeItem) => edgeItem.id), ...supportEdges.map((edgeItem) => edgeItem.id)]
   };
 }
 
@@ -251,6 +283,27 @@ function fieldNodeInput(field: FieldMemory): PositionedNodeInput {
   };
 }
 
+function semanticNodeInput(group: SemanticSignalGroup, hypotheses: ProfileHypothesis[]): PositionedNodeInput {
+  const fieldNodeId = `field:${group.deviceId}:${group.field}`;
+  const supportingHypothesisIds = hypotheses
+    .filter((hypothesis) => semanticGroupSupportsHypothesis(group, hypothesis))
+    .map((hypothesis) => `hypothesis:${hypothesis.id}`);
+
+  return {
+    id: group.id,
+    kind: 'semantic',
+    label: titleCase(group.type),
+    summary: `${titleCase(group.type)} from ${titleCase(group.deviceId)} ${titleCase(group.field)} in ${titleCase(group.roomId)} with ${formatValue(group.totalWeight)} total weight across ${group.count} signal${plural(group.count)}.`,
+    activity: group.totalWeight,
+    relatedIds: sortedUnique([
+      fieldNodeId,
+      `device:${group.deviceId}`,
+      `room:${group.roomId}`,
+      ...supportingHypothesisIds
+    ])
+  };
+}
+
 function hypothesisNodeInput(hypothesis: ProfileHypothesis): PositionedNodeInput {
   return {
     id: `hypothesis:${hypothesis.id}`,
@@ -283,16 +336,90 @@ function assignPositions(inputs: PositionedNodeInput[]): HomeMemoryGraphNode[] {
   return inputs.map((input) => {
     const group = groups.get(input.kind) ?? [];
     const index = group.findIndex((candidate) => candidate.id === input.id);
-    const angle = group.length === 0 ? 0 : (Math.PI * 2 * index) / group.length;
-    const radius = RING_RADIUS_BY_KIND[input.kind];
+    const placement = adaptiveRingPlacement(input.kind, index, group.length);
 
     return {
       ...input,
-      x: roundCoordinate(Math.cos(angle) * radius),
-      y: roundCoordinate(Math.sin(angle) * radius),
+      x: roundCoordinate(Math.cos(placement.angle) * placement.radius),
+      y: roundCoordinate(Math.sin(placement.angle) * placement.radius),
       z: RING_Z_BY_KIND[input.kind]
     };
   });
+}
+
+function adaptiveRingPlacement(kind: HomeMemoryGraphNodeKind, index: number, count: number): { angle: number; radius: number } {
+  const baseRadius = RING_RADIUS_BY_KIND[kind];
+  if (kind === 'home' || count <= 12) {
+    return {
+      angle: count === 0 ? 0 : (Math.PI * 2 * index) / Math.max(1, count),
+      radius: baseRadius
+    };
+  }
+
+  const ringCount = Math.min(4, Math.ceil(count / 12));
+  const ringIndex = index % ringCount;
+  const itemIndex = Math.floor(index / ringCount);
+  const itemsInRing = Math.ceil((count - ringIndex) / ringCount);
+  const radiusStep = kind === 'hypothesis' ? 2.7 : 2.2;
+  const angleOffset = ringIndex * (Math.PI / Math.max(4, itemsInRing));
+
+  return {
+    angle: angleOffset + (Math.PI * 2 * itemIndex) / Math.max(1, itemsInRing),
+    radius: baseRadius + (ringIndex - (ringCount - 1) / 2) * radiusStep
+  };
+}
+
+function createSemanticSignalGroups(signals: SemanticSignal[]): SemanticSignalGroup[] {
+  const groups = new Map<string, SemanticSignalGroup>();
+
+  for (const signal of signals) {
+    const id = semanticSignalGroupId(signal);
+    const current = groups.get(id);
+    if (!current) {
+      groups.set(id, {
+        id,
+        type: signal.type,
+        roomId: signal.roomId,
+        deviceId: signal.deviceId,
+        field: signal.field,
+        deviceType: signal.deviceType,
+        count: 1,
+        totalWeight: signal.profileWeight,
+        latestSimTime: signal.simTime,
+        sourceEvidenceIds: [...signal.sourceEvidenceIds],
+        reasons: [signal.reason]
+      });
+      continue;
+    }
+
+    groups.set(id, {
+      ...current,
+      count: current.count + 1,
+      totalWeight: roundWeight(current.totalWeight + signal.profileWeight),
+      latestSimTime: signal.simTime > current.latestSimTime ? signal.simTime : current.latestSimTime,
+      sourceEvidenceIds: sortedUnique([...current.sourceEvidenceIds, ...signal.sourceEvidenceIds]),
+      reasons: sortedUnique([...current.reasons, signal.reason])
+    });
+  }
+
+  return [...groups.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function semanticSignalGroupId(signal: SemanticSignal): string {
+  return `semantic:${signal.type}:${signal.roomId}:${signal.deviceId}:${signal.field}`;
+}
+
+function semanticGroupSupportsHypothesis(group: SemanticSignalGroup, hypothesis: ProfileHypothesis): boolean {
+  if (hypothesis.subjectIds.includes(`field:${group.deviceId}:${group.field}`) || hypothesis.subjectIds.includes(`device:${group.deviceId}`)) {
+    return true;
+  }
+
+  const evidenceIds = new Set([
+    ...hypothesis.evidence,
+    ...hypothesis.supportingEvidence
+  ].map((evidence) => evidence.id));
+
+  return group.sourceEvidenceIds.some((evidenceId) => evidenceIds.has(evidenceId));
 }
 
 function sortedValues<T>(record: Record<string, T>, getId: (value: T) => string): T[] {
@@ -320,6 +447,10 @@ function formatValue(value: FieldMemory['currentValue']): string {
 }
 
 function roundCoordinate(value: number): number {
+  return Number(value.toFixed(3));
+}
+
+function roundWeight(value: number): number {
   return Number(value.toFixed(3));
 }
 
