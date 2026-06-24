@@ -24,6 +24,11 @@ import {
   type EventEvidenceFlow,
   type HypothesisReasoning
 } from './homeMemoryReasoning';
+import {
+  createEvidenceExplanationSummary,
+  createSemanticSignalRows,
+  type SemanticSignalRow
+} from './homeMemoryViewModel';
 import { createHomeProfileHypotheses, type ProfileHypothesis } from './homeProfiler';
 
 type MemorySocketStatus = 'connecting' | 'live' | 'reconnecting' | 'paused' | 'offline';
@@ -281,6 +286,7 @@ export function HomeMemoryView(): React.ReactElement {
             lastUpdateAt={lastUpdateAt}
             onSelectHypothesis={(nodeId) => setSelectedNodeId(nodeId)}
           />
+          <SemanticSignalsPanel signals={createSemanticSignalRows(memory, 6)} />
           <ReasoningFlowPanel
             eventFlow={eventFlow}
             hypothesisReasoning={hypothesisReasoning}
@@ -356,6 +362,7 @@ function ProfileStatsPanel({
         <Stat label="Devices" value={Object.keys(memory.devices).length} />
         <Stat label="Fields" value={Object.keys(memory.fields).length} />
         <Stat label="Episodes" value={memory.episodeCount} />
+        <Stat label="Semantic signals" value={memory.semanticSignalCount} />
         <Stat label="Days" value={memory.dailySummaryCount} />
         <Stat label="Weeks" value={memory.weeklySummaryCount} />
         <Stat label="Hypotheses" value={hypotheses.length} />
@@ -374,6 +381,32 @@ function ProfileStatsPanel({
           </button>
         ))}
         {hypotheses.length === 0 ? <p className="muted">No profile hypotheses yet.</p> : null}
+      </div>
+    </section>
+  );
+}
+
+function SemanticSignalsPanel({ signals }: { signals: SemanticSignalRow[] }): React.ReactElement {
+  return (
+    <section className="memory-panel semantic-signal-panel">
+      <div className="panel-heading">
+        <div>
+          <span className="eyebrow">Semantic signals</span>
+          <h2>Event meaning</h2>
+        </div>
+      </div>
+      <div className="semantic-signal-list">
+        {signals.map((signal) => (
+          <div key={signal.id} className="semantic-signal-row" title={signal.reason}>
+            <time>{formatTime(signal.time)}</time>
+            <strong>{signal.typeLabel}</strong>
+            <span>{signal.location}</span>
+            <span>{signal.source}</span>
+            <code>{signal.value}</code>
+            <small>{signal.strength} / {signal.weight}</small>
+          </div>
+        ))}
+        {signals.length === 0 ? <p className="muted">No semantic signals derived yet.</p> : null}
       </div>
     </section>
   );
@@ -495,12 +528,37 @@ function SelectedMemoryPanel({
             ) : null}
             {details.rows.map((row) => <MemoryTreeRow key={row.label} label={row.label} value={row.value} />)}
           </div>
+          {details.explanation ? <EvidenceBreakdown summary={details.explanation} /> : null}
           <EvidenceList evidence={details.evidence} />
         </>
       ) : (
         <p className="muted">Select a sphere to inspect memory and evidence.</p>
       )}
     </section>
+  );
+}
+
+function EvidenceBreakdown({ summary }: { summary: ReturnType<typeof createEvidenceExplanationSummary> }): React.ReactElement {
+  return (
+    <div className="memory-evidence-breakdown">
+      <div>
+        <span>Supporting</span>
+        <strong>{summary.supportingCount}</strong>
+      </div>
+      <div>
+        <span>Contradicting</span>
+        <strong>{summary.contradictingCount}</strong>
+      </div>
+      <div>
+        <span>Missing</span>
+        <strong>{summary.missingCount}</strong>
+      </div>
+      {summary.missingItems.length > 0 ? (
+        <ul>
+          {summary.missingItems.slice(0, 2).map((item) => <li key={item}>{item}</li>)}
+        </ul>
+      ) : null}
+    </div>
   );
 }
 
@@ -568,7 +626,7 @@ function selectedDetails(
   memory: HomeMemory,
   hypotheses: ProfileHypothesis[],
   node: HomeMemoryGraphNode
-): { rows: Array<{ label: string; value: string }>; evidence: MemoryEvidence[] } {
+): { rows: Array<{ label: string; value: string }>; evidence: MemoryEvidence[]; explanation?: ReturnType<typeof createEvidenceExplanationSummary> } {
   if (node.kind === 'room') {
     const room = memory.rooms[node.id.slice('room:'.length)];
     return {
@@ -622,7 +680,8 @@ function selectedDetails(
             { label: 'Subjects', value: hypothesis.subjectIds.length.toString() }
           ]
         : [],
-      evidence: hypothesis?.evidence ?? []
+      evidence: hypothesis?.evidence ?? [],
+      explanation: hypothesis ? createEvidenceExplanationSummary(hypothesis) : undefined
     };
   }
   return {
