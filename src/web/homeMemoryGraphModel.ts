@@ -228,7 +228,9 @@ export function createFocusedNodeGraphHighlight(graph: HomeMemoryGraphModel, nod
     currentNodeId = incoming.from;
   }
 
-  const semanticEdges = graph.edges.filter((edgeItem) => edgeItem.kind === 'interprets' && chainNodeIds.includes(edgeItem.from));
+  const semanticEdges = selectedNode?.kind === 'semantic'
+    ? []
+    : graph.edges.filter((edgeItem) => edgeItem.kind === 'interprets' && chainNodeIds.includes(edgeItem.from));
   const semanticNodeIds = sortedUnique(semanticEdges.map((edgeItem) => edgeItem.to));
   const pathNodeIds = new Set([...chainNodeIds, ...semanticNodeIds]);
   const supportEdges = graph.edges.filter((edgeItem) => (

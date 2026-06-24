@@ -298,6 +298,38 @@ describe('home memory graph model', () => {
     });
   });
 
+  it('keeps semantic focus limited to the selected semantic signal', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'front_door_unlock_1',
+        sourceEventId: 'source_front_door_unlock_1',
+        sequence: 1,
+        roomId: 'entrance',
+        deviceId: 'front_door_lock_01',
+        deviceType: 'smart_lock',
+        field: 'lock',
+        value: 'unlocked'
+      })
+    ]);
+    const graph = createHomeMemoryGraphModel(memory, []);
+
+    expect(createFocusedNodeGraphHighlight(graph, 'semantic:access_signal:entrance:front_door_lock_01:lock')).toEqual({
+      nodeIds: [
+        'home:home_1',
+        'room:entrance',
+        'device:front_door_lock_01',
+        'field:front_door_lock_01:lock',
+        'semantic:access_signal:entrance:front_door_lock_01:lock'
+      ],
+      edgeIds: [
+        'contains:home:home_1:room:entrance',
+        'contains:room:entrance:device:front_door_lock_01',
+        'observes:device:front_door_lock_01:field:front_door_lock_01:lock',
+        'interprets:field:front_door_lock_01:lock:semantic:access_signal:entrance:front_door_lock_01:lock'
+      ]
+    });
+  });
+
   it('spreads crowded graph layers across adaptive sub-rings', () => {
     const memory = reduceDeviceEvents(createHomeMemory(), Array.from({ length: 18 }, (_, index) => deviceEvent({
       id: `kitchen_plug_${index}`,
