@@ -112,7 +112,13 @@ describe('home profiler', () => {
     'room_habit',
     'device_routine',
     'presence_signal',
-    'activity_cluster'
+    'activity_cluster',
+    'routine_window',
+    'behavior_flow',
+    'resident_slot',
+    'room_function',
+    'device_contribution',
+    'state_anomaly'
   ];
 
   it('creates explainable profile hypotheses from room and time activity', () => {
@@ -254,6 +260,276 @@ describe('home profiler', () => {
     expect(roomHabit?.summary).toMatch(/1 behavior episode/i);
     expect(householdSize?.summary).toMatch(/1 behavior episode/i);
     expect(householdSize?.summary).not.toMatch(/2-5 residents/);
+  });
+
+  it('creates activity clusters from semantic signal combinations', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'entry_unlock',
+        sourceEventId: 'source_entry_unlock',
+        sequence: 1,
+        simTime: '2026-06-22T18:00:00',
+        roomId: 'entrance',
+        deviceId: 'front_lock_01',
+        deviceType: 'door_lock',
+        field: 'lock',
+        value: 'unlocked'
+      }),
+      deviceEvent({
+        id: 'kitchen_motion',
+        sourceEventId: 'source_kitchen_motion',
+        sequence: 2,
+        simTime: '2026-06-22T18:08:00',
+        roomId: 'kitchen',
+        deviceId: 'kitchen_motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'kitchen_stove',
+        sourceEventId: 'source_kitchen_stove',
+        sequence: 3,
+        simTime: '2026-06-22T18:10:00',
+        roomId: 'kitchen',
+        deviceId: 'stove_01',
+        deviceType: 'stove',
+        field: 'powerW',
+        value: 1600
+      }),
+      deviceEvent({
+        id: 'bathroom_flow',
+        sourceEventId: 'source_bathroom_flow',
+        sequence: 4,
+        simTime: '2026-06-22T21:40:00',
+        roomId: 'bathroom',
+        deviceId: 'bathroom_flow_01',
+        deviceType: 'water_meter',
+        field: 'flowRate',
+        value: 2.1
+      }),
+      deviceEvent({
+        id: 'living_tv',
+        sourceEventId: 'source_living_tv',
+        sequence: 5,
+        simTime: '2026-06-22T20:00:00',
+        roomId: 'living',
+        deviceId: 'tv_01',
+        deviceType: 'tv',
+        field: 'power',
+        value: true
+      }),
+      deviceEvent({
+        id: 'study_plug',
+        sourceEventId: 'source_study_plug',
+        sequence: 6,
+        simTime: '2026-06-22T14:00:00',
+        roomId: 'study',
+        deviceId: 'desk_plug_01',
+        deviceType: 'smart_plug',
+        field: 'powerW',
+        value: 120
+      }),
+      deviceEvent({
+        id: 'sleep_sensor',
+        sourceEventId: 'source_sleep_sensor',
+        sequence: 7,
+        simTime: '2026-06-22T23:00:00',
+        roomId: 'master_bedroom',
+        deviceId: 'sleep_sensor_01',
+        deviceType: 'sleep_sensor',
+        field: 'inBed',
+        value: true
+      })
+    ]);
+    const hypotheses = createHomeProfileHypotheses(memory);
+    const clusterIds = hypotheses
+      .filter((hypothesis) => hypothesis.type === 'activity_cluster')
+      .map((hypothesis) => hypothesis.id)
+      .sort();
+
+    expect(clusterIds).toEqual(expect.arrayContaining([
+      'activity:entry_return:entrance:kitchen',
+      'activity:hygiene:bathroom',
+      'activity:meal:kitchen',
+      'activity:media:living',
+      'activity:sleep:master_bedroom',
+      'activity:work_study:study'
+    ]));
+
+    const meal = hypotheses.find((hypothesis) => hypothesis.id === 'activity:meal:kitchen');
+    expect(meal).toMatchObject({
+      type: 'activity_cluster',
+      label: 'Kitchen meal activity',
+      subjectIds: expect.arrayContaining(['room:kitchen', 'device:stove_01'])
+    });
+    expect(meal?.summary).toMatch(/meal activity/i);
+    expect(meal?.summary).toMatch(/evening/i);
+    expect(meal?.confidence).toBeGreaterThan(0.45);
+
+    const entryReturn = hypotheses.find((hypothesis) => hypothesis.id === 'activity:entry_return:entrance:kitchen');
+    expect(entryReturn?.summary).toMatch(/entry.*kitchen/i);
+  });
+
+  it('creates richer routine, room function, resident slot, device contribution, and behavior flow hypotheses', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'entry_unlock_day_1',
+        sourceEventId: 'source_entry_unlock_day_1',
+        sequence: 1,
+        ts: '2026-06-22T10:00:00.000Z',
+        simTime: '2026-06-22T18:00:00',
+        roomId: 'entrance',
+        deviceId: 'front_lock_01',
+        deviceType: 'door_lock',
+        field: 'lock',
+        value: 'unlocked'
+      }),
+      deviceEvent({
+        id: 'kitchen_motion_day_1',
+        sourceEventId: 'source_kitchen_motion_day_1',
+        sequence: 2,
+        ts: '2026-06-22T10:08:00.000Z',
+        simTime: '2026-06-22T18:08:00',
+        roomId: 'kitchen',
+        deviceId: 'kitchen_motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'stove_day_1',
+        sourceEventId: 'source_stove_day_1',
+        sequence: 3,
+        ts: '2026-06-22T10:10:00.000Z',
+        simTime: '2026-06-22T18:10:00',
+        roomId: 'kitchen',
+        deviceId: 'stove_01',
+        deviceType: 'stove',
+        field: 'powerW',
+        value: 1500
+      }),
+      deviceEvent({
+        id: 'stove_day_2',
+        sourceEventId: 'source_stove_day_2',
+        sequence: 4,
+        ts: '2026-06-23T10:15:00.000Z',
+        simTime: '2026-06-23T18:15:00',
+        roomId: 'kitchen',
+        deviceId: 'stove_01',
+        deviceType: 'stove',
+        field: 'powerW',
+        value: 1600
+      }),
+      deviceEvent({
+        id: 'study_plug',
+        sourceEventId: 'source_study_plug',
+        sequence: 5,
+        ts: '2026-06-23T06:00:00.000Z',
+        simTime: '2026-06-23T14:00:00',
+        roomId: 'study',
+        deviceId: 'desk_plug_01',
+        deviceType: 'smart_plug',
+        field: 'powerW',
+        value: 90
+      }),
+      deviceEvent({
+        id: 'living_tv',
+        sourceEventId: 'source_living_tv',
+        sequence: 6,
+        ts: '2026-06-23T12:00:00.000Z',
+        simTime: '2026-06-23T20:00:00',
+        roomId: 'living',
+        deviceId: 'tv_01',
+        deviceType: 'tv',
+        field: 'power',
+        value: true
+      }),
+      deviceEvent({
+        id: 'sleep_sensor',
+        sourceEventId: 'source_sleep_sensor',
+        sequence: 7,
+        ts: '2026-06-23T15:00:00.000Z',
+        simTime: '2026-06-23T23:00:00',
+        roomId: 'master_bedroom',
+        deviceId: 'sleep_sensor_01',
+        deviceType: 'sleep_sensor',
+        field: 'inBed',
+        value: true
+      })
+    ]);
+    const hypotheses = createHomeProfileHypotheses(memory);
+
+    expect(hypotheses).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'routine_window',
+        id: 'routine:meal:kitchen:evening'
+      }),
+      expect.objectContaining({
+        type: 'behavior_flow',
+        id: 'flow:return_home:entrance:kitchen'
+      }),
+      expect.objectContaining({
+        type: 'room_function',
+        id: 'room-function:kitchen:cooking'
+      }),
+      expect.objectContaining({
+        type: 'room_function',
+        id: 'room-function:master_bedroom:sleeping'
+      }),
+      expect.objectContaining({
+        type: 'resident_slot',
+        id: 'resident-slot:main_sleep:master_bedroom'
+      }),
+      expect.objectContaining({
+        type: 'resident_slot',
+        id: 'resident-slot:remote_work:study'
+      }),
+      expect.objectContaining({
+        type: 'device_contribution',
+        id: 'device-contribution:stove_01'
+      })
+    ]));
+
+    const routine = hypotheses.find((hypothesis) => hypothesis.id === 'routine:meal:kitchen:evening');
+    expect(routine?.summary).toMatch(/2 observed day/i);
+
+    const flow = hypotheses.find((hypothesis) => hypothesis.id === 'flow:return_home:entrance:kitchen');
+    expect(flow?.summary).toMatch(/return home/i);
+    expect(flow?.subjectIds).toEqual(expect.arrayContaining(['room:entrance', 'room:kitchen']));
+  });
+
+  it('does not create activity clusters from weak environment telemetry alone', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'temperature_event',
+        sourceEventId: 'source_temperature_event',
+        sequence: 1,
+        simTime: '2026-06-22T18:00:00',
+        roomId: 'kitchen',
+        deviceId: 'temperature_01',
+        deviceType: 'temperature_sensor',
+        field: 'temperature',
+        value: 27
+      }),
+      deviceEvent({
+        id: 'humidity_event',
+        sourceEventId: 'source_humidity_event',
+        sequence: 2,
+        simTime: '2026-06-22T18:05:00',
+        roomId: 'bathroom',
+        deviceId: 'humidity_01',
+        deviceType: 'humidity_sensor',
+        field: 'humidity',
+        value: 70
+      })
+    ]);
+
+    expect(memory.semanticSignals.map((signal) => signal.type)).toEqual([
+      'environment_signal',
+      'environment_signal'
+    ]);
+    expect(createHomeProfileHypotheses(memory).some((hypothesis) => hypothesis.type === 'activity_cluster')).toBe(false);
   });
 
   it('uses daily summaries for longer-window rhythm and household reasoning', () => {

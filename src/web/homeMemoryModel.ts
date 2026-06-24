@@ -35,6 +35,40 @@ export interface MemoryEvidence {
   evidenceReason: string;
 }
 
+export type SemanticSignalType =
+  | 'presence_signal'
+  | 'access_signal'
+  | 'sleep_signal'
+  | 'water_signal'
+  | 'cooking_signal'
+  | 'media_signal'
+  | 'work_study_signal'
+  | 'lighting_signal'
+  | 'environment_signal'
+  | 'system_signal';
+
+export type SemanticSignalCounts = Record<SemanticSignalType, number>;
+
+export interface SemanticSignal {
+  id: string;
+  type: SemanticSignalType;
+  homeId: string;
+  runId: string;
+  roomId: string;
+  deviceId: string;
+  deviceType: string;
+  field: string;
+  value: DeviceEventValue;
+  simTime: string;
+  startedAt: string;
+  updatedAt: string;
+  timeBucket: TimeBucket;
+  strength: EvidenceStrength;
+  profileWeight: number;
+  sourceEvidenceIds: string[];
+  reason: string;
+}
+
 export interface FieldMemory {
   id: string;
   homeId: string;
@@ -173,6 +207,9 @@ export interface HomeMemory {
   dailySummaryCount: number;
   weeklySummaries: Record<string, WeeklyProfileSummary>;
   weeklySummaryCount: number;
+  semanticSignals: SemanticSignal[];
+  semanticSignalCount: number;
+  semanticSignalCountsByType: SemanticSignalCounts;
   recentEvents: MemoryEvidence[];
   profileEventCount: number;
   profileEvidenceWeight: number;
@@ -181,6 +218,7 @@ export interface HomeMemory {
 
 const ROOT_RECENT_LIMIT = 50;
 const FIELD_RECENT_LIMIT = 20;
+const SEMANTIC_SIGNAL_LIMIT = 80;
 
 export function createHomeMemory(): HomeMemory {
   return {
@@ -197,6 +235,9 @@ export function createHomeMemory(): HomeMemory {
     dailySummaryCount: 0,
     weeklySummaries: {},
     weeklySummaryCount: 0,
+    semanticSignals: [],
+    semanticSignalCount: 0,
+    semanticSignalCountsByType: emptySemanticSignalCounts(),
     recentEvents: [],
     profileEventCount: 0,
     profileEvidenceWeight: 0,
@@ -240,6 +281,7 @@ export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): 
   const episodeMemory = updateEpisodeMemory(baseMemory, event, evidence, fieldId, timeBucket);
   const dailySummaries = updateDailySummaries(baseMemory.dailySummaries, event, evidence, fieldId, timeBucket, episodeMemory.startedEpisode);
   const weeklySummaries = updateWeeklySummaries(baseMemory.weeklySummaries, event, evidence, fieldId, timeBucket, episodeMemory.startedEpisode);
+  const semanticSignals = semanticSignalsForEvidence(event, evidence);
 
   return {
     ...baseMemory,
@@ -265,6 +307,9 @@ export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): 
     dailySummaryCount: Object.keys(dailySummaries).length,
     weeklySummaries,
     weeklySummaryCount: Object.keys(weeklySummaries).length,
+    semanticSignals: appendManyBounded(baseMemory.semanticSignals, semanticSignals, SEMANTIC_SIGNAL_LIMIT),
+    semanticSignalCount: baseMemory.semanticSignalCount + semanticSignals.length,
+    semanticSignalCountsByType: incrementSemanticSignalCounts(baseMemory.semanticSignalCountsByType, semanticSignals),
     recentEvents: appendBounded(baseMemory.recentEvents, evidence, ROOT_RECENT_LIMIT),
     profileEventCount: incrementProfileEventCount(baseMemory.profileEventCount, evidence),
     profileEvidenceWeight: roundWeight(baseMemory.profileEvidenceWeight + evidence.profileWeight),
@@ -445,6 +490,90 @@ function toEvidence(
     profileWeight: change.profileWeight,
     evidenceReason: change.evidenceReason
   };
+}
+
+function semanticSignalsForEvidence(event: DeviceValueEvent, evidence: MemoryEvidence): SemanticSignal[] {
+  if (!evidence.meaningfulChange) {
+    return [];
+  }
+
+  const field = normalize(event.field);
+  const deviceType = normalize(event.deviceType);
+  const signals: SemanticSignal[] = [];
+  const add = (type: SemanticSignalType, reason: string, strength = evidence.evidenceStrength, profileWeight = evidence.profileWeight) => {
+    signals.push({
+      id: `signal:${evidence.id}:${type}`,
+      type,
+      homeId: event.homeId,
+      runId: event.runId,
+      roomId: event.roomId,
+      deviceId: event.deviceId,
+      deviceType: event.deviceType,
+      field: event.field,
+      value: event.value,
+      simTime: event.simTime,
+      startedAt: event.ts,
+      updatedAt: event.ts,
+      timeBucket: evidence.timeBucket,
+      strength,
+      profileWeight,
+      sourceEvidenceIds: [evidence.id],
+      reason
+    });
+  };
+
+  if (evidence.evidenceCategory === 'system_status') {
+    add('system_signal', `${event.field} is system state and is available for diagnostics, not profile inference.`, 'ignored', 0);
+    return signals;
+  }
+
+  if (isAccessSignal(event.roomId, deviceType, field, event.value)) {
+    add('access_signal', `${event.deviceId}.${event.field} indicates access or entry activity.`, 'strong', Math.max(evidence.profileWeight, 0.8));
+  }
+
+  if (isSleepSemanticSignal(deviceType, field, event.value)) {
+    add('sleep_signal', `${event.deviceId}.${event.field} indicates sleep or in-bed context.`, evidence.evidenceStrength === 'ignored' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, 0.6));
+    return signals;
+  }
+
+  if (evidence.evidenceCategory === 'environment_context') {
+    add('environment_signal', `${event.field} contributes weak environment context.`, 'weak', evidence.profileWeight);
+    return signals;
+  }
+
+  if (isWaterSignal(deviceType, field, event.value)) {
+    add('water_signal', `${event.deviceId}.${event.field} indicates active water usage.`, evidence.evidenceStrength === 'weak' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, 0.45));
+  }
+
+  if (isCookingSignal(event.roomId, deviceType, field, event.value)) {
+    add('cooking_signal', `${event.deviceId}.${event.field} contributes kitchen or cooking activity context.`, evidence.evidenceStrength === 'weak' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, 0.45));
+  }
+
+  if (isMediaSignal(deviceType, field, event.value)) {
+    add('media_signal', `${event.deviceId}.${event.field} indicates media or shared entertainment activity.`, evidence.evidenceStrength === 'weak' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, 0.45));
+  }
+
+  if (isWorkStudySignal(event.roomId, deviceType, field, event.value)) {
+    add('work_study_signal', `${event.deviceId}.${event.field} contributes work or study activity context.`, evidence.evidenceStrength === 'weak' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, 0.35));
+  }
+
+  if (isLightingSignal(deviceType, field, event.value)) {
+    add('lighting_signal', `${event.deviceId}.${event.field} is lighting context for nearby activity.`, evidence.evidenceStrength === 'strong' ? 'medium' : evidence.evidenceStrength, Math.min(Math.max(evidence.profileWeight, 0.2), 0.45));
+  }
+
+  if (evidence.evidenceCategory === 'human_activity' && !signals.some((signal) => signal.type === 'presence_signal')) {
+    add('presence_signal', `${event.deviceId}.${event.field} indicates human presence or motion.`, evidence.evidenceStrength, evidence.profileWeight);
+  }
+
+  if (signals.length === 0 && evidence.evidenceCategory === 'device_usage') {
+    add('presence_signal', `${event.deviceId}.${event.field} is generic device usage and weakly supports presence.`, 'weak', Math.min(evidence.profileWeight, 0.25));
+  }
+
+  if (signals.some((signal) => signal.type === 'access_signal') && !signals.some((signal) => signal.type === 'presence_signal')) {
+    add('presence_signal', `${event.deviceId}.${event.field} access activity weakly supports recent presence.`, 'medium', Math.min(Math.max(evidence.profileWeight, 0.45), 0.7));
+  }
+
+  return signals;
 }
 
 interface EpisodeMemoryUpdate {
@@ -815,6 +944,105 @@ function isContactEpisodeField(field: string): boolean {
   return field === 'contact' || field === 'dooropen' || field === 'open' || field === 'windowopen';
 }
 
+function isAccessSignal(roomId: string, deviceType: string, field: string, value: DeviceEventValue): boolean {
+  if (deviceType.includes('lock') || field === 'lock') {
+    return typeof value === 'string' && (normalize(value) === 'unlocked' || normalize(value) === 'open');
+  }
+  return (
+    isContactEpisodeField(field) &&
+    isActiveValue(value) &&
+    (
+      normalize(roomId).includes('entrance') ||
+      normalize(roomId).includes('entry') ||
+      deviceType.includes('door') ||
+      deviceType.includes('window') ||
+      deviceType.includes('entry')
+    )
+  );
+}
+
+function isSleepSemanticSignal(deviceType: string, field: string, value: DeviceEventValue): boolean {
+  return (
+    (deviceType.includes('sleep') || field === 'inbed' || field === 'asleep' || field === 'sleeping')
+    && isActiveValue(value)
+  );
+}
+
+function isWaterSignal(deviceType: string, field: string, value: DeviceEventValue): boolean {
+  return (
+    (deviceType.includes('water') || field.includes('flow') || field.includes('valve'))
+    && isActiveValue(value)
+  );
+}
+
+function isCookingSignal(roomId: string, deviceType: string, field: string, value: DeviceEventValue): boolean {
+  if (!isActiveValue(value)) {
+    return false;
+  }
+  const room = normalize(roomId);
+  return (
+    room.includes('kitchen') ||
+    deviceType.includes('stove') ||
+    deviceType.includes('oven') ||
+    deviceType.includes('microwave') ||
+    deviceType.includes('coffee') ||
+    deviceType.includes('dishwasher') ||
+    deviceType.includes('kettle') ||
+    deviceType.includes('cook') ||
+    field.includes('cook')
+  );
+}
+
+function isMediaSignal(deviceType: string, field: string, value: DeviceEventValue): boolean {
+  return (
+    isActiveValue(value) &&
+    (
+      deviceType.includes('tv') ||
+      deviceType.includes('speaker') ||
+      deviceType.includes('media') ||
+      deviceType.includes('console') ||
+      field.includes('media')
+    )
+  );
+}
+
+function isWorkStudySignal(roomId: string, deviceType: string, field: string, value: DeviceEventValue): boolean {
+  return (
+    isActiveValue(value) &&
+    (
+      normalize(roomId).includes('study') ||
+      deviceType.includes('computer') ||
+      deviceType.includes('desk') ||
+      deviceType.includes('office') ||
+      field.includes('work')
+    )
+  );
+}
+
+function isLightingSignal(deviceType: string, field: string, value: DeviceEventValue): boolean {
+  return (
+    isActiveValue(value) &&
+    (
+      deviceType.includes('light') ||
+      deviceType.includes('lamp') ||
+      field.includes('brightness') ||
+      field === 'light' ||
+      field === 'lightlevel'
+    )
+  );
+}
+
+function isActiveValue(value: DeviceEventValue): boolean {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return value > 0;
+  }
+  const normalized = normalize(String(value));
+  return normalized === 'on' || normalized === 'open' || normalized === 'unlocked' || normalized === 'active' || normalized === 'running' || normalized === 'true';
+}
+
 function maxOptional(left: number | undefined, right: number | undefined): number | undefined {
   if (left === undefined) return right;
   if (right === undefined) return left;
@@ -956,6 +1184,21 @@ function emptyProfileEvidenceCategories(): ProfileEvidenceCategoryCounts {
   };
 }
 
+function emptySemanticSignalCounts(): SemanticSignalCounts {
+  return {
+    presence_signal: 0,
+    access_signal: 0,
+    sleep_signal: 0,
+    water_signal: 0,
+    cooking_signal: 0,
+    media_signal: 0,
+    work_study_signal: 0,
+    lighting_signal: 0,
+    environment_signal: 0,
+    system_signal: 0
+  };
+}
+
 function incrementBucket(buckets: TimeBucketCounts, bucket: TimeBucket): TimeBucketCounts {
   return {
     ...buckets,
@@ -969,6 +1212,13 @@ function unique(values: string[]): string[] {
 
 function appendBounded<T>(items: T[], item: T, limit: number): T[] {
   return [item, ...items].slice(0, limit);
+}
+
+function appendManyBounded<T>(items: T[], nextItems: T[], limit: number): T[] {
+  if (nextItems.length === 0) {
+    return items;
+  }
+  return [[...nextItems].reverse(), items].flat().slice(0, limit);
 }
 
 function incrementProfileEventCount(current: number, evidence: MemoryEvidence): number {
@@ -987,6 +1237,17 @@ function incrementProfileEvidenceCategory(
     ...current,
     [evidence.evidenceCategory]: current[evidence.evidenceCategory] + 1
   };
+}
+
+function incrementSemanticSignalCounts(current: SemanticSignalCounts, signals: SemanticSignal[]): SemanticSignalCounts {
+  if (signals.length === 0) {
+    return current;
+  }
+
+  return signals.reduce((next, signal) => ({
+    ...next,
+    [signal.type]: next[signal.type] + 1
+  }), current);
 }
 
 function roundWeight(value: number): number {
