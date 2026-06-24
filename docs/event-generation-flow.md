@@ -1,103 +1,103 @@
-# Event Generation Flow
+# 事件生成流程
 
-This document describes how VirtualHome creates, records, and delivers twin events. It is written from the current implementation in `src/sim/engine.ts`, `src/server/app.ts`, `src/server/persistence.ts`, and `src/server/deviceEventStream.ts`.
+本文说明 VirtualHome 如何生成、记录并投递数字孪生事件。内容基于当前实现：`src/sim/engine.ts`、`src/server/app.ts`、`src/server/persistence.ts` 和 `src/server/deviceEventStream.ts`。
 
-## Purpose
+## 目标
 
-VirtualHome uses an event-sourced simulation model. Commands and timer ticks mutate the in-memory `TwinSnapshot`, and each meaningful mutation is emitted as a typed `TwinEvent`. The server persists those events to SQLite and publishes them through REST and WebSocket interfaces.
+VirtualHome 使用事件溯源的仿真模型。控制命令和定时推进会修改内存中的 `TwinSnapshot`，每一次有意义的状态变化都会产出一个带类型的 `TwinEvent`。服务端会把这些事件写入 SQLite，并通过 REST 和 WebSocket 对外发布。
 
-## High-Level Flow
+## 总览流程
 
 ```mermaid
 flowchart TD
-  Client[Client or auto tick] --> Server[Fastify server]
-  Server --> Command{Control path}
+  Client[客户端请求或自动时钟] --> Server[Fastify 服务]
+  Server --> Command{控制路径}
 
-  Command -->|Start scenario| StartScenario[simulator.startScenario]
-  Command -->|Start daily run| StartDaily[simulator.startDailyScenario]
-  Command -->|Advance time| Advance[simulator.advanceMinutes]
-  Command -->|Inject/resolve abnormality| Abnormality[simulator abnormality methods]
-  Command -->|Device command| DeviceCommand[simulator.commandDevice]
-  Command -->|Pause/resume| PauseResume[simulator.setPaused]
+  Command -->|启动静态场景| StartScenario[simulator.startScenario]
+  Command -->|启动每日运行| StartDaily[simulator.startDailyScenario]
+  Command -->|推进时间| Advance[simulator.advanceMinutes]
+  Command -->|注入或恢复异常| Abnormality[simulator 异常方法]
+  Command -->|设备命令| DeviceCommand[simulator.commandDevice]
+  Command -->|暂停或恢复| PauseResume[simulator.setPaused]
 
-  StartScenario --> Events[TwinEvent array]
+  StartScenario --> Events[TwinEvent 数组]
   StartDaily --> Events
   Advance --> Events
   Abnormality --> Events
   DeviceCommand --> Events
   PauseResume --> Events
 
-  Events --> Snapshot[Updated TwinSnapshot]
+  Events --> Snapshot[更新后的 TwinSnapshot]
   Snapshot --> Record[recordAndBroadcast]
   Record --> SQLite[(SQLite events, telemetry, snapshots)]
   Record --> TwinWS["/ws twin.update"]
   Record --> DeviceProjection[projectDeviceValueEvents]
   DeviceProjection --> DeviceWS["/ws/device-events device.update"]
-  SQLite --> Rest[REST reads: state, events, telemetry, memory]
+  SQLite --> Rest[REST 读取: state, events, telemetry, memory]
 ```
 
-## Runtime Entry Points
+## 运行时入口
 
-The server creates one simulator instance on startup:
+服务启动时会创建一个 simulator 实例：
 
-- `createServer()` loads the home definition.
-- `createSimulator()` creates the runtime state, seeded random generator, initial snapshot, and default scenario.
-- `TwinDatabase` opens the SQLite database and creates event, telemetry, snapshot, idempotency, and access-audit tables.
-- If a compatible snapshot exists in SQLite, the simulator restores from it and replays events after the checkpoint.
-- If no compatible snapshot exists, the server starts a generated daily scenario in `onReady`.
+- `createServer()` 加载家庭定义。
+- `createSimulator()` 创建运行时状态、带 seed 的随机数生成器、初始快照和默认场景。
+- `TwinDatabase` 打开 SQLite 数据库，并创建事件、遥测、快照、幂等记录和访问审计表。
+- 如果 SQLite 中存在兼容的快照，simulator 会从该快照恢复，并回放 checkpoint 之后的事件。
+- 如果没有兼容快照，服务会在 `onReady` 中启动一个生成的每日场景。
 
-Runtime events enter the system through these paths:
+运行时事件通过以下路径进入系统：
 
-| Path | Server endpoint or hook | Simulator method |
+| 路径 | 服务端接口或 hook | Simulator 方法 |
 | --- | --- | --- |
-| Static scenario start | `POST /api/scenarios/:id/start` | `startScenario(id)` |
-| Generated daily routine | `POST /api/daily/start` | `startDailyScenario(options)` |
-| Manual clock advance | `POST /api/control/advance` | `advanceMinutes(minutes)` |
-| Pause or resume | `POST /api/control/pause`, `/api/control/resume` | `setPaused(paused)` |
-| Abnormality injection or recovery | `POST /api/control/inject`, `/api/control/resolve` | `injectAbnormality(kind)`, `resolveAbnormality(kind)` |
-| Device command | `POST /api/devices/:deviceId/command` | `commandDevice(deviceId, command, value)` |
-| Alert lifecycle update | `POST /api/alerts/:alertId/status` | `setAlertStatus(alertId, status)` |
-| Automatic ticking | `onReady` interval | `advanceMinutes(1)` |
+| 启动静态场景 | `POST /api/scenarios/:id/start` | `startScenario(id)` |
+| 生成每日例程 | `POST /api/daily/start` | `startDailyScenario(options)` |
+| 手动推进时钟 | `POST /api/control/advance` | `advanceMinutes(minutes)` |
+| 暂停或恢复 | `POST /api/control/pause`, `/api/control/resume` | `setPaused(paused)` |
+| 注入或恢复异常 | `POST /api/control/inject`, `/api/control/resolve` | `injectAbnormality(kind)`, `resolveAbnormality(kind)` |
+| 设备命令 | `POST /api/devices/:deviceId/command` | `commandDevice(deviceId, command, value)` |
+| 更新告警生命周期 | `POST /api/alerts/:alertId/status` | `setAlertStatus(alertId, status)` |
+| 自动时钟推进 | `onReady` interval | `advanceMinutes(1)` |
 
-All mutating REST paths use the same server pattern:
+所有会修改状态的 REST 路径都使用相同的服务端模式：
 
-1. Validate the request with Zod.
-2. Run the simulator method.
-3. Pass returned events to `recordAndBroadcast(events)`.
-4. Return `{ snapshot, events }`.
+1. 使用 Zod 校验请求。
+2. 执行对应的 simulator 方法。
+3. 把返回的事件传给 `recordAndBroadcast(events)`。
+4. 返回 `{ snapshot, events }`。
 
-Idempotent control paths can use `idempotencyKey`; the server stores request hashes and responses in SQLite so safe retries return the same result.
+支持幂等的控制路径可以传入 `idempotencyKey`。服务端会在 SQLite 中保存请求 hash 和响应内容，使安全重试返回同一份结果。
 
-## Per-Minute Simulation Loop
+## 每分钟仿真循环
 
-`advanceMinutes(minutes)` is the core event-generation loop. For each simulated minute it:
+`advanceMinutes(minutes)` 是核心事件生成循环。每一个仿真分钟都会执行：
 
 ```mermaid
 flowchart TD
-  Tick[One simulated minute] --> Clock[Advance simClock by one minute]
-  Clock --> Needs[Advance person needs]
-  Needs --> ScenarioSteps[Run due scenario steps]
-  ScenarioSteps --> Rooms1[Rebuild rooms and occupancy]
-  Rooms1 --> Ambient[Apply ambient dynamics]
-  Ambient --> Rooms2[Rebuild rooms and occupancy]
-  Rooms2 --> Rules[Apply automation and safety rules]
-  Rules --> Telemetry[Generate device telemetry]
-  Telemetry --> Rooms3[Rebuild rooms and occupancy]
-  Rooms3 --> Append[Append emitted events to simulator history]
+  Tick[一个仿真分钟] --> Clock[simClock 前进一分钟]
+  Clock --> Needs[推进人物需求]
+  Needs --> ScenarioSteps[执行到期的场景步骤]
+  ScenarioSteps --> Rooms1[重建房间和占用状态]
+  Rooms1 --> Ambient[应用环境和日常动态]
+  Ambient --> Rooms2[重建房间和占用状态]
+  Rooms2 --> Rules[应用自动化和安全规则]
+  Rules --> Telemetry[生成设备遥测]
+  Telemetry --> Rooms3[重建房间和占用状态]
+  Rooms3 --> Append[把事件追加到 simulator 历史]
 ```
 
-The major phases are:
+主要阶段包括：
 
-- Scenario steps: scheduled actions from static scenarios or generated daily plans. They can move people, start activities, change device state, inject external interactions, and create conversations.
-- Ambient dynamics: ongoing behavior such as pet movement, appliance lifecycles, robot vacuum lifecycle, router restart lifecycle, fridge door lifecycle, air-conditioner effects, person consistency, autonomous agent policy, behavior profile interactions, household social coordination, external context, weather effects, quiet-mode safeguards, and daily routines.
-- Rules: deterministic automations and safety responses such as sleep mode, away mode, leak response, open-door alerts, fridge-open alerts, network recovery, robot-vacuum alerts, and homework reminders.
-- Telemetry: sensor and device telemetry generated from the current snapshot and sensor models.
+- 场景步骤：来自静态场景或生成的每日计划。步骤可以移动人物、开始活动、改变设备状态、注入外部交互并创建对话。
+- 环境和日常动态：包括宠物移动、家电生命周期、扫地机器人生命周期、路由器重启生命周期、冰箱门生命周期、空调影响、人物一致性、自主 agent 策略、行为画像交互、家庭社交协调、外部上下文、天气影响、安静模式保护和日常例程。
+- 规则：确定性的自动化和安全响应，包括睡眠模式、离家模式、漏水响应、开门告警、冰箱门长开告警、网络恢复、扫地机器人告警和作业提醒。
+- 遥测：基于当前快照和传感器模型生成的传感器与设备遥测。
 
-Each phase returns zero or more `TwinEvent` records. The loop updates aggregate room and occupancy state between phases so later phases see the latest snapshot.
+每个阶段都会返回零个或多个 `TwinEvent`。循环会在阶段之间更新聚合的房间和占用状态，使后续阶段看到最新快照。
 
-## Event Types and Source Layers
+## 事件类型和来源层
 
-All events are `TwinEvent` records with common runtime fields:
+所有事件都是 `TwinEvent` 记录，并带有通用运行时字段：
 
 - `id`
 - `runId`
@@ -108,97 +108,97 @@ All events are `TwinEvent` records with common runtime fields:
 - `sequence`
 - `sourceLayer`
 - `lineage`
-- optional `rngStateAfter`
+- 可选的 `rngStateAfter`
 
-`createEvent()` assigns those fields centrally. It increments the snapshot sequence, syncs the run context, infers a source layer when the caller does not provide one, and creates lineage metadata with event time, ingest time, observability, schema version, and behavior model version.
+`createEvent()` 统一分配这些字段。它会递增快照序号，同步 run 上下文，在调用方没有提供来源层时推断 `sourceLayer`，并创建包含事件时间、摄入时间、可观测性、schema 版本和行为模型版本的 lineage 元数据。
 
-The source layers are:
+来源层如下：
 
-| Source layer | Meaning | Typical events |
+| 来源层 | 含义 | 典型事件 |
 | --- | --- | --- |
-| `truth` | Ground-truth household behavior | `PersonMoved`, `ActivityStarted`, `ActivityEnded`, `ConversationOccurred`, `ExternalInteractionOccurred` |
-| `world` | World/device state changes | `DeviceStateChanged`, `ObjectMoved` |
-| `sensor` | Sensor or device telemetry | `DeviceTelemetry` |
-| `control` | Scenario or operator control | `ScenarioControl`, `AbnormalityInjected`, alert status changes |
-| `inference` | Rule and automation outputs | `AutomationTriggered`, `AlertCreated`, `RuleRecovered` |
+| `truth` | 家庭行为的真值层 | `PersonMoved`, `ActivityStarted`, `ActivityEnded`, `ConversationOccurred`, `ExternalInteractionOccurred` |
+| `world` | 世界或设备状态变化 | `DeviceStateChanged`, `ObjectMoved` |
+| `sensor` | 传感器或设备遥测 | `DeviceTelemetry` |
+| `control` | 场景或操作员控制 | `ScenarioControl`, `AbnormalityInjected`, 告警状态变化 |
+| `inference` | 规则和自动化输出 | `AutomationTriggered`, `AlertCreated`, `RuleRecovered` |
 
-## Device State Events
+## 设备状态事件
 
-Device state changes flow through `setDeviceState()` or `setDeviceStateIfChanged()`:
+设备状态变化通过 `setDeviceState()` 或 `setDeviceStateIfChanged()` 进入事件流：
 
-1. Validate the patch against the device registry schema.
-2. Merge valid fields into the device's snapshot state.
-3. Store `lastReason`.
-4. Emit `DeviceStateChanged`.
+1. 使用设备注册表 schema 校验 patch。
+2. 把合法字段合并到设备的快照状态。
+3. 保存 `lastReason`。
+4. 产出 `DeviceStateChanged`。
 
-Manual device commands have extra structure:
+手动设备命令包含额外结构：
 
-1. Validate the device exists.
-2. Validate the command is supported.
-3. Create operator approach movement when needed.
-4. Create one or more command-driven device state events.
-5. Recover related rules when the command resolves an alert condition.
-6. Create operator return movement when needed.
-7. Append all events to simulator history.
+1. 校验设备存在。
+2. 校验命令受支持。
+3. 必要时创建操作员靠近设备的移动事件。
+4. 创建一个或多个由命令驱动的设备状态事件。
+5. 当命令解决告警条件时，恢复相关规则。
+6. 必要时创建操作员返回移动事件。
+7. 把所有事件追加到 simulator 历史。
 
-## Telemetry Events
+## 遥测事件
 
-Telemetry is generated after rules have run, so telemetry observes the current simulated world state. `generateTelemetry()` scans supported device types and creates `DeviceTelemetry` events from:
+遥测在规则执行之后生成，因此遥测观察到的是当前模拟世界状态。`generateTelemetry()` 会扫描受支持的设备类型，并根据以下来源创建 `DeviceTelemetry` 事件：
 
-- Sensor profiles and observation models.
-- Current room occupancy and environmental state.
-- Current device state, such as fridge door, router health, appliance power, washer/dishwasher lifecycle, leak detection, and sleep sensor state.
+- 传感器画像和观测模型。
+- 当前房间占用和环境状态。
+- 当前设备状态，例如冰箱门、路由器健康状态、家电电源、洗衣机或洗碗机生命周期、漏水检测和睡眠传感器状态。
 
-Telemetry events are important because they are the primary input to the home memory subsystem. The memory subsystem intentionally uses flattened device telemetry and state values instead of private household truth.
+遥测事件很重要，因为它们是家庭 memory 子系统的主要输入。memory 子系统刻意使用扁平化后的设备遥测和状态值，而不是使用私密的家庭真值标签。
 
-## Persistence and Delivery
+## 持久化和投递
 
-`recordAndBroadcast(events)` is the server-side bridge from simulation to external clients:
+`recordAndBroadcast(events)` 是仿真层到外部客户端之间的服务端桥接：
 
 ```mermaid
 flowchart TD
-  Events[TwinEvent array] --> Snapshot[Get latest snapshot]
+  Events[TwinEvent 数组] --> Snapshot[取得最新快照]
   Snapshot --> RecordUpdate[db.recordUpdate]
-  RecordUpdate --> EventsTable[(events table)]
-  RecordUpdate --> TelemetryTable[(telemetry table for DeviceTelemetry)]
-  RecordUpdate --> SnapshotTable[(snapshots table at checkpoint interval)]
-  Events --> FullWS[Project privacy and send /ws twin.update]
+  RecordUpdate --> EventsTable[(events 表)]
+  RecordUpdate --> TelemetryTable[(DeviceTelemetry 对应的 telemetry 表)]
+  RecordUpdate --> SnapshotTable[(按 checkpoint 间隔写入 snapshots 表)]
+  Events --> FullWS[执行隐私投影并发送 /ws twin.update]
   Events --> Flatten[projectDeviceValueEvents]
-  Flatten --> DeviceWS[Send /ws/device-events device.update]
+  Flatten --> DeviceWS[发送 /ws/device-events device.update]
 ```
 
-SQLite stores:
+SQLite 保存：
 
-- `events`: append-only event payloads for each run.
-- `telemetry`: `DeviceTelemetry` payloads, optionally capped per run by `VIRTUALHOME_TELEMETRY_RETENTION_EVENTS`.
-- `snapshots`: checkpointed snapshots every `snapshotIntervalEvents`.
-- `idempotency_records`: retry-safe command responses.
-- `access_audit`: read-access audit records for privacy-sensitive APIs.
+- `events`：每个 run 的 append-only 事件 payload。
+- `telemetry`：`DeviceTelemetry` payload，可以通过 `VIRTUALHOME_TELEMETRY_RETENTION_EVENTS` 按 run 限制保留量。
+- `snapshots`：按 `snapshotIntervalEvents` checkpoint 的快照。
+- `idempotency_records`：支持命令安全重试的响应记录。
+- `access_audit`：隐私敏感 API 的读取访问审计。
 
-The server exposes events in three forms:
+服务端用三种形式暴露事件：
 
-- REST history through `/api/events` and `/api/telemetry`.
-- Full twin WebSocket deltas through `/ws`.
-- Device-only value deltas through `/ws/device-events`.
+- 通过 `/api/events` 和 `/api/telemetry` 提供 REST 历史读取。
+- 通过 `/ws` 提供完整 twin WebSocket delta。
+- 通过 `/ws/device-events` 提供仅包含设备值的 delta。
 
-`/ws/device-events` is intentionally narrower than `/ws`. It flattens `DeviceTelemetry.measurements` and `DeviceStateChanged.state` into `{ deviceId, roomId, field, value, sequence }` records for adapters and memory processing.
+`/ws/device-events` 有意比 `/ws` 更窄。它把 `DeviceTelemetry.measurements` 和 `DeviceStateChanged.state` 展平成 `{ deviceId, roomId, field, value, sequence }` 记录，供 adapter 和 memory 处理使用。
 
-## Recovery Model
+## 恢复模型
 
-On startup, the server checks the latest persisted snapshot. It restores only when the snapshot still matches the current home definition. Compatibility checks prevent replaying a snapshot across incompatible room, device, person, or home definitions.
+服务启动时会检查最新持久化快照。只有当快照仍然匹配当前家庭定义时才会恢复。兼容性检查可以避免把快照回放到不兼容的房间、设备、人物或 home 定义上。
 
-When a snapshot is compatible:
+当快照兼容时：
 
-1. The simulator restores the snapshot.
-2. Events after the snapshot sequence are replayed onto the snapshot.
-3. Runtime sets such as executed scenario steps, sensor observations, person needs, triggered rules, rule lifecycle state, and RNG state are rebuilt.
+1. simulator 恢复快照。
+2. 快照序号之后的事件被回放到快照上。
+3. 已执行场景步骤、传感器观测、人物需求、已触发规则、规则生命周期状态和 RNG 状态等运行时集合会被重建。
 
-When no compatible snapshot exists, the server starts a fresh generated daily run.
+当没有兼容快照时，服务会启动一个新的生成每日 run。
 
-## Guarantees and Boundaries
+## 保证和边界
 
-- Event sequence is monotonic within a run.
-- Event payloads are persisted as JSON, so old events can be replayed or reprojected.
-- The simulator is deterministic for the same seed and compatible inputs.
-- Privacy projection happens at API/WebSocket read time; persisted internal events retain full simulator detail.
-- Home memory is not stored as a separate materialized SQLite table today. It is reconstructed from persisted events by the memory query layer.
+- 在同一个 run 内，事件 sequence 单调递增。
+- 事件 payload 以 JSON 形式持久化，因此旧事件可以被回放或重新投影。
+- 在相同 seed 和兼容输入下，simulator 是确定性的。
+- 隐私投影发生在 API/WebSocket 读取时；持久化的内部事件保留完整 simulator 细节。
+- 当前 Home memory 没有作为单独的物化 SQLite 表保存，而是由 memory 查询层从持久化事件重建。

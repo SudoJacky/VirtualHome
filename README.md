@@ -85,10 +85,10 @@ This repository is still a single-home simulation sandbox. It now exposes protoc
 - `GET /ws` streams `twin.update` event deltas and `twin.heartbeat` messages. Clients reconnect with `runId` and `afterSequence`.
 - `GET /ws/device-events` streams flattened `device.update` deltas for adapter-style consumers that only need device telemetry and state changes.
 
-## Architecture Docs
+## 架构文档
 
-- [Event generation flow](./docs/event-generation-flow.md)
-- [Home memory processing flow](./docs/home-memory-processing-flow.md)
+- [事件生成流程](./docs/event-generation-flow.md)
+- [家庭 Memory 处理流程](./docs/home-memory-processing-flow.md)
 
 ## Verification
 
