@@ -133,20 +133,24 @@ describe('home memory reasoning flow', () => {
 
     expect(reasoning.title).toBe('Probable household size');
     expect(reasoning.inputs).toEqual([
+      { label: 'Estimate', value: '3 residents' },
+      { label: 'Lower bound', value: '1' },
+      { label: 'Distribution', value: '1:16%/2:22%/3:28%/4:19%/5:16%' },
+      { label: 'Concurrent rooms', value: '1' },
+      { label: 'Sleep zones', value: '0' },
+      { label: 'Routine clusters', value: '4' },
       { label: 'Meaningful rooms', value: '4' },
-      { label: 'Long-window rooms', value: '4' },
-      { label: 'Observed days', value: '1' },
-      { label: 'Observed weeks', value: '1' },
       { label: 'Weighted evidence', value: '2.6' },
       { label: 'Behavior episodes', value: '4' },
-      { label: 'Raw events', value: '5' }
+      { label: 'Weak environment ratio', value: '0%' }
     ]);
-    expect(reasoning.rule).toBe('Otherwise default to a broad 1-3 resident range.');
-    expect(reasoning.result).toBe('1-3 residents');
+    expect(reasoning.rule).toBe('Sparse or non-overlapping activity keeps the lower bound at 1 while routine clusters shape the probability distribution.');
+    expect(reasoning.result).toContain('Estimated 3 residents');
+    expect(reasoning.result).toContain('Distribution 1:16%, 2:22%, 3:28%, 4:19%, 5:16%');
     expect(reasoning.steps.map((step) => step.label)).toEqual([
-      'Collect room activity',
-      'Count observed events',
-      'Evaluate household size rule',
+      'Find concurrent lower bound',
+      'Collect stable resident signals',
+      'Score resident distribution',
       'Attach evidence'
     ]);
   });

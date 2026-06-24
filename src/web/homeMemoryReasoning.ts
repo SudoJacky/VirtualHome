@@ -1,4 +1,5 @@
 import type { DeviceEventValue } from './deviceEventSocket';
+import { estimateHouseholdSizeFromMemory } from './homeHouseholdSizeEstimator';
 import type { HomeMemory, MemoryEvidence } from './homeMemoryModel';
 import type { ProfileHypothesis } from './homeProfiler';
 
@@ -117,53 +118,39 @@ export function createHypothesisReasoning(memory: HomeMemory, hypothesis: Profil
 }
 
 function createHouseholdSizeReasoning(memory: HomeMemory, hypothesis: ProfileHypothesis): HypothesisReasoning {
-  const episodes = Object.values(memory.episodes);
-  const episodeRooms = new Set(episodes.map((episode) => episode.roomId));
-  const dailySummaries = Object.values(memory.dailySummaries);
-  const weeklySummaries = Object.values(memory.weeklySummaries);
-  const longWindowRooms = new Set([
-    ...dailySummaries.flatMap((summary) => summary.meaningfulRooms),
-    ...weeklySummaries.flatMap((summary) => summary.meaningfulRooms)
-  ]);
-  const meaningfulRooms = Object.values(memory.rooms).filter((room) => (
-    meaningfulWeightOfRoom(room) > 0 || episodeRooms.has(room.roomId) || longWindowRooms.has(room.roomId)
-  ));
-  const activeRoomCount = meaningfulRooms.length;
-  const weightedEvidence = meaningfulRooms.reduce((total, room) => total + meaningfulWeightOfRoom(room), 0);
-  const multiDaySignal = dailySummaries.length > 1 ? dailySummaries.length : 0;
-  const multiWeekSignal = weeklySummaries.length > 1 ? weeklySummaries.length : 0;
-  const behaviorSignal = weightedEvidence + episodes.length + multiDaySignal + multiWeekSignal;
-  const totalEvents = memory.totalEvents;
-  const sparseEvidence = behaviorSignal <= 3;
-  const result = sparseEvidence
-    ? 'Uncertain resident count'
-    : estimateHouseholdSize(activeRoomCount, behaviorSignal);
+  const estimate = estimateHouseholdSizeFromMemory(memory);
+  const features = estimate.features;
 
   return {
     title: hypothesis.label,
     inputs: [
-      { label: 'Meaningful rooms', value: String(activeRoomCount) },
-      { label: 'Long-window rooms', value: String(longWindowRooms.size) },
-      { label: 'Observed days', value: String(dailySummaries.length) },
-      { label: 'Observed weeks', value: String(weeklySummaries.length) },
-      { label: 'Weighted evidence', value: formatWeight(weightedEvidence) },
-      { label: 'Behavior episodes', value: String(episodes.length) },
-      { label: 'Raw events', value: String(totalEvents) }
+      { label: 'Estimate', value: estimate.label },
+      { label: 'Lower bound', value: String(estimate.lowerBound) },
+      { label: 'Distribution', value: formatDistribution(estimate.distribution) },
+      { label: 'Concurrent rooms', value: String(features.concurrentActivity.roomCount) },
+      { label: 'Sleep zones', value: String(features.recurringSleepZones.count) },
+      { label: 'Routine clusters', value: String(features.routineClusters.count) },
+      { label: 'Meaningful rooms', value: String(features.meaningfulRoomCount) },
+      { label: 'Weighted evidence', value: formatWeight(features.meaningfulEvidenceWeight) },
+      { label: 'Behavior episodes', value: String(features.behaviorEpisodeCount) },
+      { label: 'Weak environment ratio', value: `${Math.round(features.environmentContextRatio * 100)}%` }
     ],
-    rule: householdSizeRule(activeRoomCount, behaviorSignal),
-    result,
+    rule: householdSizeRule(estimate),
+    result: estimate.summary,
     steps: [
       {
-        label: 'Collect room activity',
-        detail: `${activeRoomCount} room${plural(activeRoomCount)} have meaningful human activity, device usage evidence, behavior episodes, or long-window daily summary support.`
+        label: 'Find concurrent lower bound',
+        detail: features.concurrentActivity.roomCount > 0
+          ? `${features.concurrentActivity.roomCount} active room${plural(features.concurrentActivity.roomCount)} co-occurred in window ${features.concurrentActivity.windowKey}, setting a lower bound of ${features.concurrentActivity.lowerBound}.`
+          : 'No concurrent meaningful activity window was observed, so the lower bound remains 1.'
       },
       {
-        label: 'Count observed events',
-        detail: `${totalEvents} raw device event${plural(totalEvents)} reduce to ${formatWeight(weightedEvidence)} weighted profile evidence, ${episodes.length} behavior episode${plural(episodes.length)}, ${dailySummaries.length} observed day${plural(dailySummaries.length)}, and ${weeklySummaries.length} observed week${plural(weeklySummaries.length)}.`
+        label: 'Collect stable resident signals',
+        detail: `${features.recurringSleepZones.count} sleep zone${plural(features.recurringSleepZones.count)} and ${features.routineClusters.count} routine cluster${plural(features.routineClusters.count)} contribute resident-pattern evidence.`
       },
       {
-        label: 'Evaluate household size rule',
-        detail: householdSizeRule(activeRoomCount, behaviorSignal)
+        label: 'Score resident distribution',
+        detail: `The estimator combines lower bound, room spread, sleep zones, routine clusters, and weak-context ratio into ${formatDistribution(estimate.distribution)}.`
       },
       {
         label: 'Attach evidence',
@@ -173,29 +160,14 @@ function createHouseholdSizeReasoning(memory: HomeMemory, hypothesis: ProfileHyp
   };
 }
 
-function householdSizeRule(activeRoomCount: number, behaviorSignal: number): string {
-  if (activeRoomCount >= 5 && behaviorSignal >= 20) {
-    return 'If active rooms >= 5 and behavior signal >= 20, suggest 2-5 residents.';
+function householdSizeRule(estimate: ReturnType<typeof estimateHouseholdSizeFromMemory>): string {
+  if (estimate.features.environmentContextRatio >= 0.8) {
+    return 'Mostly weak environment context keeps household size confidence capped.';
   }
-  if (behaviorSignal <= 3) {
-    return 'Sparse evidence keeps the resident count uncertain.';
+  if (estimate.lowerBound >= 2) {
+    return 'Concurrent room activity and sleep-zone signals establish a resident-count lower bound before scoring the probability distribution.';
   }
-  return 'Otherwise default to a broad 1-3 resident range.';
-}
-
-function meaningfulWeightOfRoom(room: HomeMemory['rooms'][string]): number {
-  const weakContextWeight = room.profileEvidenceByCategory.environment_context * 0.05;
-  return Math.max(0, Number((room.profileEvidenceWeight - weakContextWeight).toFixed(3)));
-}
-
-function estimateHouseholdSize(activeRoomCount: number, totalEvents: number): string {
-  if (activeRoomCount >= 5 && totalEvents >= 20) {
-    return '2-5 residents';
-  }
-  if (activeRoomCount <= 1 && totalEvents <= 3) {
-    return '1 resident';
-  }
-  return '1-3 residents';
+  return 'Sparse or non-overlapping activity keeps the lower bound at 1 while routine clusters shape the probability distribution.';
 }
 
 function ruleForHypothesisType(type: ProfileHypothesis['type']): string {
@@ -214,6 +186,12 @@ function formatValue(value: DeviceEventValue): string {
 
 function formatWeight(value: number): string {
   return Number(value.toFixed(2)).toString();
+}
+
+function formatDistribution(distribution: ReturnType<typeof estimateHouseholdSizeFromMemory>['distribution']): string {
+  return ([1, 2, 3, 4, 5] as const)
+    .map((count) => `${count}:${Math.round(distribution[count] * 100)}%`)
+    .join('/');
 }
 
 function plural(count: number): string {
