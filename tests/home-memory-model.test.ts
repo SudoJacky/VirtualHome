@@ -158,6 +158,80 @@ describe('home memory model', () => {
     });
   });
 
+  it('derives reusable semantic signals from device evidence', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'front_door_unlock',
+        sourceEventId: 'source_front_door_unlock',
+        sequence: 1,
+        simTime: '2026-06-22T18:00:00',
+        roomId: 'entrance',
+        deviceId: 'front_lock_01',
+        deviceType: 'door_lock',
+        field: 'lock',
+        value: 'unlocked'
+      }),
+      deviceEvent({
+        id: 'bathroom_flow',
+        sourceEventId: 'source_bathroom_flow',
+        sequence: 2,
+        simTime: '2026-06-22T18:05:00',
+        roomId: 'bathroom',
+        deviceId: 'bathroom_flow_01',
+        deviceType: 'water_meter',
+        field: 'flowRate',
+        value: 2.4
+      }),
+      deviceEvent({
+        id: 'bed_sleep',
+        sourceEventId: 'source_bed_sleep',
+        sequence: 3,
+        simTime: '2026-06-22T23:00:00',
+        roomId: 'master_bedroom',
+        deviceId: 'sleep_sensor_01',
+        deviceType: 'sleep_sensor',
+        field: 'inBed',
+        value: true
+      })
+    ]);
+
+    expect(memory.semanticSignalCount).toBe(4);
+    expect(memory.semanticSignalCountsByType).toMatchObject({
+      access_signal: 1,
+      presence_signal: 1,
+      water_signal: 1,
+      sleep_signal: 1
+    });
+    expect(memory.semanticSignals).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'signal:front_door_unlock:access_signal',
+        type: 'access_signal',
+        roomId: 'entrance',
+        deviceId: 'front_lock_01',
+        sourceEvidenceIds: ['front_door_unlock'],
+        strength: 'strong'
+      }),
+      expect.objectContaining({
+        id: 'signal:front_door_unlock:presence_signal',
+        type: 'presence_signal',
+        roomId: 'entrance',
+        sourceEvidenceIds: ['front_door_unlock']
+      }),
+      expect.objectContaining({
+        id: 'signal:bathroom_flow:water_signal',
+        type: 'water_signal',
+        roomId: 'bathroom',
+        value: 2.4
+      }),
+      expect.objectContaining({
+        id: 'signal:bed_sleep:sleep_signal',
+        type: 'sleep_signal',
+        roomId: 'master_bedroom',
+        timeBucket: 'night'
+      })
+    ]));
+  });
+
   it('tracks repeated same-value telemetry separately from meaningful changes', () => {
     const memory = reduceDeviceEvents(createHomeMemory(), [
       deviceEvent({

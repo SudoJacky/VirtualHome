@@ -81,7 +81,10 @@ function hypotheses(): ProfileHypothesis[] {
       confidence: 0.66,
       updatedAt: '2026-06-22T08:00:00',
       subjectIds: ['device:coffee_maker_01', 'room:kitchen'],
-      evidence: []
+      evidence: [],
+      supportingEvidence: [],
+      contradictingEvidence: [],
+      missingEvidence: []
     },
     {
       id: 'room:kitchen:habit',
@@ -91,7 +94,10 @@ function hypotheses(): ProfileHypothesis[] {
       confidence: 0.72,
       updatedAt: '2026-06-22T08:00:00',
       subjectIds: ['room:kitchen', 'device:missing_01'],
-      evidence: []
+      evidence: [],
+      supportingEvidence: [],
+      contradictingEvidence: [],
+      missingEvidence: []
     }
   ];
 }

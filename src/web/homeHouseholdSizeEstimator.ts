@@ -40,6 +40,10 @@ export interface HouseholdSizeEstimate {
       count: number;
       clusters: HouseholdRoutineCluster[];
     };
+    residentSlots: {
+      count: number;
+      slots: string[];
+    };
   };
   evidence: string[];
   summary: string;
@@ -68,6 +72,7 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
   const concurrentActivity = estimateConcurrentActivity(meaningfulEvents);
   const recurringSleepZones = estimateRecurringSleepZones(memory, meaningfulEvents, episodes);
   const routineClusters = estimateRoutineClusters(memory, meaningfulEvents, recurringSleepZones.rooms);
+  const residentSlots = estimateResidentSlots(memory);
   const environmentContextRatio = memory.profileEventCount === 0
     ? 1
     : roundWeight(memory.profileEvidenceByCategory.environment_context / memory.profileEventCount);
@@ -86,7 +91,8 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
     environmentContextRatio,
     concurrentRoomCount: concurrentActivity.roomCount,
     sleepZoneCount: recurringSleepZones.count,
-    routineClusterCount: routineClusters.count
+    routineClusterCount: routineClusters.count,
+    residentSlotCount: residentSlots.count
   });
   const estimate = mostLikelyResidentCount(distribution);
   const confidence = estimateConfidence(distribution, {
@@ -97,7 +103,7 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
     environmentContextRatio,
     lowerBound
   });
-  const evidence = createEvidenceText(concurrentActivity, recurringSleepZones, routineClusters, environmentContextRatio);
+  const evidence = createEvidenceText(concurrentActivity, recurringSleepZones, routineClusters, residentSlots, environmentContextRatio);
 
   return {
     estimate,
@@ -115,7 +121,8 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
       environmentContextRatio,
       concurrentActivity,
       recurringSleepZones,
-      routineClusters
+      routineClusters,
+      residentSlots
     },
     evidence,
     summary: createEstimateSummary(estimate, lowerBound, confidence, distribution, evidence)
@@ -223,6 +230,30 @@ function estimateRoutineClusters(
   };
 }
 
+function estimateResidentSlots(memory: HomeMemory): HouseholdSizeEstimate['features']['residentSlots'] {
+  const slots = new Set<string>();
+  for (const signal of memory.semanticSignals) {
+    if (signal.type === 'sleep_signal') {
+      slots.add(signal.roomId.includes('child') ? 'child_sleep_slot' : 'main_sleep_slot');
+    }
+    if (signal.type === 'work_study_signal') {
+      slots.add('remote_work_slot');
+    }
+    if (signal.type === 'media_signal' && signal.timeBucket === 'evening') {
+      slots.add('shared_evening_slot');
+    }
+    if (signal.type === 'presence_signal' && signal.timeBucket === 'daytime') {
+      slots.add('daytime_home_slot');
+    }
+  }
+
+  const sortedSlots = [...slots].sort((left, right) => left.localeCompare(right));
+  return {
+    count: sortedSlots.length,
+    slots: sortedSlots
+  };
+}
+
 function createResidentDistribution(input: {
   lowerBound: ResidentCount;
   meaningfulRoomCount: number;
@@ -234,8 +265,10 @@ function createResidentDistribution(input: {
   concurrentRoomCount: number;
   sleepZoneCount: number;
   routineClusterCount: number;
+  residentSlotCount: number;
 }): HouseholdSizeDistribution {
   const routineEstimate = clampResidentCount(Math.round((input.meaningfulRoomCount + input.routineClusterCount) / 3));
+  const slotEstimate = input.residentSlotCount >= 3 ? clampResidentCount(Math.ceil(input.residentSlotCount / 2)) : null;
   const sleepEstimate = input.sleepZoneCount > 0 ? clampResidentCount(input.sleepZoneCount) : null;
   const weakContextPenalty = input.environmentContextRatio >= 0.8 ? 1.4 : 0;
   const scores = Object.fromEntries(RESIDENT_COUNTS.map((count) => {
@@ -256,6 +289,12 @@ function createResidentDistribution(input: {
     }
     if (input.routineClusterCount >= 4 && count === 2) {
       score += 0.45;
+    }
+    if (slotEstimate !== null) {
+      score += 1.5 / (Math.abs(count - slotEstimate) + 1);
+    }
+    if (input.residentSlotCount >= 3 && count >= 2) {
+      score += 0.65 / (count - 1);
     }
     if (input.meaningfulEvidenceWeight + input.behaviorEpisodeCount < 3 && count > 1) {
       score -= 1.5;
@@ -311,6 +350,7 @@ function createEvidenceText(
   concurrentActivity: HouseholdSizeEstimate['features']['concurrentActivity'],
   sleepZones: HouseholdSizeEstimate['features']['recurringSleepZones'],
   routineClusters: HouseholdSizeEstimate['features']['routineClusters'],
+  residentSlots: HouseholdSizeEstimate['features']['residentSlots'],
   environmentContextRatio: number
 ): string[] {
   const evidence: string[] = [];
@@ -322,6 +362,9 @@ function createEvidenceText(
   }
   if (routineClusters.count > 0) {
     evidence.push(`${routineClusters.count} routine cluster${routineClusters.count === 1 ? '' : 's'}`);
+  }
+  if (residentSlots.count > 0) {
+    evidence.push(`${residentSlots.count} resident slot${residentSlots.count === 1 ? '' : 's'}`);
   }
   if (environmentContextRatio >= 0.8) {
     evidence.push('mostly weak environment context');

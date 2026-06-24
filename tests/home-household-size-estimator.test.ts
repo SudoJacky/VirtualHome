@@ -131,4 +131,48 @@ describe('home household size estimator', () => {
     expect(estimate.distribution[1]).toBeGreaterThan(estimate.distribution[3]);
     expect(estimate.evidence).toContain('mostly weak environment context');
   });
+
+  it('uses semantic resident slots as household-size evidence', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'main_sleep',
+        sequence: 1,
+        simTime: '2026-06-22T23:00:00',
+        roomId: 'master_bedroom',
+        deviceId: 'sleep_sensor_01',
+        deviceType: 'sleep_sensor',
+        field: 'inBed',
+        value: true
+      }),
+      deviceEvent({
+        id: 'study_work',
+        sequence: 2,
+        simTime: '2026-06-23T14:00:00',
+        roomId: 'study',
+        deviceId: 'desk_plug_01',
+        deviceType: 'smart_plug',
+        field: 'powerW',
+        value: 95
+      }),
+      deviceEvent({
+        id: 'living_media',
+        sequence: 3,
+        simTime: '2026-06-23T20:00:00',
+        roomId: 'living_room',
+        deviceId: 'tv_01',
+        deviceType: 'tv',
+        field: 'power',
+        value: true
+      })
+    ]);
+
+    const estimate = estimateHouseholdSizeFromMemory(memory);
+
+    expect(estimate.features.residentSlots).toEqual({
+      count: 3,
+      slots: ['main_sleep_slot', 'remote_work_slot', 'shared_evening_slot']
+    });
+    expect(estimate.evidence).toContain('3 resident slots');
+    expect(estimate.distribution[2]).toBeGreaterThan(estimate.distribution[1]);
+  });
 });

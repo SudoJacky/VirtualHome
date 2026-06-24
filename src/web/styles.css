@@ -583,7 +583,8 @@ button:hover {
 }
 
 .memory-hypothesis-list,
-.memory-evidence-list {
+.memory-evidence-list,
+.semantic-signal-list {
   display: grid;
   gap: 8px;
 }
@@ -722,6 +723,93 @@ button:hover {
 
 .reasoning-chip-row button {
   min-height: 0;
+}
+
+.semantic-signal-panel {
+  gap: 12px;
+}
+
+.semantic-signal-list {
+  max-height: 230px;
+  overflow: auto;
+}
+
+.semantic-signal-row {
+  align-items: center;
+  background: #f8faf9;
+  border: 1px solid #e1e8ea;
+  border-radius: 6px;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 58px minmax(88px, 1fr) minmax(62px, 0.7fr);
+  padding: 8px;
+}
+
+.semantic-signal-row span:nth-of-type(2),
+.semantic-signal-row code,
+.semantic-signal-row small {
+  grid-column: span 1;
+}
+
+.semantic-signal-row time,
+.semantic-signal-row span,
+.semantic-signal-row small {
+  color: #60757b;
+  font-size: 11px;
+  min-width: 0;
+}
+
+.semantic-signal-row strong {
+  color: #20343b;
+  font-size: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.semantic-signal-row code {
+  background: #edf3f2;
+  border-radius: 5px;
+  color: #20343b;
+  font-size: 11px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 3px 5px;
+}
+
+.memory-evidence-breakdown {
+  background: #f8faf9;
+  border: 1px solid #dce6e5;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 10px;
+}
+
+.memory-evidence-breakdown div {
+  display: grid;
+  gap: 3px;
+}
+
+.memory-evidence-breakdown span,
+.memory-evidence-breakdown li {
+  color: #60757b;
+  font-size: 12px;
+}
+
+.memory-evidence-breakdown strong {
+  color: #20343b;
+  font-size: 16px;
+}
+
+.memory-evidence-breakdown ul {
+  border-top: 1px solid #dce6e5;
+  display: grid;
+  gap: 4px;
+  grid-column: 1 / -1;
+  list-style: none;
+  margin: 0;
+  padding: 8px 0 0;
 }
 
 .memory-event-strip {
