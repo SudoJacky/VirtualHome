@@ -13,6 +13,14 @@ import type { HomeDefinition, StaticScenarioId, TwinEvent, TwinSnapshot } from '
 import { createDeviceAccessRecords } from './deviceAccess';
 import { buildDeviceReplayPage, projectDeviceValueEvents } from './deviceEventStream';
 import { loadHomeDefinitionFromFile } from './homeDefinitionLoader';
+import {
+  buildHomeMemoryFromEvents,
+  createMemorySummary,
+  queryMemoryEntities,
+  queryMemoryEpisodes,
+  queryMemoryEvidence,
+  queryMemoryHypotheses
+} from './memoryQuery';
 import { buildOpenApiDocument } from './openapi';
 import { TwinDatabase } from './persistence';
 import { projectDeviceAccessRecordsForPrivacy, projectEventsForPrivacy, projectSnapshotForPrivacy, projectTelemetryForPrivacy, type PrivacyMode } from './privacy';
@@ -37,6 +45,42 @@ const limitQuerySchema = z.object({
 const telemetrySummaryQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(1000).default(500),
   runId: z.string().min(1).optional()
+});
+const booleanQuerySchema = z.enum(['true', 'false']).transform((value) => value === 'true').optional();
+const memoryRunQuerySchema = z.object({
+  runId: z.string().min(1).optional()
+});
+const memoryEntityQuerySchema = z.object({
+  runId: z.string().min(1).optional(),
+  kind: z.enum(['room', 'device', 'field']),
+  roomId: z.string().min(1).optional(),
+  deviceId: z.string().min(1).optional(),
+  field: z.string().min(1).optional(),
+  meaningfulOnly: booleanQuerySchema
+});
+const memoryEpisodeQuerySchema = z.object({
+  runId: z.string().min(1).optional(),
+  kind: z.enum(['occupancy', 'contact_activity', 'device_usage', 'appliance_usage']).optional(),
+  status: z.enum(['open', 'closed']).optional(),
+  roomId: z.string().min(1).optional(),
+  deviceId: z.string().min(1).optional(),
+  field: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50)
+});
+const memoryEvidenceQuerySchema = z.object({
+  runId: z.string().min(1).optional(),
+  category: z.enum(['human_activity', 'device_usage', 'environment_context', 'system_status']).optional(),
+  strength: z.enum(['strong', 'medium', 'weak', 'ignored']).optional(),
+  roomId: z.string().min(1).optional(),
+  deviceId: z.string().min(1).optional(),
+  field: z.string().min(1).optional(),
+  meaningfulOnly: booleanQuerySchema,
+  limit: z.coerce.number().int().min(1).max(200).default(50)
+});
+const memoryHypothesisQuerySchema = z.object({
+  runId: z.string().min(1).optional(),
+  type: z.enum(['household_size', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster']).optional(),
+  includeEvidence: booleanQuerySchema
 });
 const auditQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(100)
@@ -223,6 +267,72 @@ export function createServer(options: ServerOptions): FastifyInstance {
     return summarizeTelemetry(db.getRecentTelemetry(result.data.limit, runId), result.data.limit, runId);
   });
 
+  app.get('/api/memory/summary', async (request, reply) => {
+    const result = memoryRunQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const { memory, runId, snapshot } = getMemoryView(result.data.runId);
+    recordAccess('/api/memory/summary', 'ml-observation', runId, snapshot.simClock.sequence);
+    return createMemorySummary(memory);
+  });
+
+  app.get('/api/memory/entities', async (request, reply) => {
+    const result = memoryEntityQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const { memory, runId, snapshot } = getMemoryView(result.data.runId);
+    const { runId: _runId, ...query } = result.data;
+    recordAccess('/api/memory/entities', 'ml-observation', runId, snapshot.simClock.sequence, query);
+    return {
+      runId,
+      ...queryMemoryEntities(memory, query)
+    };
+  });
+
+  app.get('/api/memory/episodes', async (request, reply) => {
+    const result = memoryEpisodeQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const { memory, runId, snapshot } = getMemoryView(result.data.runId);
+    const { runId: _runId, ...query } = result.data;
+    recordAccess('/api/memory/episodes', 'ml-observation', runId, snapshot.simClock.sequence, query);
+    return {
+      runId,
+      items: queryMemoryEpisodes(memory, query)
+    };
+  });
+
+  app.get('/api/memory/evidence', async (request, reply) => {
+    const result = memoryEvidenceQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const { memory, runId, snapshot } = getMemoryView(result.data.runId);
+    const { runId: _runId, ...query } = result.data;
+    recordAccess('/api/memory/evidence', 'ml-observation', runId, snapshot.simClock.sequence, query);
+    return {
+      runId,
+      items: queryMemoryEvidence(memory, query)
+    };
+  });
+
+  app.get('/api/memory/profile/hypotheses', async (request, reply) => {
+    const result = memoryHypothesisQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const { memory, runId, snapshot } = getMemoryView(result.data.runId);
+    const { runId: _runId, ...query } = result.data;
+    recordAccess('/api/memory/profile/hypotheses', 'ml-observation', runId, snapshot.simClock.sequence, query);
+    return {
+      runId,
+      items: queryMemoryHypotheses(memory, query)
+    };
+  });
+
   app.get('/api/device-twins', async (request, reply) => {
     const result = privacyQuerySchema.safeParse(request.query);
     if (!result.success) {
@@ -245,6 +355,16 @@ export function createServer(options: ServerOptions): FastifyInstance {
     }
     return db.getRecentAccessAudit(result.data.limit);
   });
+
+  function getMemoryView(queryRunId?: string): { memory: ReturnType<typeof buildHomeMemoryFromEvents>; runId: string; snapshot: TwinSnapshot } {
+    const snapshot = simulator.getSnapshot();
+    const runId = queryRunId ?? snapshot.runId;
+    return {
+      memory: buildHomeMemoryFromEvents(db.getEventsForRun(runId)),
+      runId,
+      snapshot
+    };
+  }
 
   app.post('/api/scenarios/:id/start', async (request, reply) => {
     const params = request.params as { id: StaticScenarioId };
