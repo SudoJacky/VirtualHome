@@ -24,9 +24,13 @@ export interface ProfileHypothesis {
   updatedAt: string;
   subjectIds: string[];
   evidence: MemoryEvidence[];
+  supportingEvidence: MemoryEvidence[];
+  contradictingEvidence: MemoryEvidence[];
+  missingEvidence: string[];
 }
 
 const TIME_BUCKETS: TimeBucket[] = ['morning', 'daytime', 'evening', 'night'];
+type ProfileHypothesisInput = Omit<ProfileHypothesis, 'updatedAt' | 'supportingEvidence' | 'contradictingEvidence' | 'missingEvidence'> & Partial<Pick<ProfileHypothesis, 'supportingEvidence' | 'contradictingEvidence' | 'missingEvidence'>>;
 
 export function createHomeProfileHypotheses(memory: HomeMemory): ProfileHypothesis[] {
   if (memory.totalEvents === 0 || memory.recentEvents.length === 0) {
@@ -506,12 +510,32 @@ function createHouseholdSize(memory: HomeMemory, activeRooms: RoomMemory[]): Pro
   });
 }
 
-function hypothesis(input: Omit<ProfileHypothesis, 'updatedAt'>): ProfileHypothesis {
+function hypothesis(input: ProfileHypothesisInput): ProfileHypothesis {
   return {
     ...input,
+    supportingEvidence: input.supportingEvidence ?? input.evidence,
+    contradictingEvidence: input.contradictingEvidence ?? [],
+    missingEvidence: input.missingEvidence ?? missingEvidenceForHypothesis(input),
     confidence: clamp(input.confidence),
     updatedAt: input.evidence[0].simTime
   };
+}
+
+function missingEvidenceForHypothesis(input: ProfileHypothesisInput): string[] {
+  const missing: string[] = [];
+  if (input.confidence < 0.8) {
+    missing.push('More observations across additional days would improve confidence.');
+  }
+  if (input.type === 'household_size') {
+    missing.push('Independent sleep, behavior-flow, or resident-slot evidence would make household size more precise.');
+  } else if (input.type === 'activity_cluster' || input.type === 'routine_window' || input.type === 'behavior_flow') {
+    missing.push('Repeated semantic signals across more days would make this behavior pattern more stable.');
+  } else if (input.type === 'state_anomaly') {
+    missing.push('A longer baseline is needed before treating this as a strong anomaly.');
+  } else {
+    missing.push('Additional independent device evidence would make this hypothesis stronger.');
+  }
+  return sortedUnique(missing);
 }
 
 function sortedRooms(memory: HomeMemory): RoomMemory[] {

@@ -169,6 +169,9 @@ describe('home profiler', () => {
 
     for (const hypothesis of hypotheses) {
       expect(hypothesis.evidence.length).toBeGreaterThan(0);
+      expect(hypothesis.supportingEvidence).toEqual(hypothesis.evidence);
+      expect(hypothesis.contradictingEvidence).toEqual([]);
+      expect(hypothesis.missingEvidence.length).toBeGreaterThan(0);
       expect(hypothesis.confidence).toBeGreaterThan(0);
       expect(hypothesis.confidence).toBeLessThanOrEqual(1);
       expect(hypothesis.updatedAt).toBe(hypothesis.evidence[0].simTime);
