@@ -565,7 +565,7 @@ function semanticSignalsForEvidence(event: DeviceValueEvent, evidence: MemoryEvi
     add('presence_signal', `${event.deviceId}.${event.field} indicates human presence or motion.`, evidence.evidenceStrength, evidence.profileWeight);
   }
 
-  if (signals.length === 0 && evidence.evidenceCategory === 'device_usage') {
+  if (signals.length === 0 && evidence.evidenceCategory === 'device_usage' && isActiveValue(event.value)) {
     add('presence_signal', `${event.deviceId}.${event.field} is generic device usage and weakly supports presence.`, 'weak', Math.min(evidence.profileWeight, 0.25));
   }
 
