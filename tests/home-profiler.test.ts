@@ -146,7 +146,9 @@ describe('home profiler', () => {
 
     const householdSize = hypotheses.find((hypothesis) => hypothesis.type === 'household_size');
     expect(householdSize?.summary).toMatch(/likely|probable|may|suggest/i);
-    expect(householdSize?.summary).toMatch(/1-3 residents/);
+    expect(householdSize?.summary).toMatch(/3 residents/);
+    expect(householdSize?.summary).toMatch(/distribution 1:\d+%\/2:\d+%\/3:\d+%\/4:\d+%\/5:\d+%/);
+    expect(householdSize?.summary).toMatch(/lower bound 1/);
 
     const presence = hypotheses.find((hypothesis) => hypothesis.type === 'presence_signal');
     expect(presence?.summary).toMatch(/4 active rooms/);

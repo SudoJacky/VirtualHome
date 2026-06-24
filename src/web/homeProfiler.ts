@@ -1,3 +1,4 @@
+import { estimateHouseholdSizeFromMemory } from './homeHouseholdSizeEstimator';
 import type { HomeMemory, MemoryEpisode, MemoryEvidence, RoomMemory, TimeBucket } from './homeMemoryModel';
 
 export type ProfileHypothesisType =
@@ -133,6 +134,7 @@ function createPresenceSignal(memory: HomeMemory): ProfileHypothesis {
 }
 
 function createHouseholdSize(memory: HomeMemory, activeRooms: RoomMemory[]): ProfileHypothesis {
+  const estimate = estimateHouseholdSizeFromMemory(memory);
   const rooms = activeRooms.map((room) => room.roomId);
   const episodes = behaviorEpisodes(memory);
   const episodeRooms = sortedUnique(episodes.map((episode) => episode.roomId));
@@ -153,9 +155,9 @@ function createHouseholdSize(memory: HomeMemory, activeRooms: RoomMemory[]): Pro
   const multiDaySignal = observedDayCount > 1 ? observedDayCount : 0;
   const multiWeekSignal = observedWeekCount > 1 ? observedWeekCount : 0;
   const behaviorSignal = meaningfulWeight + episodes.length + multiDaySignal + multiWeekSignal;
-  const estimate = estimateHouseholdSize(activeRoomCount, behaviorSignal);
   const sparseEvidence = behaviorSignal <= 3;
   const mostlyWeakContext = activeRoomCount === 0;
+  const distributionText = formatHouseholdDistribution(estimate.distribution);
 
   return hypothesis({
     id: 'household:size',
@@ -164,12 +166,12 @@ function createHouseholdSize(memory: HomeMemory, activeRooms: RoomMemory[]): Pro
     summary: mostlyWeakContext
         ? `Observed activity is mostly weak environment context across ${rooms.length} room${plural(rooms.length)}; resident count remains uncertain.`
       : sparseEvidence
-        ? `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence, ${episodes.length} behavior episode${plural(episodes.length)}, ${observedDayCount} observed day${plural(observedDayCount)}, and ${observedWeekCount} observed week${plural(observedWeekCount)} is sparse; ${longWindowRooms.length} long-window room${plural(longWindowRooms.length)} remain insufficient, so resident count remains uncertain.`
-        : `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence, ${episodes.length} behavior episode${plural(episodes.length)}, ${observedDayCount} observed day${plural(observedDayCount)}, and ${observedWeekCount} observed week${plural(observedWeekCount)} suggests likely ${estimate}; this uses ${longWindowRooms.length} long-window room${plural(longWindowRooms.length)} and is probabilistic, not a confirmed resident count.`,
+        ? `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence, ${episodes.length} behavior episode${plural(episodes.length)}, ${observedDayCount} observed day${plural(observedDayCount)}, and ${observedWeekCount} observed week${plural(observedWeekCount)} is sparse; ${longWindowRooms.length} long-window room${plural(longWindowRooms.length)} remain insufficient, so resident count remains uncertain. Current probabilistic estimate is ${estimate.label}, lower bound ${estimate.lowerBound}, distribution ${distributionText}.`
+        : `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence, ${episodes.length} behavior episode${plural(episodes.length)}, ${observedDayCount} observed day${plural(observedDayCount)}, and ${observedWeekCount} observed week${plural(observedWeekCount)} suggests ${estimate.label}; lower bound ${estimate.lowerBound}, distribution ${distributionText}. This uses ${longWindowRooms.length} long-window room${plural(longWindowRooms.length)}, ${estimate.features.concurrentActivity.roomCount} concurrent room${plural(estimate.features.concurrentActivity.roomCount)}, ${estimate.features.recurringSleepZones.count} sleep zone${plural(estimate.features.recurringSleepZones.count)}, and ${estimate.features.routineClusters.count} routine cluster${plural(estimate.features.routineClusters.count)}, so it remains probabilistic rather than a confirmed resident count.`,
     confidence: confidenceWithSampleSize(
       mostlyWeakContext
         ? 0.25
-        : 0.3 + Math.min(0.3, activeRoomCount / 10) + Math.min(0.25, behaviorSignal / 20),
+        : estimate.confidence,
       behaviorSampleSize(meaningfulWeight, episodes.length)
     ),
     subjectIds: toRoomSubjectIds(rooms),
@@ -198,16 +200,6 @@ function strongestTimeBucket(buckets: Record<TimeBucket, number>): TimeBucket {
     }
     return strongest;
   }, TIME_BUCKETS[0]);
-}
-
-function estimateHouseholdSize(activeRoomCount: number, totalEvents: number): string {
-  if (activeRoomCount >= 5 && totalEvents >= 20) {
-    return '2-5 residents';
-  }
-  if (activeRoomCount <= 1 && totalEvents <= 3) {
-    return '1 resident';
-  }
-  return '1-3 residents';
 }
 
 function sortedDailySummaries(memory: HomeMemory): HomeMemory['dailySummaries'][string][] {
@@ -295,6 +287,12 @@ function formatList(values: string[]): string {
 
 function formatWeight(value: number): string {
   return Number(value.toFixed(2)).toString();
+}
+
+function formatHouseholdDistribution(distribution: ReturnType<typeof estimateHouseholdSizeFromMemory>['distribution']): string {
+  return ([1, 2, 3, 4, 5] as const)
+    .map((count) => `${count}:${Math.round(distribution[count] * 100)}%`)
+    .join('/');
 }
 
 function matchWord(count: number): string {
