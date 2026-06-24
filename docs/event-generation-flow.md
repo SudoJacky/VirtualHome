@@ -2,6 +2,8 @@
 
 本文说明 VirtualHome 如何生成、记录并投递数字孪生事件。内容基于当前实现：`src/sim/engine.ts`、`src/server/app.ts`、`src/server/persistence.ts` 和 `src/server/deviceEventStream.ts`。
 
+![事件生成架构](./assets/event-generation-architecture.png)
+
 ## 目标
 
 VirtualHome 使用事件溯源的仿真模型。控制命令和定时推进会修改内存中的 `TwinSnapshot`，每一次有意义的状态变化都会产出一个带类型的 `TwinEvent`。服务端会把这些事件写入 SQLite，并通过 REST 和 WebSocket 对外发布。

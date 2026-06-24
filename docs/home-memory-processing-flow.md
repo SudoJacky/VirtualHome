@@ -2,6 +2,8 @@
 
 本文说明 VirtualHome 如何把设备可观测事件转换成家庭 memory、画像假设、图视图和查询 API 响应。内容基于当前实现：`src/server/deviceEventStream.ts`、`src/web/homeMemoryModel.ts`、`src/web/homeProfiler.ts`、`src/web/homeMemoryReasoning.ts`、`src/server/memoryQuery.ts` 和 `src/web/HomeMemoryView.tsx`。
 
+![家庭 Memory 架构](./assets/home-memory-architecture.png)
+
 ## 目标
 
 家庭 memory 是供外部 agent 和 Memory UI 使用的设备可观测知识层。它由设备遥测和设备状态变化构建，不直接使用私密的家庭真值标签。浏览器端实时 memory 和服务端查询响应复用同一套 reducer。
