@@ -1,206 +1,164 @@
 # 事件生成流程
 
-本文说明 VirtualHome 如何生成、记录并投递数字孪生事件。内容基于当前实现：`src/sim/engine.ts`、`src/server/app.ts`、`src/server/persistence.ts` 和 `src/server/deviceEventStream.ts`。
+本文面向第一次阅读 VirtualHome 的人，说明项目如何从家庭模板、场景计划、时间推进和设备控制中生成事件，并把这些事件转换成前端、接口和家庭 memory 可以使用的数据。
 
 ![事件生成架构](./assets/event-generation-architecture.png)
 
-## 目标
+## 一句话总览
 
-VirtualHome 使用事件溯源的仿真模型。控制命令和定时推进会修改内存中的 `TwinSnapshot`，每一次有意义的状态变化都会产出一个带类型的 `TwinEvent`。服务端会把这些事件写入 SQLite，并通过 REST 和 WebSocket 对外发布。
+VirtualHome 维护一个“当前家庭状态”，每次模拟时间推进、场景步骤执行、设备被控制、规则被触发或传感器产生读数时，都会把状态变化记录成事件。内部会保存完整事件；对外给 memory 使用时，只投影成“哪个家、哪个房间、哪个设备、哪个字段、变成了什么值、发生在什么时候”。
 
-## 总览流程
+## 需要先理解的对象
 
-```mermaid
-flowchart TD
-  Client[客户端请求或自动时钟] --> Server[Fastify 服务]
-  Server --> Command{控制路径}
+| 对象 | 含义 | 如何生成 | 如何使用 |
+| --- | --- | --- | --- |
+| 家庭模板 | 家中有哪些房间、设备、设备能力、人员画像和初始状态 | 项目启动时从家庭定义加载 | 决定模拟世界的结构，也决定哪些设备能产生哪些状态和遥测 |
+| 当前家庭状态 | 某一刻家中所有房间、人员、设备、告警、时间和运行上下文的快照 | 启动新 run 时初始化；之后由事件持续更新 | 前端展示、规则判断、传感器生成和持久化恢复都依赖它 |
+| 场景计划 | 某一天或某个静态场景中，人和设备应发生的计划行为 | 由静态场景或每日生成逻辑创建 | 到达计划时间后推动人员移动、活动开始、设备状态变化等 |
+| 原始事件 | 模拟内部记录的一次事实变化或系统输出 | 由时间推进、控制命令、自动化规则、传感器模型等产生 | 写入事件历史、更新快照、广播给前端；其中设备相关事件会被投影给 memory |
+| 设备值事件 | 从原始设备事件中拆出来的单个字段变化 | 把设备遥测或设备状态事件按字段展开 | 是家庭 memory 和外部观察者最重要的输入 |
+| 运行序号 | 同一个 run 内单调递增的事件位置 | 每创建一个原始事件都会前进 | 用于排序、断线续传、重放和判断客户端是否落后 |
 
-  Command -->|启动静态场景| StartScenario[simulator.startScenario]
-  Command -->|启动每日运行| StartDaily[simulator.startDailyScenario]
-  Command -->|推进时间| Advance[simulator.advanceMinutes]
-  Command -->|注入或恢复异常| Abnormality[simulator 异常方法]
-  Command -->|设备命令| DeviceCommand[simulator.commandDevice]
-  Command -->|暂停或恢复| PauseResume[simulator.setPaused]
+## 从启动到运行的主流程
 
-  StartScenario --> Events[TwinEvent 数组]
-  StartDaily --> Events
-  Advance --> Events
-  Abnormality --> Events
-  DeviceCommand --> Events
-  PauseResume --> Events
+服务启动后会先建立一个模拟器和持久化数据库。它会尝试从最近的兼容快照恢复；如果没有兼容快照，就启动一个新的每日 run。之后系统进入循环：外部请求或自动时钟推动模拟，模拟产生事件，事件被记录并广播。
 
-  Events --> Snapshot[更新后的 TwinSnapshot]
-  Snapshot --> Record[recordAndBroadcast]
-  Record --> SQLite[(SQLite events, telemetry, snapshots)]
-  Record --> TwinWS["/ws twin.update"]
-  Record --> DeviceProjection[projectDeviceValueEvents]
-  DeviceProjection --> DeviceWS["/ws/device-events device.update"]
-  SQLite --> Rest[REST 读取: state, events, telemetry, memory]
-```
+主链路如下：
 
-## 运行时入口
+1. 加载家庭模板，得到房间、设备、人员和初始状态。
+2. 创建或恢复当前家庭状态。
+3. 等待输入：自动时钟、手动推进、启动场景、设备控制、异常注入、告警状态变更等。
+4. 输入进入模拟器后，模拟器根据当前状态生成一个或多个原始事件。
+5. 原始事件被追加到事件历史，并更新当前家庭状态。
+6. 服务端把事件写入持久化存储。
+7. 服务端把完整事件广播给通用前端视图。
+8. 服务端把设备相关事件投影成设备值事件，广播给 device-events 订阅者和 memory。
+9. REST 查询接口可以从持久化事件历史重建某个 run 的状态或 memory。
 
-服务启动时会创建一个 simulator 实例：
+## 事件从哪里来
 
-- `createServer()` 加载家庭定义。
-- `createSimulator()` 创建运行时状态、带 seed 的随机数生成器、初始快照和默认场景。
-- `TwinDatabase` 打开 SQLite 数据库，并创建事件、遥测、快照、幂等记录和访问审计表。
-- 如果 SQLite 中存在兼容的快照，simulator 会从该快照恢复，并回放 checkpoint 之后的事件。
-- 如果没有兼容快照，服务会在 `onReady` 中启动一个生成的每日场景。
+| 来源 | 触发方式 | 生成的数据 | 用途 |
+| --- | --- | --- | --- |
+| 每日 run | 服务启动或用户启动每日场景 | 一天内的人员活动、设备使用、环境变化计划 | 让家中行为更接近日常生活 |
+| 静态场景 | 用户选择某个预设场景 | 固定步骤的人员移动、设备变化、对话或外部交互 | 用于可复现演示和测试 |
+| 时间推进 | 自动时钟或手动推进分钟数 | 到期场景步骤、日常动态、规则输出、传感器读数 | 是持续生成事件的核心入口 |
+| 设备控制 | 用户或外部调用控制设备 | 设备状态变化、可能的人员移动、告警恢复 | 模拟真实控制带来的设备状态更新 |
+| 自动化和安全规则 | 状态满足规则条件 | 自动化触发、告警创建、规则恢复 | 模拟家庭系统的自动响应 |
+| 传感器模型 | 每轮时间推进后扫描当前状态 | 设备遥测读数，例如运动、门磁、功率、温湿度 | 给外部观察者和 memory 提供可见数据 |
+| 异常注入和恢复 | 用户注入漏水、网络故障等 | 异常状态、告警、恢复事件 | 用于测试异常情况下的家庭状态变化 |
 
-运行时事件通过以下路径进入系统：
+## 每一分钟发生什么
 
-| 路径 | 服务端接口或 hook | Simulator 方法 |
+自动时钟或手动推进会让模拟时间一分一分前进。每一分钟大致执行这些阶段：
+
+1. 推进模拟时钟，并为后续事件分配新的时间位置。
+2. 更新人员需求和计划活动，例如移动、做饭、学习、休息或娱乐。
+3. 执行已经到时间的场景步骤。
+4. 重新计算房间占用和房间环境，让后续规则看到最新状态。
+5. 应用日常动态，例如家电生命周期、路由器状态、冰箱门、清扫设备、天气影响和安静模式。
+6. 应用自动化与安全规则，例如睡眠模式、离家模式、漏水响应、开门告警、冰箱门长开告警和作业提醒。
+7. 根据当前状态生成传感器和设备遥测。
+8. 再次刷新聚合状态，并把本轮产生的事件追加到历史。
+
+这个顺序很重要：传感器读数是在规则和状态变化之后生成的，所以它观察到的是“这一分钟处理完成后的家庭状态”。
+
+## 原始事件包含什么数据
+
+内部原始事件是系统的完整事实记录。不同事件类型有不同业务字段，但都带有一组通用运行字段。
+
+| 字段 | 含义 | 如何生成 | 如何使用 |
+| --- | --- | --- | --- |
+| id | 事件唯一标识 | 创建事件时分配 | 持久化、追踪来源、投影设备值事件 |
+| runId | 当前模拟运行 ID | 每次启动新 run 时生成 | 区分不同模拟运行，客户端 run 切换时重置 memory |
+| sequence | run 内单调递增序号 | 每个事件创建时递增 | 排序、断线续传、历史回放 |
+| ts | 服务端真实时间 | 事件创建时取当前真实时间 | 持久化、审计、前端显示真实接收时间 |
+| simTime | 模拟世界时间 | 由模拟时钟决定 | 日常节律、morning/daytime/evening/night 判断 |
+| homeId | 家庭 ID | 来自家庭模板 | 区分家庭，传递给前端和 memory |
+| scenarioId | 内部场景 ID | 场景事件可能携带 | 仅用于内部追踪；不会出现在 device-events 的设备值事件里 |
+| sourceLayer | 来源层 | 根据事件来源归类 | 区分真实行为、设备世界、传感器、控制和推断输出 |
+| lineage | 事件血缘元数据 | 创建事件时生成 | 说明观测时间、摄入时间、可观测性和版本信息 |
+
+sourceLayer 可以帮助理解事件可信层级：
+
+| 来源层 | 含义 | 示例 |
 | --- | --- | --- |
-| 启动静态场景 | `POST /api/scenarios/:id/start` | `startScenario(id)` |
-| 生成每日例程 | `POST /api/daily/start` | `startDailyScenario(options)` |
-| 手动推进时钟 | `POST /api/control/advance` | `advanceMinutes(minutes)` |
-| 暂停或恢复 | `POST /api/control/pause`, `/api/control/resume` | `setPaused(paused)` |
-| 注入或恢复异常 | `POST /api/control/inject`, `/api/control/resolve` | `injectAbnormality(kind)`, `resolveAbnormality(kind)` |
-| 设备命令 | `POST /api/devices/:deviceId/command` | `commandDevice(deviceId, command, value)` |
-| 更新告警生命周期 | `POST /api/alerts/:alertId/status` | `setAlertStatus(alertId, status)` |
-| 自动时钟推进 | `onReady` interval | `advanceMinutes(1)` |
+| truth | 模拟内部的家庭真值行为 | 人员移动、活动开始、对话、外部交互 |
+| world | 设备或物体状态变化 | 设备状态改变、物体移动 |
+| sensor | 传感器或设备遥测 | 运动、功率、温湿度、门磁读数 |
+| control | 用户或系统控制 | 启动场景、注入异常、改变告警状态 |
+| inference | 规则和自动化输出 | 自动化触发、告警创建、规则恢复 |
 
-所有会修改状态的 REST 路径都使用相同的服务端模式：
+## 设备状态事件和设备遥测事件
 
-1. 使用 Zod 校验请求。
-2. 执行对应的 simulator 方法。
-3. 把返回的事件传给 `recordAndBroadcast(events)`。
-4. 返回 `{ snapshot, events }`。
+设备相关事件分两类，它们都会被投影给 memory。
 
-支持幂等的控制路径可以传入 `idempotencyKey`。服务端会在 SQLite 中保存请求 hash 和响应内容，使安全重试返回同一份结果。
+| 类型 | 含义 | 数据来源 | 典型字段 | 下游用途 |
+| --- | --- | --- | --- | --- |
+| 设备状态变化 | 设备真实状态被改变 | 设备控制、场景步骤、自动化规则、异常处理 | state 中的 power、lock、doorOpen、mode 等 | 表示设备实际变成了什么状态 |
+| 设备遥测 | 传感器或设备上报的观测值 | 传感器模型扫描当前家庭状态 | measurements 中的 motion、powerW、temperature、humidity、co2 等 | 表示外部可观察到的设备读数 |
 
-## 每分钟仿真循环
+设备状态变化更接近“世界状态改变”，设备遥测更接近“传感器看到的值”。家庭 memory 主要关心两者投影后的字段值，而不是内部是谁触发了它。
 
-`advanceMinutes(minutes)` 是核心事件生成循环。每一个仿真分钟都会执行：
+## device-events 如何生成
 
-```mermaid
-flowchart TD
-  Tick[一个仿真分钟] --> Clock[simClock 前进一分钟]
-  Clock --> Needs[推进人物需求]
-  Needs --> ScenarioSteps[执行到期的场景步骤]
-  ScenarioSteps --> Rooms1[重建房间和占用状态]
-  Rooms1 --> Ambient[应用环境和日常动态]
-  Ambient --> Rooms2[重建房间和占用状态]
-  Rooms2 --> Rules[应用自动化和安全规则]
-  Rules --> Telemetry[生成设备遥测]
-  Telemetry --> Rooms3[重建房间和占用状态]
-  Rooms3 --> Append[把事件追加到 simulator 历史]
-```
+device-events 是给外部观察者和 memory 使用的窄视图。它不会发送完整原始事件，也不会发送场景 ID、人员真值、控制原因或自动化细节。
 
-主要阶段包括：
+生成规则是：
 
-- 场景步骤：来自静态场景或生成的每日计划。步骤可以移动人物、开始活动、改变设备状态、注入外部交互并创建对话。
-- 环境和日常动态：包括宠物移动、家电生命周期、扫地机器人生命周期、路由器重启生命周期、冰箱门生命周期、空调影响、人物一致性、自主 agent 策略、行为画像交互、家庭社交协调、外部上下文、天气影响、安静模式保护和日常例程。
-- 规则：确定性的自动化和安全响应，包括睡眠模式、离家模式、漏水响应、开门告警、冰箱门长开告警、网络恢复、扫地机器人告警和作业提醒。
-- 遥测：基于当前快照和传感器模型生成的传感器与设备遥测。
+1. 只选择设备遥测和设备状态变化两类原始事件。
+2. 对设备遥测，把 measurements 里的每个字段拆成一条设备值事件。
+3. 对设备状态变化，把 state 里的每个字段拆成一条设备值事件。
+4. 每条设备值事件只保留设备、房间、字段、值、时间、run 和来源标识。
+5. 其它原始事件会被忽略，不进入家庭 memory 的输入流。
 
-每个阶段都会返回零个或多个 `TwinEvent`。循环会在阶段之间更新聚合的房间和占用状态，使后续阶段看到最新快照。
+这意味着一个原始设备事件如果同时包含多个字段，会被拆成多条设备值事件。例如一个设备同时上报 powerW 和 online，会变成两条独立记录。
 
-## 事件类型和来源层
+## 设备值事件字段说明
 
-所有事件都是 `TwinEvent` 记录，并带有通用运行时字段：
+| 字段 | 含义 | 如何生成 | 如何使用 |
+| --- | --- | --- | --- |
+| id | 设备值事件 ID | 原始事件 ID 加字段名组合而成 | 作为 evidence ID，关联 semantic signal 和 UI 高亮 |
+| sourceEventId | 原始事件 ID | 来自设备遥测或状态事件 | 用于追踪这条字段值来自哪个原始事件 |
+| sourceEventType | 原始事件类型 | 来自设备遥测或设备状态变化 | 区分这是遥测读数还是状态变化 |
+| runId | 所属模拟运行 ID | 继承原始事件 | 客户端判断是否需要重置 memory |
+| sequence | 原始事件序号 | 继承原始事件 | 排序、断线续传、最新事件选择 |
+| ts | 真实时间 | 继承原始事件 | first seen、last seen、episode 时间 |
+| simTime | 模拟时间 | 继承原始事件 | 时间段归类、日/周摘要、画像节律 |
+| homeId | 家庭 ID | 继承原始事件 | 标识这条事件属于哪个家庭 |
+| roomId | 房间 ID | 继承原始事件 | 建立 room memory、判断生活区域 |
+| deviceId | 设备 ID | 继承原始事件 | 建立 device memory、field memory 和图谱节点 |
+| deviceType | 设备类型 | 继承原始事件 | 判断证据类型和 semantic signal 类型 |
+| field | 被观察或改变的字段名 | 来自 measurements 或 state 的字段 | 建立字段 memory、识别 episode 和语义 |
+| value | 字段的新值 | 来自 measurements 或 state 的值 | 判断状态变化、当前值、数值范围和语义强度 |
 
-- `id`
-- `runId`
-- `ts`
-- `simTime`
-- `homeId`
-- `scenarioId`
-- `sequence`
-- `sourceLayer`
-- `lineage`
-- 可选的 `rngStateAfter`
+## 持久化和广播
 
-`createEvent()` 统一分配这些字段。它会递增快照序号，同步 run 上下文，在调用方没有提供来源层时推断 `sourceLayer`，并创建包含事件时间、摄入时间、可观测性、schema 版本和行为模型版本的 lineage 元数据。
+每次模拟产生事件后，服务端会同时做几件事：
 
-来源层如下：
-
-| 来源层 | 含义 | 典型事件 |
+| 去向 | 保存或发送什么 | 用途 |
 | --- | --- | --- |
-| `truth` | 家庭行为的真值层 | `PersonMoved`, `ActivityStarted`, `ActivityEnded`, `ConversationOccurred`, `ExternalInteractionOccurred` |
-| `world` | 世界或设备状态变化 | `DeviceStateChanged`, `ObjectMoved` |
-| `sensor` | 传感器或设备遥测 | `DeviceTelemetry` |
-| `control` | 场景或操作员控制 | `ScenarioControl`, `AbnormalityInjected`, 告警状态变化 |
-| `inference` | 规则和自动化输出 | `AutomationTriggered`, `AlertCreated`, `RuleRecovered` |
+| events 历史 | 完整原始事件 | 支持回放、REST 查询和恢复 |
+| telemetry 历史 | 设备遥测事件 | 支持遥测查询和保留策略 |
+| snapshots | 周期性家庭状态快照 | 服务重启后恢复模拟状态 |
+| idempotency records | 幂等请求和响应 | 让控制类请求安全重试 |
+| access audit | 敏感接口访问记录 | 记录 memory 和观测接口访问 |
+| 通用 WebSocket | 隐私投影后的完整 twin 更新 | 给主前端显示家庭状态 |
+| device-events WebSocket | 设备值事件 | 给 memory、adapter 和外部观察者使用 |
 
-## 设备状态事件
+## 重连和历史补放
 
-设备状态变化通过 `setDeviceState()` 或 `setDeviceStateIfChanged()` 进入事件流：
+device-events 支持客户端带着 runId 和 sequence 重连。服务端会从持久化事件历史中扫描该序号之后的事件，并再次投影成设备值事件。
 
-1. 使用设备注册表 schema 校验 patch。
-2. 把合法字段合并到设备的快照状态。
-3. 保存 `lastReason`。
-4. 产出 `DeviceStateChanged`。
+| 情况 | 服务端行为 | 客户端行为 |
+| --- | --- | --- |
+| runId 仍然匹配 | 返回缺失的设备值事件 | 继续 reduce 到当前 memory |
+| runId 已切换 | 发送 run_changed | 客户端清空 memory 并从新 run 重新开始 |
+| 缺失历史太多 | 标记 replayComplete 为 false | 客户端保留已处理部分并快速重连 |
 
-手动设备命令包含额外结构：
+## 边界和保证
 
-1. 校验设备存在。
-2. 校验命令受支持。
-3. 必要时创建操作员靠近设备的移动事件。
-4. 创建一个或多个由命令驱动的设备状态事件。
-5. 当命令解决告警条件时，恢复相关规则。
-6. 必要时创建操作员返回移动事件。
-7. 把所有事件追加到 simulator 历史。
-
-## 遥测事件
-
-遥测在规则执行之后生成，因此遥测观察到的是当前模拟世界状态。`generateTelemetry()` 会扫描受支持的设备类型，并根据以下来源创建 `DeviceTelemetry` 事件：
-
-- 传感器画像和观测模型。
-- 当前房间占用和环境状态。
-- 当前设备状态，例如冰箱门、路由器健康状态、家电电源、洗衣机或洗碗机生命周期、漏水检测和睡眠传感器状态。
-
-遥测事件很重要，因为它们是家庭 memory 子系统的主要输入。memory 子系统刻意使用扁平化后的设备遥测和状态值，而不是使用私密的家庭真值标签。
-
-## 持久化和投递
-
-`recordAndBroadcast(events)` 是仿真层到外部客户端之间的服务端桥接：
-
-```mermaid
-flowchart TD
-  Events[TwinEvent 数组] --> Snapshot[取得最新快照]
-  Snapshot --> RecordUpdate[db.recordUpdate]
-  RecordUpdate --> EventsTable[(events 表)]
-  RecordUpdate --> TelemetryTable[(DeviceTelemetry 对应的 telemetry 表)]
-  RecordUpdate --> SnapshotTable[(按 checkpoint 间隔写入 snapshots 表)]
-  Events --> FullWS[执行隐私投影并发送 /ws twin.update]
-  Events --> Flatten[projectDeviceValueEvents]
-  Flatten --> DeviceWS[发送 /ws/device-events device.update]
-```
-
-SQLite 保存：
-
-- `events`：每个 run 的 append-only 事件 payload。
-- `telemetry`：`DeviceTelemetry` payload，可以通过 `VIRTUALHOME_TELEMETRY_RETENTION_EVENTS` 按 run 限制保留量。
-- `snapshots`：按 `snapshotIntervalEvents` checkpoint 的快照。
-- `idempotency_records`：支持命令安全重试的响应记录。
-- `access_audit`：隐私敏感 API 的读取访问审计。
-
-服务端用三种形式暴露事件：
-
-- 通过 `/api/events` 和 `/api/telemetry` 提供 REST 历史读取。
-- 通过 `/ws` 提供完整 twin WebSocket delta。
-- 通过 `/ws/device-events` 提供仅包含设备值的 delta。
-
-`/ws/device-events` 有意比 `/ws` 更窄。它把 `DeviceTelemetry.measurements` 和 `DeviceStateChanged.state` 展平成 `{ deviceId, roomId, field, value, sequence }` 记录，供 adapter 和 memory 处理使用。
-
-## 恢复模型
-
-服务启动时会检查最新持久化快照。只有当快照仍然匹配当前家庭定义时才会恢复。兼容性检查可以避免把快照回放到不兼容的房间、设备、人物或 home 定义上。
-
-当快照兼容时：
-
-1. simulator 恢复快照。
-2. 快照序号之后的事件被回放到快照上。
-3. 已执行场景步骤、传感器观测、人物需求、已触发规则、规则生命周期状态和 RNG 状态等运行时集合会被重建。
-
-当没有兼容快照时，服务会启动一个新的生成每日 run。
-
-## 保证和边界
-
-- 在同一个 run 内，事件 sequence 单调递增。
-- 事件 payload 以 JSON 形式持久化，因此旧事件可以被回放或重新投影。
-- 在相同 seed 和兼容输入下，simulator 是确定性的。
-- 隐私投影发生在 API/WebSocket 读取时；持久化的内部事件保留完整 simulator 细节。
-- 当前 Home memory 没有作为单独的物化 SQLite 表保存，而是由 memory 查询层从持久化事件重建。
+- 同一个 run 内 sequence 单调递增。
+- device-events 不包含 scenarioId、人员真值、控制原因或自动化内部原因。
+- 家庭 memory 的输入只来自设备值事件，不直接读取人员行为真值。
+- 完整原始事件仍会在内部保存，因此系统可以用于调试、回放和通用前端展示。
+- 设备值事件是隐私更窄的观测层，适合模拟真实应用中“只能拿到设备状态变更和房间信息”的场景。
