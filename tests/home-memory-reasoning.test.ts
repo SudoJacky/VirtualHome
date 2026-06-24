@@ -101,6 +101,7 @@ describe('home memory reasoning flow', () => {
     expect(flow.title).toBe('bathroom_motion_01.motion changed to true');
     expect(flow.steps.map((step) => step.label)).toEqual([
       'Device event',
+      'Semantic signals',
       'Fact memory',
       'Evidence aggregate',
       'Hypothesis update'
@@ -111,8 +112,13 @@ describe('home memory reasoning flow', () => {
       { label: 'Change', value: 'meaningful' },
       { label: 'Profile weight', value: '0.55' }
     ]);
-    expect(flow.steps[1].detail).toContain('bathroom / bathroom_motion_01 / motion');
-    expect(flow.steps[2].metrics).toEqual([
+    expect(flow.steps[1].detail).toContain('presence signal');
+    expect(flow.steps[1].metrics).toEqual([
+      { label: 'Signals', value: '1' },
+      { label: 'Types', value: 'presence signal' }
+    ]);
+    expect(flow.steps[2].detail).toContain('bathroom / bathroom_motion_01 / motion');
+    expect(flow.steps[3].metrics).toEqual([
       { label: 'Room events', value: '1' },
       { label: 'Device events', value: '1' },
       { label: 'Field events', value: '1' }

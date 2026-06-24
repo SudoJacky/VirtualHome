@@ -41,6 +41,7 @@ export function createEventEvidenceFlow(
   const room = memory.rooms[event.roomId];
   const device = memory.devices[event.deviceId];
   const field = memory.fields[fieldId];
+  const semanticSignals = memory.semanticSignals.filter((signal) => signal.sourceEvidenceIds.includes(event.id));
   const relatedSubjectIds = new Set([
     `room:${event.roomId}`,
     `device:${event.deviceId}`,
@@ -62,6 +63,16 @@ export function createEventEvidenceFlow(
           { label: 'Strength', value: event.evidenceStrength },
           { label: 'Change', value: event.meaningfulChange ? 'meaningful' : 'telemetry' },
           { label: 'Profile weight', value: formatWeight(event.profileWeight) }
+        ]
+      },
+      {
+        label: 'Semantic signals',
+        detail: semanticSignals.length > 0
+          ? `${semanticSignals.length} semantic signal${plural(semanticSignals.length)} derived from this event: ${formatSignalTypes(semanticSignals.map((signal) => signal.type))}.`
+          : 'No semantic signal was derived from this event, so it remains fact memory only.',
+        metrics: [
+          { label: 'Signals', value: String(semanticSignals.length) },
+          { label: 'Types', value: semanticSignals.length > 0 ? formatSignalTypes(semanticSignals.map((signal) => signal.type)) : 'none' }
         ]
       },
       {
@@ -192,6 +203,12 @@ function formatDistribution(distribution: ReturnType<typeof estimateHouseholdSiz
   return ([1, 2, 3, 4, 5] as const)
     .map((count) => `${count}:${Math.round(distribution[count] * 100)}%`)
     .join('/');
+}
+
+function formatSignalTypes(types: string[]): string {
+  return [...new Set(types.map((type) => type.replaceAll('_', ' ')))]
+    .sort((left, right) => left.localeCompare(right))
+    .join(', ');
 }
 
 function plural(count: number): string {
