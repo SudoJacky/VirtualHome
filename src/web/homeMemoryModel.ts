@@ -1,6 +1,7 @@
 import type { DeviceEventValue, DeviceValueEvent } from './deviceEventSocket';
 import {
   classifyDeviceEvidence,
+  type DeviceCapability,
   type EvidenceCategory,
   type EvidenceStrength
 } from './homeEvidenceClassifier';
@@ -8,6 +9,7 @@ import {
 export type TimeBucket = 'morning' | 'daytime' | 'evening' | 'night';
 export type MemoryEpisodeKind = 'occupancy' | 'contact_activity' | 'device_usage' | 'appliance_usage';
 export type MemoryEpisodeStatus = 'open' | 'closed';
+export type ActivityEpisodeKind = 'return_home' | 'meal_preparation' | 'bedtime' | 'climate_response';
 
 type TimeBucketCounts = Record<TimeBucket, number>;
 export type ProfileEvidenceCategoryCounts = Record<EvidenceCategory, number>;
@@ -29,6 +31,7 @@ export interface MemoryEvidence {
   timeBucket: TimeBucket;
   evidenceCategory: EvidenceCategory;
   evidenceStrength: EvidenceStrength;
+  capability: DeviceCapability;
   meaningfulChange: boolean;
   valueDelta?: number;
   profileWeight: number;
@@ -44,6 +47,7 @@ export type SemanticSignalType =
   | 'media_signal'
   | 'work_study_signal'
   | 'lighting_signal'
+  | 'climate_signal'
   | 'environment_signal'
   | 'system_signal';
 
@@ -126,6 +130,23 @@ export interface MemoryEpisode {
   profileWeight: number;
 }
 
+export interface ActivityEpisode {
+  id: string;
+  kind: ActivityEpisodeKind;
+  homeId: string;
+  runId: string;
+  roomIds: string[];
+  deviceIds: string[];
+  startedAt: string;
+  startedSimTime: string;
+  updatedAt: string;
+  updatedSimTime: string;
+  evidenceIds: string[];
+  semanticSignalIds: string[];
+  profileWeight: number;
+  summary: string;
+}
+
 export interface DailyProfileSummary {
   date: string;
   homeId: string;
@@ -203,6 +224,8 @@ export interface HomeMemory {
   episodes: Record<string, MemoryEpisode>;
   activeEpisodeIds: Record<string, string>;
   episodeCount: number;
+  activityEpisodes: ActivityEpisode[];
+  activityEpisodeCount: number;
   dailySummaries: Record<string, DailyProfileSummary>;
   dailySummaryCount: number;
   weeklySummaries: Record<string, WeeklyProfileSummary>;
@@ -231,6 +254,8 @@ export function createHomeMemory(): HomeMemory {
     episodes: {},
     activeEpisodeIds: {},
     episodeCount: 0,
+    activityEpisodes: [],
+    activityEpisodeCount: 0,
     dailySummaries: {},
     dailySummaryCount: 0,
     weeklySummaries: {},
@@ -282,6 +307,7 @@ export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): 
   const dailySummaries = updateDailySummaries(baseMemory.dailySummaries, event, evidence, fieldId, timeBucket, episodeMemory.startedEpisode);
   const weeklySummaries = updateWeeklySummaries(baseMemory.weeklySummaries, event, evidence, fieldId, timeBucket, episodeMemory.startedEpisode);
   const semanticSignals = semanticSignalsForEvidence(event, evidence);
+  const activityEpisodes = updateActivityEpisodes(baseMemory, semanticSignals);
 
   return {
     ...baseMemory,
@@ -303,6 +329,8 @@ export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): 
     episodes: episodeMemory.episodes,
     activeEpisodeIds: episodeMemory.activeEpisodeIds,
     episodeCount: episodeMemory.episodeCount,
+    activityEpisodes,
+    activityEpisodeCount: activityEpisodes.length,
     dailySummaries,
     dailySummaryCount: Object.keys(dailySummaries).length,
     weeklySummaries,
@@ -485,6 +513,7 @@ function toEvidence(
     timeBucket,
     evidenceCategory: classification.category,
     evidenceStrength: classification.strength,
+    capability: classification.capability,
     meaningfulChange: change.meaningfulChange,
     valueDelta: change.valueDelta,
     profileWeight: change.profileWeight,
@@ -531,7 +560,7 @@ function semanticSignalsForEvidence(event: DeviceValueEvent, evidence: MemoryEvi
     add('access_signal', `${event.deviceId}.${event.field} indicates access or entry activity.`, 'strong', Math.max(evidence.profileWeight, 0.8));
   }
 
-  if (isSleepSemanticSignal(deviceType, field, event.value)) {
+  if (evidence.capability.type === 'sleep_context' && evidence.capability.active) {
     add('sleep_signal', `${event.deviceId}.${event.field} indicates sleep or in-bed context.`, evidence.evidenceStrength === 'ignored' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, 0.6));
     return signals;
   }
@@ -543,6 +572,10 @@ function semanticSignalsForEvidence(event: DeviceValueEvent, evidence: MemoryEvi
 
   if (isWaterSignal(deviceType, field, event.value)) {
     add('water_signal', `${event.deviceId}.${event.field} indicates active water usage.`, evidence.evidenceStrength === 'weak' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, 0.45));
+  }
+
+  if (evidence.capability.type === 'climate_control' && evidence.capability.active) {
+    add('climate_signal', `${event.deviceId}.${event.field} indicates active climate control.`, evidence.evidenceStrength === 'weak' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, 0.45));
   }
 
   if (isCookingSignal(event.roomId, deviceType, field, event.value)) {
@@ -574,6 +607,137 @@ function semanticSignalsForEvidence(event: DeviceValueEvent, evidence: MemoryEvi
   }
 
   return signals;
+}
+
+function updateActivityEpisodes(memory: HomeMemory, newSignals: SemanticSignal[]): ActivityEpisode[] {
+  if (newSignals.length === 0) {
+    return memory.activityEpisodes;
+  }
+
+  const allSignals = [...memory.semanticSignals, ...newSignals]
+    .sort((left, right) => left.simTime.localeCompare(right.simTime) || left.id.localeCompare(right.id));
+  const nextEpisodes = [...memory.activityEpisodes];
+
+  for (const signal of newSignals) {
+    for (const episode of activityEpisodesForSignal(signal, allSignals)) {
+      const existingIndex = nextEpisodes.findIndex((current) => current.id === episode.id);
+      if (existingIndex >= 0) {
+        if (episode.kind !== 'return_home') {
+          nextEpisodes[existingIndex] = mergeActivityEpisodes(nextEpisodes[existingIndex], episode);
+        }
+      } else {
+        nextEpisodes.unshift(episode);
+      }
+    }
+  }
+
+  return nextEpisodes.slice(0, ROOT_RECENT_LIMIT);
+}
+
+function activityEpisodesForSignal(signal: SemanticSignal, allSignals: SemanticSignal[]): ActivityEpisode[] {
+  const episodes: ActivityEpisode[] = [];
+
+  if (signal.type !== 'access_signal') {
+    const accessSignal = latestNearbySignal(allSignals, signal, (candidate) => candidate.type === 'access_signal' && candidate.roomId !== signal.roomId, 30);
+    if (accessSignal && isBehaviorSignal(signal)) {
+      episodes.push(createActivityEpisode('return_home', [accessSignal, signal], `Access activity at ${accessSignal.roomId} was followed by ${signal.type.replace(/_/g, ' ')} in ${signal.roomId}.`));
+    }
+  }
+
+  if (signal.type === 'cooking_signal') {
+    const supportingSignals = nearbySignals(allSignals, signal, (candidate) => (
+      candidate.roomId === signal.roomId &&
+      candidate.id !== signal.id &&
+      ['presence_signal', 'water_signal', 'lighting_signal', 'cooking_signal'].includes(candidate.type)
+    ), 45);
+    episodes.push(createActivityEpisode('meal_preparation', [...supportingSignals, signal], `${signal.roomId} has cooking activity with nearby household context.`));
+  }
+
+  if (signal.type === 'sleep_signal') {
+    episodes.push(createActivityEpisode('bedtime', [signal], `${signal.roomId} has sleep or in-bed context.`));
+  }
+
+  if (signal.type === 'climate_signal') {
+    const environmentSignal = latestNearbySignal(allSignals, signal, (candidate) => (
+      candidate.roomId === signal.roomId && candidate.type === 'environment_signal'
+    ), 30);
+    if (environmentSignal) {
+      episodes.push(createActivityEpisode('climate_response', [environmentSignal, signal], `${signal.roomId} climate control followed nearby environment context.`));
+    }
+  }
+
+  return episodes;
+}
+
+function createActivityEpisode(kind: ActivityEpisodeKind, signals: SemanticSignal[], summary: string): ActivityEpisode {
+  const sortedSignals = [...signals].sort((left, right) => left.simTime.localeCompare(right.simTime) || left.id.localeCompare(right.id));
+  const first = sortedSignals[0];
+  const last = sortedSignals[sortedSignals.length - 1];
+  const roomIds = sortedUniqueByFirstSeen(sortedSignals.map((signal) => signal.roomId));
+  const deviceIds = sortedUniqueByFirstSeen(sortedSignals.map((signal) => signal.deviceId));
+  const evidenceIds = sortedUniqueByFirstSeen(sortedSignals.flatMap((signal) => signal.sourceEvidenceIds));
+
+  return {
+    id: `activity:${kind}:${roomIds.join('+')}:${first.simTime}`,
+    kind,
+    homeId: first.homeId,
+    runId: first.runId,
+    roomIds,
+    deviceIds,
+    startedAt: first.startedAt,
+    startedSimTime: first.simTime,
+    updatedAt: last.updatedAt,
+    updatedSimTime: last.simTime,
+    evidenceIds,
+    semanticSignalIds: sortedSignals.map((signal) => signal.id),
+    profileWeight: roundWeight(sortedSignals.reduce((total, signal) => total + signal.profileWeight, 0)),
+    summary
+  };
+}
+
+function mergeActivityEpisodes(current: ActivityEpisode, next: ActivityEpisode): ActivityEpisode {
+  return {
+    ...current,
+    roomIds: sortedUniqueByFirstSeen([...current.roomIds, ...next.roomIds]),
+    deviceIds: sortedUniqueByFirstSeen([...current.deviceIds, ...next.deviceIds]),
+    updatedAt: next.updatedAt > current.updatedAt ? next.updatedAt : current.updatedAt,
+    updatedSimTime: next.updatedSimTime > current.updatedSimTime ? next.updatedSimTime : current.updatedSimTime,
+    evidenceIds: sortedUniqueByFirstSeen([...current.evidenceIds, ...next.evidenceIds]),
+    semanticSignalIds: sortedUniqueByFirstSeen([...current.semanticSignalIds, ...next.semanticSignalIds]),
+    profileWeight: roundWeight(current.profileWeight + next.profileWeight),
+    summary: next.summary
+  };
+}
+
+function latestNearbySignal(
+  signals: SemanticSignal[],
+  anchor: SemanticSignal,
+  predicate: (signal: SemanticSignal) => boolean,
+  maxMinutes: number
+): SemanticSignal | null {
+  return nearbySignals(signals, anchor, predicate, maxMinutes)
+    .filter((signal) => signal.simTime <= anchor.simTime)
+    .at(-1) ?? null;
+}
+
+function nearbySignals(
+  signals: SemanticSignal[],
+  anchor: SemanticSignal,
+  predicate: (signal: SemanticSignal) => boolean,
+  maxMinutes: number
+): SemanticSignal[] {
+  return signals.filter((signal) => (
+    predicate(signal) &&
+    absoluteMinutesBetween(signal.simTime, anchor.simTime) <= maxMinutes
+  ));
+}
+
+function isBehaviorSignal(signal: SemanticSignal): boolean {
+  return signal.type !== 'environment_signal' && signal.type !== 'system_signal';
+}
+
+function sortedUniqueByFirstSeen(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 interface EpisodeMemoryUpdate {
@@ -1071,6 +1235,15 @@ function durationMinutes(startedAt: string, endedAt: string): number | undefined
   return roundWeight(Math.max(0, (endMs - startMs) / 60000));
 }
 
+function absoluteMinutesBetween(left: string, right: string): number {
+  const leftMs = Date.parse(left);
+  const rightMs = Date.parse(right);
+  if (Number.isNaN(leftMs) || Number.isNaN(rightMs)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.abs((rightMs - leftMs) / 60000);
+}
+
 function getSummaryDate(event: DeviceValueEvent): string {
   const writtenDate = /^(\d{4}-\d{2}-\d{2})T/.exec(event.simTime)?.[1];
   if (writtenDate) {
@@ -1194,6 +1367,7 @@ function emptySemanticSignalCounts(): SemanticSignalCounts {
     media_signal: 0,
     work_study_signal: 0,
     lighting_signal: 0,
+    climate_signal: 0,
     environment_signal: 0,
     system_signal: 0
   };

@@ -1069,7 +1069,7 @@ const telemetrySummarySchema: JsonSchema = {
 
 const memoryEvidenceSchema: JsonSchema = {
   type: 'object',
-  required: ['id', 'sourceEventId', 'runId', 'sequence', 'simTime', 'homeId', 'roomId', 'deviceId', 'deviceType', 'field', 'value', 'evidenceCategory', 'evidenceStrength', 'profileWeight', 'evidenceReason'],
+  required: ['id', 'sourceEventId', 'runId', 'sequence', 'simTime', 'homeId', 'roomId', 'deviceId', 'deviceType', 'field', 'value', 'evidenceCategory', 'evidenceStrength', 'capability', 'profileWeight', 'evidenceReason'],
   properties: {
     id: stringSchema,
     sourceEventId: stringSchema,
@@ -1094,6 +1094,30 @@ const memoryEvidenceSchema: JsonSchema = {
     timeBucket: { type: 'string', enum: ['morning', 'daytime', 'evening', 'night'] },
     evidenceCategory: { type: 'string', enum: ['human_activity', 'device_usage', 'environment_context', 'system_status'] },
     evidenceStrength: { type: 'string', enum: ['strong', 'medium', 'weak', 'ignored'] },
+    capability: {
+      type: 'object',
+      required: ['type', 'active', 'reason'],
+      properties: {
+        type: {
+          type: 'string',
+          enum: [
+            'access_control',
+            'presence_detection',
+            'sleep_context',
+            'water_flow',
+            'climate_control',
+            'environment_air_quality',
+            'environment_humidity',
+            'environment_temperature',
+            'system_health',
+            'power_usage',
+            'generic_device_state'
+          ]
+        },
+        active: { type: 'boolean' },
+        reason: stringSchema
+      }
+    },
     meaningfulChange: { type: 'boolean' },
     valueDelta: { type: 'number' },
     profileWeight: { type: 'number' },
@@ -1125,7 +1149,7 @@ const memoryHypothesisSchema: JsonSchema = {
 
 const memorySummarySchema: JsonSchema = {
   type: 'object',
-  required: ['homeId', 'runId', 'totalEvents', 'profileEventCount', 'profileEvidenceWeight', 'activeRooms', 'activeDevices', 'activeEpisodes', 'topPatterns', 'recentHighlights', 'updatedAt'],
+  required: ['homeId', 'runId', 'totalEvents', 'profileEventCount', 'profileEvidenceWeight', 'activeRooms', 'activeDevices', 'activeEpisodes', 'activityEpisodes', 'topPatterns', 'recentHighlights', 'updatedAt'],
   properties: {
     homeId: { anyOf: [stringSchema, { type: 'null' }] },
     runId: { anyOf: [stringSchema, { type: 'null' }] },
@@ -1143,6 +1167,31 @@ const memorySummarySchema: JsonSchema = {
     activeEpisodes: {
       type: 'array',
       items: { type: 'object', additionalProperties: true }
+    },
+    activityEpisodes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['id', 'kind', 'roomIds', 'deviceIds', 'updatedSimTime', 'evidenceIds', 'summary'],
+        properties: {
+          id: stringSchema,
+          kind: { type: 'string', enum: ['return_home', 'meal_preparation', 'bedtime', 'climate_response'] },
+          roomIds: {
+            type: 'array',
+            items: stringSchema
+          },
+          deviceIds: {
+            type: 'array',
+            items: stringSchema
+          },
+          updatedSimTime: isoDateTimeSchema,
+          evidenceIds: {
+            type: 'array',
+            items: stringSchema
+          },
+          summary: stringSchema
+        }
+      }
     },
     topPatterns: {
       type: 'array',

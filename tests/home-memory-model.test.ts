@@ -232,6 +232,168 @@ describe('home memory model', () => {
     ]));
   });
 
+  it('normalizes device capabilities before deriving semantic signals', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'living_presence_count',
+        sourceEventId: 'source_living_presence_count',
+        sequence: 1,
+        simTime: '2026-06-22T19:00:00',
+        roomId: 'living',
+        deviceId: 'living_presence_01',
+        deviceType: 'mmwave_presence_sensor',
+        field: 'peopleCount',
+        value: 2
+      }),
+      deviceEvent({
+        id: 'living_ac_cooling',
+        sourceEventId: 'source_living_ac_cooling',
+        sequence: 2,
+        simTime: '2026-06-22T19:05:00',
+        roomId: 'living',
+        deviceId: 'living_ac_01',
+        deviceType: 'air_conditioner',
+        field: 'mode',
+        value: 'cooling'
+      })
+    ]);
+
+    expect(memory.recentEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'living_presence_count',
+        capability: expect.objectContaining({
+          type: 'presence_detection',
+          active: true
+        }),
+        evidenceCategory: 'human_activity',
+        evidenceStrength: 'medium'
+      }),
+      expect.objectContaining({
+        id: 'living_ac_cooling',
+        capability: expect.objectContaining({
+          type: 'climate_control',
+          active: true
+        }),
+        evidenceCategory: 'device_usage'
+      })
+    ]));
+    expect(memory.semanticSignals).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'signal:living_presence_count:presence_signal',
+        type: 'presence_signal',
+        roomId: 'living',
+        value: 2
+      }),
+      expect.objectContaining({
+        id: 'signal:living_ac_cooling:climate_signal',
+        type: 'climate_signal',
+        roomId: 'living',
+        value: 'cooling'
+      })
+    ]));
+  });
+
+  it('derives high-level household episodes from semantic signal sequences', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'entry_unlock',
+        sourceEventId: 'source_entry_unlock',
+        sequence: 1,
+        ts: '2026-06-22T10:00:00.000Z',
+        simTime: '2026-06-22T18:00:00',
+        roomId: 'entrance',
+        deviceId: 'front_lock_01',
+        deviceType: 'door_lock',
+        field: 'lock',
+        value: 'unlocked'
+      }),
+      deviceEvent({
+        id: 'kitchen_motion',
+        sourceEventId: 'source_kitchen_motion',
+        sequence: 2,
+        ts: '2026-06-22T10:08:00.000Z',
+        simTime: '2026-06-22T18:08:00',
+        roomId: 'kitchen',
+        deviceId: 'kitchen_motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'stove_power',
+        sourceEventId: 'source_stove_power',
+        sequence: 3,
+        ts: '2026-06-22T10:12:00.000Z',
+        simTime: '2026-06-22T18:12:00',
+        roomId: 'kitchen',
+        deviceId: 'stove_01',
+        deviceType: 'stove',
+        field: 'powerW',
+        value: 1500
+      }),
+      deviceEvent({
+        id: 'bed_sleep',
+        sourceEventId: 'source_bed_sleep',
+        sequence: 4,
+        ts: '2026-06-22T15:00:00.000Z',
+        simTime: '2026-06-22T23:00:00',
+        roomId: 'master_bedroom',
+        deviceId: 'sleep_sensor_01',
+        deviceType: 'sleep_sensor',
+        field: 'inBed',
+        value: true
+      }),
+      deviceEvent({
+        id: 'temperature_hot',
+        sourceEventId: 'source_temperature_hot',
+        sequence: 5,
+        ts: '2026-06-23T04:00:00.000Z',
+        simTime: '2026-06-23T12:00:00',
+        roomId: 'living',
+        deviceId: 'living_temperature_01',
+        deviceType: 'temperature_sensor',
+        field: 'temperature',
+        value: 29
+      }),
+      deviceEvent({
+        id: 'ac_cooling',
+        sourceEventId: 'source_ac_cooling',
+        sequence: 6,
+        ts: '2026-06-23T04:05:00.000Z',
+        simTime: '2026-06-23T12:05:00',
+        roomId: 'living',
+        deviceId: 'living_ac_01',
+        deviceType: 'air_conditioner',
+        field: 'mode',
+        value: 'cooling'
+      })
+    ]);
+
+    expect(memory.activityEpisodeCount).toBe(4);
+    expect(memory.activityEpisodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'return_home',
+        roomIds: ['entrance', 'kitchen'],
+        evidenceIds: ['entry_unlock', 'kitchen_motion']
+      }),
+      expect.objectContaining({
+        kind: 'meal_preparation',
+        roomIds: ['kitchen'],
+        evidenceIds: expect.arrayContaining(['kitchen_motion', 'stove_power'])
+      }),
+      expect.objectContaining({
+        kind: 'bedtime',
+        roomIds: ['master_bedroom'],
+        evidenceIds: ['bed_sleep']
+      }),
+      expect.objectContaining({
+        kind: 'climate_response',
+        roomIds: ['living'],
+        evidenceIds: ['temperature_hot', 'ac_cooling']
+      })
+    ]));
+  });
+
   it('tracks repeated same-value telemetry separately from meaningful changes', () => {
     const memory = reduceDeviceEvents(createHomeMemory(), [
       deviceEvent({

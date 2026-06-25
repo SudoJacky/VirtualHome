@@ -1,5 +1,5 @@
 import type { TwinEvent } from '../shared/types';
-import { createHomeMemory, reduceDeviceEvents, type HomeMemory, type MemoryEpisode, type MemoryEvidence } from '../web/homeMemoryModel';
+import { createHomeMemory, reduceDeviceEvents, type ActivityEpisode, type HomeMemory, type MemoryEpisode, type MemoryEvidence } from '../web/homeMemoryModel';
 import { createHomeProfileHypotheses, type ProfileHypothesis, type ProfileHypothesisType } from '../web/homeProfiler';
 import { projectDeviceValueEvents } from './deviceEventStream';
 
@@ -14,6 +14,7 @@ export interface MemorySummary {
   activeRooms: string[];
   activeDevices: string[];
   activeEpisodes: Array<Pick<MemoryEpisode, 'id' | 'kind' | 'roomId' | 'deviceId' | 'field' | 'status' | 'updatedSimTime'>>;
+  activityEpisodes: Array<Pick<ActivityEpisode, 'id' | 'kind' | 'roomIds' | 'deviceIds' | 'updatedSimTime' | 'evidenceIds' | 'summary'>>;
   topPatterns: Array<Pick<ProfileHypothesis, 'id' | 'type' | 'label' | 'summary' | 'confidence' | 'updatedAt' | 'subjectIds'> & { evidenceCount: number }>;
   recentHighlights: MemoryEvidence[];
   updatedAt: string | null;
@@ -80,6 +81,17 @@ export function createMemorySummary(memory: HomeMemory): MemorySummary {
         field: episode.field,
         status: episode.status,
         updatedSimTime: episode.updatedSimTime
+      })),
+    activityEpisodes: memory.activityEpisodes
+      .slice(0, 10)
+      .map((episode) => ({
+        id: episode.id,
+        kind: episode.kind,
+        roomIds: episode.roomIds,
+        deviceIds: episode.deviceIds,
+        updatedSimTime: episode.updatedSimTime,
+        evidenceIds: episode.evidenceIds,
+        summary: episode.summary
       })),
     topPatterns: hypotheses
       .sort((left, right) => right.confidence - left.confidence || left.id.localeCompare(right.id))
