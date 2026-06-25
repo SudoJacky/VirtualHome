@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pause, Play, Radio, RotateCcw } from 'lucide-react';
+import { Map, Network, Pause, Play, Radio, RotateCcw } from 'lucide-react';
 import {
   buildDeviceEventSocketUrl,
   cursorFromDeviceRunChanged,
@@ -16,6 +16,7 @@ import {
   createFocusedNodeGraphHighlight,
   createHomeMemoryGraphModel,
   type HomeMemoryGraphHighlight,
+  type HomeMemoryGraphLayoutMode,
   type HomeMemoryGraphNode
 } from './homeMemoryGraphModel';
 import {
@@ -46,6 +47,7 @@ export function HomeMemoryView(): React.ReactElement {
   const [memoryWarning, setMemoryWarning] = React.useState<string | null>(null);
   const [cursor, setCursor] = React.useState<DeviceEventCursor | null>(null);
   const [activeEvidenceEvent, setActiveEvidenceEvent] = React.useState<DeviceValueEvent | null>(null);
+  const [memoryGraphMode, setMemoryGraphMode] = React.useState<HomeMemoryGraphLayoutMode>('spatial');
   const cursorRef = React.useRef<DeviceEventCursor | null>(null);
 
   React.useEffect(() => {
@@ -172,7 +174,7 @@ export function HomeMemoryView(): React.ReactElement {
   }, [paused]);
 
   const hypotheses = React.useMemo(() => createHomeProfileHypotheses(memory), [memory]);
-  const graph = React.useMemo(() => createHomeMemoryGraphModel(memory, hypotheses), [hypotheses, memory]);
+  const graph = React.useMemo(() => createHomeMemoryGraphModel(memory, hypotheses, { layoutMode: memoryGraphMode }), [hypotheses, memory, memoryGraphMode]);
   const evidenceHighlight = React.useMemo(
     () => (activeEvidenceEvent ? createDeviceEvidenceGraphHighlight(graph, activeEvidenceEvent) : EMPTY_GRAPH_HIGHLIGHT),
     [activeEvidenceEvent, graph]
@@ -250,6 +252,26 @@ export function HomeMemoryView(): React.ReactElement {
             <RotateCcw size={15} />
             Reset
           </button>
+          <div className="memory-view-mode-toggle" aria-label="Memory graph view mode">
+            <button
+              className={memoryGraphMode === 'spatial' ? 'active' : ''}
+              onClick={() => setMemoryGraphMode('spatial')}
+              aria-pressed={memoryGraphMode === 'spatial'}
+              title="Show memory grouped around room context"
+            >
+              <Map size={15} />
+              Spatial
+            </button>
+            <button
+              className={memoryGraphMode === 'topology' ? 'active' : ''}
+              onClick={() => setMemoryGraphMode('topology')}
+              aria-pressed={memoryGraphMode === 'topology'}
+              title="Show the raw memory graph layers"
+            >
+              <Network size={15} />
+              Topology
+            </button>
+          </div>
         </div>
       </div>
       {memoryWarning ? <div className="memory-warning" role="status">{memoryWarning}</div> : null}

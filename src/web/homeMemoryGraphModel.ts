@@ -4,6 +4,7 @@ import type { ProfileHypothesis } from './homeProfiler';
 
 export type HomeMemoryGraphNodeKind = 'home' | 'room' | 'device' | 'field' | 'semantic' | 'hypothesis';
 export type HomeMemoryGraphEdgeKind = 'contains' | 'observes' | 'interprets' | 'supports' | 'co-occurs';
+export type HomeMemoryGraphLayoutMode = 'topology' | 'spatial';
 
 export interface HomeMemoryGraphNode {
   id: string;
@@ -39,9 +40,14 @@ export interface HomeMemoryGraphHighlight {
 }
 
 export interface HomeMemoryGraphModel {
+  layoutMode?: HomeMemoryGraphLayoutMode;
   layers: HomeMemoryGraphLayer[];
   nodes: HomeMemoryGraphNode[];
   edges: HomeMemoryGraphEdge[];
+}
+
+export interface HomeMemoryGraphModelOptions {
+  layoutMode?: HomeMemoryGraphLayoutMode;
 }
 
 interface PositionedNodeInput {
@@ -95,7 +101,12 @@ export const HOME_MEMORY_GRAPH_LAYERS: HomeMemoryGraphLayer[] = [
   { kind: 'hypothesis', label: 'Hypotheses', radius: RING_RADIUS_BY_KIND.hypothesis, z: RING_Z_BY_KIND.hypothesis }
 ];
 
-export function createHomeMemoryGraphModel(memory: HomeMemory, hypotheses: ProfileHypothesis[]): HomeMemoryGraphModel {
+export function createHomeMemoryGraphModel(
+  memory: HomeMemory,
+  hypotheses: ProfileHypothesis[],
+  options: HomeMemoryGraphModelOptions = {}
+): HomeMemoryGraphModel {
+  const layoutMode = options.layoutMode ?? 'topology';
   const homeId = `home:${memory.homeId ?? 'unknown'}`;
   const rooms = sortedValues(memory.rooms, (room) => room.roomId);
   const devices = sortedValues(memory.devices, (device) => device.deviceId);
@@ -117,7 +128,7 @@ export function createHomeMemoryGraphModel(memory: HomeMemory, hypotheses: Profi
     ...semanticGroups.map((group) => semanticNodeInput(group, sortedHypotheses)),
     ...sortedHypotheses.map((hypothesis) => hypothesisNodeInput(hypothesis))
   ];
-  const positionedNodes = assignPositions(nodeInputs);
+  const positionedNodes = assignPositions(nodeInputs, layoutMode);
   const nodeIds = new Set(positionedNodes.map((node) => node.id));
   const nodes = positionedNodes.map((node) => ({
     ...node,
@@ -148,6 +159,7 @@ export function createHomeMemoryGraphModel(memory: HomeMemory, hypotheses: Profi
   ];
 
   return {
+    ...(layoutMode === 'spatial' ? { layoutMode } : {}),
     layers: HOME_MEMORY_GRAPH_LAYERS,
     nodes,
     edges
@@ -326,7 +338,15 @@ function edge(kind: HomeMemoryGraphEdgeKind, from: string, to: string, strength:
   };
 }
 
-function assignPositions(inputs: PositionedNodeInput[]): HomeMemoryGraphNode[] {
+function assignPositions(inputs: PositionedNodeInput[], layoutMode: HomeMemoryGraphLayoutMode): HomeMemoryGraphNode[] {
+  if (layoutMode === 'spatial') {
+    return assignSpatialPositions(inputs);
+  }
+
+  return assignTopologyPositions(inputs);
+}
+
+function assignTopologyPositions(inputs: PositionedNodeInput[]): HomeMemoryGraphNode[] {
   const groups = new Map<HomeMemoryGraphNodeKind, PositionedNodeInput[]>();
 
   for (const input of inputs) {
@@ -345,6 +365,169 @@ function assignPositions(inputs: PositionedNodeInput[]): HomeMemoryGraphNode[] {
       z: RING_Z_BY_KIND[input.kind]
     };
   });
+}
+
+function assignSpatialPositions(inputs: PositionedNodeInput[]): HomeMemoryGraphNode[] {
+  const nodes = new Map<string, HomeMemoryGraphNode>();
+  const homeInputs = inputs.filter((input) => input.kind === 'home');
+  const roomInputs = inputs.filter((input) => input.kind === 'room');
+  const deviceInputs = inputs.filter((input) => input.kind === 'device');
+  const fieldInputs = inputs.filter((input) => input.kind === 'field');
+  const semanticInputs = inputs.filter((input) => input.kind === 'semantic');
+  const hypothesisInputs = inputs.filter((input) => input.kind === 'hypothesis');
+
+  for (const input of homeInputs) {
+    nodes.set(input.id, spatialNode(input, 0, 0, 0));
+  }
+
+  for (const [index, input] of roomInputs.entries()) {
+    const placement = roomSpatialPlacement(index, roomInputs.length);
+    nodes.set(input.id, spatialNode(input, placement.x, placement.y, 0));
+  }
+
+  for (const room of roomInputs) {
+    const roomNode = nodes.get(room.id);
+    if (!roomNode) continue;
+    const devices = deviceInputs.filter((input) => input.relatedIds.includes(room.id));
+    for (const [index, input] of devices.entries()) {
+      const placement = satellitePlacement(roomNode, index, devices.length, 2.8, 0.35);
+      nodes.set(input.id, spatialNode(input, placement.x, placement.y, 1.25));
+    }
+  }
+
+  for (const input of deviceInputs) {
+    if (!nodes.has(input.id)) {
+      const placement = fallbackSpatialPlacement(input.id, nodes.size, 8.8);
+      nodes.set(input.id, spatialNode(input, placement.x, placement.y, 1.25));
+    }
+  }
+
+  for (const device of deviceInputs) {
+    const deviceNode = nodes.get(device.id);
+    if (!deviceNode) continue;
+    const fields = fieldInputs.filter((input) => input.relatedIds.includes(device.id));
+    for (const [index, input] of fields.entries()) {
+      const placement = satellitePlacement(deviceNode, index, fields.length, 1.15, -0.2);
+      nodes.set(input.id, spatialNode(input, placement.x, placement.y, -1.05));
+    }
+  }
+
+  for (const input of fieldInputs) {
+    if (!nodes.has(input.id)) {
+      const placement = fallbackSpatialPlacement(input.id, nodes.size, 11.4);
+      nodes.set(input.id, spatialNode(input, placement.x, placement.y, -1.05));
+    }
+  }
+
+  for (const field of fieldInputs) {
+    const fieldNode = nodes.get(field.id);
+    if (!fieldNode) continue;
+    const semantics = semanticInputs.filter((input) => input.relatedIds.includes(field.id));
+    for (const [index, input] of semantics.entries()) {
+      const placement = satellitePlacement(fieldNode, index, semantics.length, 1.45, 0.7);
+      nodes.set(input.id, spatialNode(input, placement.x, placement.y, 2.55));
+    }
+  }
+
+  for (const input of semanticInputs) {
+    if (!nodes.has(input.id)) {
+      const placement = averageRelatedPlacement(input.relatedIds, nodes, 14.5, 2.2);
+      nodes.set(input.id, spatialNode(input, placement.x, placement.y, 2.55));
+    }
+  }
+
+  for (const [index, input] of hypothesisInputs.entries()) {
+    const placement = averageRelatedPlacement(input.relatedIds, nodes, 17.2 + index * 0.18, 3.2);
+    nodes.set(input.id, spatialNode(input, placement.x, placement.y, 3.65));
+  }
+
+  return inputs.map((input) => nodes.get(input.id) ?? spatialNode(input, 0, 0, RING_Z_BY_KIND[input.kind]));
+}
+
+function spatialNode(input: PositionedNodeInput, x: number, y: number, z: number): HomeMemoryGraphNode {
+  return {
+    ...input,
+    x: roundCoordinate(x),
+    y: roundCoordinate(y),
+    z: roundCoordinate(z)
+  };
+}
+
+function roomSpatialPlacement(index: number, count: number): { x: number; y: number } {
+  if (count <= 1) {
+    return { x: 0, y: 0 };
+  }
+
+  const radius = count <= 4 ? 8.5 : 10.5;
+  const angle = -Math.PI / 2 + (Math.PI * 2 * index) / count;
+  return {
+    x: Math.cos(angle) * radius,
+    y: Math.sin(angle) * radius
+  };
+}
+
+function satellitePlacement(
+  anchor: Pick<HomeMemoryGraphNode, 'x' | 'y'>,
+  index: number,
+  count: number,
+  radius: number,
+  angleOffset: number
+): { x: number; y: number } {
+  const angle = angleOffset + (Math.PI * 2 * index) / Math.max(1, count);
+
+  return {
+    x: anchor.x + Math.cos(angle) * radius,
+    y: anchor.y + Math.sin(angle) * radius
+  };
+}
+
+function fallbackSpatialPlacement(id: string, index: number, radius: number): { x: number; y: number } {
+  const angle = hashAngle(id, index);
+  return {
+    x: Math.cos(angle) * radius,
+    y: Math.sin(angle) * radius
+  };
+}
+
+function averageRelatedPlacement(
+  relatedIds: string[],
+  nodes: Map<string, HomeMemoryGraphNode>,
+  fallbackRadius: number,
+  outwardDistance: number
+): { x: number; y: number } {
+  const relatedNodes = relatedIds
+    .map((id) => nodes.get(id))
+    .filter((node): node is HomeMemoryGraphNode => Boolean(node));
+
+  if (relatedNodes.length === 0) {
+    return fallbackSpatialPlacement(relatedIds.join(':'), relatedIds.length, fallbackRadius);
+  }
+
+  const center = relatedNodes.reduce(
+    (total, node) => ({ x: total.x + node.x, y: total.y + node.y }),
+    { x: 0, y: 0 }
+  );
+  const average = {
+    x: center.x / relatedNodes.length,
+    y: center.y / relatedNodes.length
+  };
+  const magnitude = Math.hypot(average.x, average.y);
+  const outward = magnitude > 0.001
+    ? { x: average.x / magnitude, y: average.y / magnitude }
+    : { x: 0, y: -1 };
+
+  return {
+    x: average.x + outward.x * outwardDistance,
+    y: average.y + outward.y * outwardDistance
+  };
+}
+
+function hashAngle(value: string, index: number): number {
+  let hash = index + 1;
+  for (const char of value) {
+    hash = (hash * 31 + char.charCodeAt(0)) % 9973;
+  }
+  return (hash / 9973) * Math.PI * 2;
 }
 
 function adaptiveRingPlacement(kind: HomeMemoryGraphNodeKind, index: number, count: number): { angle: number; radius: number } {

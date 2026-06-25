@@ -410,6 +410,32 @@ button:hover {
   justify-content: flex-end;
 }
 
+.memory-view-mode-toggle {
+  align-items: center;
+  background: #eef5f3;
+  border: 1px solid #cfdbda;
+  border-radius: 8px;
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+}
+
+.memory-view-mode-toggle button {
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  box-shadow: none;
+  color: #40555b;
+  font-size: 12px;
+  padding: 7px 9px;
+}
+
+.memory-view-mode-toggle button.active {
+  background: #ffffff;
+  box-shadow: 0 3px 10px rgba(30, 49, 55, 0.1);
+  color: #153d44;
+}
+
 .memory-warning {
   background: #fff7e8;
   border: 1px solid #dfc48c;

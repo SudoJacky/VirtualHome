@@ -2,7 +2,7 @@ import React from 'react';
 import { Line, OrbitControls, Text } from '@react-three/drei';
 import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
-import type { HomeMemoryGraphModel, HomeMemoryGraphNode, HomeMemoryGraphNodeKind } from './homeMemoryGraphModel';
+import type { HomeMemoryGraphEdge, HomeMemoryGraphLayoutMode, HomeMemoryGraphModel, HomeMemoryGraphNode, HomeMemoryGraphNodeKind } from './homeMemoryGraphModel';
 
 interface HomeMemory3DProps {
   graph: HomeMemoryGraphModel;
@@ -36,6 +36,8 @@ export function HomeMemory3D({
   );
   const highlightedNodeIdSet = React.useMemo(() => new Set(highlightedNodeIds), [highlightedNodeIds]);
   const highlightedEdgeIdSet = React.useMemo(() => new Set(highlightedEdgeIds), [highlightedEdgeIds]);
+  const layoutMode = graph.layoutMode ?? 'topology';
+  const renderedEdges = visibleMemoryEdges(graph.edges, highlightedEdgeIdSet, layoutMode);
 
   return (
     <Canvas
@@ -49,10 +51,12 @@ export function HomeMemory3D({
       <directionalLight position={[5, 9, 7]} intensity={1.35} />
       <hemisphereLight args={['#f8fbff', '#9fb3ad', 0.58]} />
       <group rotation={[-0.12, -0.28, 0]}>
-        {graph.layers.map((layer) => (
-          <MemoryLayerGuide key={layer.kind} kind={layer.kind} label={layer.label} radius={layer.radius} z={layer.z} />
-        ))}
-        {graph.edges.map((edge) => {
+        {layoutMode === 'spatial'
+          ? <MemorySpatialGuide />
+          : graph.layers.map((layer) => (
+              <MemoryLayerGuide key={layer.kind} kind={layer.kind} label={layer.label} radius={layer.radius} z={layer.z} />
+            ))}
+        {renderedEdges.map((edge) => {
           const from = nodeById.get(edge.from);
           const to = nodeById.get(edge.to);
           const highlighted = highlightedEdgeIdSet.has(edge.id);
@@ -81,6 +85,7 @@ export function HomeMemory3D({
             highlighted={highlightedNodeIdSet.has(node.id)}
             selected={node.id === selectedNodeId}
             related={selectedNodeId ? node.relatedIds.includes(selectedNodeId) : false}
+            layoutMode={layoutMode}
             onSelect={() => onSelectNode(node.id)}
           />
         ))}
@@ -95,6 +100,44 @@ export function HomeMemory3D({
         target={[0, 0, 0]}
       />
     </Canvas>
+  );
+}
+
+function visibleMemoryEdges(
+  edges: HomeMemoryGraphEdge[],
+  highlightedEdgeIds: ReadonlySet<string>,
+  layoutMode: HomeMemoryGraphLayoutMode
+): HomeMemoryGraphEdge[] {
+  if (layoutMode === 'topology') {
+    return edges;
+  }
+
+  return edges.filter((edge) => {
+    const highlighted = highlightedEdgeIds.has(edge.id);
+    return highlighted || edge.kind === 'contains';
+  });
+}
+
+function MemorySpatialGuide(): React.ReactElement {
+  return (
+    <group>
+      <gridHelper args={[18, 18, '#b8c8c5', '#d9e5e2']} position={[0, -0.08, 0]} />
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.1, 0]}>
+        <circleGeometry args={[7.8, 96]} />
+        <meshBasicMaterial color="#f7fbfa" transparent opacity={0.34} />
+      </mesh>
+      <Text
+        anchorX="center"
+        anchorY="middle"
+        color="#4a5d5a"
+        fontSize={0.19}
+        outlineColor="#edf4f2"
+        outlineWidth={0.018}
+        position={[0, -0.2, -3.9]}
+      >
+        Room-centered memory map
+      </Text>
+    </group>
   );
 }
 
@@ -186,17 +229,19 @@ function MemoryNode({
   highlighted,
   selected,
   related,
+  layoutMode,
   onSelect
 }: {
   node: HomeMemoryGraphNode;
   highlighted: boolean;
   selected: boolean;
   related: boolean;
+  layoutMode: HomeMemoryGraphLayoutMode;
   onSelect: () => void;
 }): React.ReactElement {
   const groupRef = React.useRef<THREE.Group>(null);
   const color = NODE_COLORS[node.kind];
-  const radius = nodeRadius(node);
+  const radius = nodeRadius(node, layoutMode);
 
   useFrame(({ clock }) => {
     if (!groupRef.current) return;
@@ -230,7 +275,7 @@ function MemoryNode({
           />
         </mesh>
       ) : null}
-      {shouldShowNodeLabel(node.kind, selected, related, highlighted) ? (
+      {shouldShowNodeLabel(node.kind, layoutMode, selected, related, highlighted) ? (
         <Text
           anchorX="center"
           anchorY="middle"
@@ -252,8 +297,17 @@ function toVector(node: HomeMemoryGraphNode): [number, number, number] {
   return [node.x * 0.42, node.z * 0.82, node.y * 0.42];
 }
 
-function nodeRadius(node: HomeMemoryGraphNode): number {
-  const activityBoost = Math.min(0.22, Math.max(0, node.activity) * 0.012);
+function nodeRadius(node: HomeMemoryGraphNode, layoutMode: HomeMemoryGraphLayoutMode): number {
+  const activityBoost = Math.min(layoutMode === 'spatial' ? 0.14 : 0.22, Math.max(0, node.activity) * (layoutMode === 'spatial' ? 0.006 : 0.012));
+  if (layoutMode === 'spatial') {
+    if (node.kind === 'home') return 0.46 + activityBoost;
+    if (node.kind === 'room') return 0.34 + activityBoost;
+    if (node.kind === 'device') return 0.24 + activityBoost;
+    if (node.kind === 'hypothesis') return 0.2 + activityBoost;
+    if (node.kind === 'semantic') return 0.18 + activityBoost;
+    return 0.15 + activityBoost;
+  }
+
   if (node.kind === 'home') return 0.52 + activityBoost;
   if (node.kind === 'hypothesis') return 0.32 + activityBoost;
   if (node.kind === 'semantic') return 0.26 + activityBoost;
@@ -261,7 +315,17 @@ function nodeRadius(node: HomeMemoryGraphNode): number {
   return 0.28 + activityBoost;
 }
 
-function shouldShowNodeLabel(kind: HomeMemoryGraphNodeKind, selected: boolean, related: boolean, highlighted: boolean): boolean {
+function shouldShowNodeLabel(
+  kind: HomeMemoryGraphNodeKind,
+  layoutMode: HomeMemoryGraphLayoutMode,
+  selected: boolean,
+  related: boolean,
+  highlighted: boolean
+): boolean {
+  if (layoutMode === 'spatial') {
+    return selected || related || highlighted || kind === 'home' || kind === 'room';
+  }
+
   return selected || related || highlighted || kind === 'home' || kind === 'room' || kind === 'hypothesis';
 }
 
