@@ -71,6 +71,41 @@ function graphEvents(): DeviceValueEvent[] {
   ];
 }
 
+function multiRoomMemory() {
+  return reduceDeviceEvents(createHomeMemory(), [
+    deviceEvent({
+      id: 'kitchen_fridge_door_1',
+      sourceEventId: 'source_kitchen_fridge_door_1',
+      sequence: 1,
+      roomId: 'kitchen',
+      deviceId: 'fridge_01',
+      deviceType: 'fridge',
+      field: 'doorOpen',
+      value: true
+    }),
+    deviceEvent({
+      id: 'kitchen_coffee_power_1',
+      sourceEventId: 'source_kitchen_coffee_power_1',
+      sequence: 2,
+      roomId: 'kitchen',
+      deviceId: 'coffee_maker_01',
+      deviceType: 'coffee_maker',
+      field: 'powerW',
+      value: 800
+    }),
+    deviceEvent({
+      id: 'living_tv_power_1',
+      sourceEventId: 'source_living_tv_power_1',
+      sequence: 3,
+      roomId: 'living_room',
+      deviceId: 'living_tv_01',
+      deviceType: 'tv',
+      field: 'power',
+      value: 'on'
+    })
+  ]);
+}
+
 function hypotheses(): ProfileHypothesis[] {
   return [
     {
@@ -349,6 +384,28 @@ describe('home memory graph model', () => {
     expect(new Set(deviceRadii).size).toBeGreaterThan(1);
   });
 
+  it('can lay memory out as room-centered spatial clusters for the 3d memory map', () => {
+    const graph = createHomeMemoryGraphModel(multiRoomMemory(), [], { layoutMode: 'spatial' });
+    const node = nodeLookup(graph.nodes);
+    const kitchen = node.get('room:kitchen');
+    const livingRoom = node.get('room:living_room');
+    const fridge = node.get('device:fridge_01');
+    const fridgeDoor = node.get('field:fridge_01:doorOpen');
+    const coffeePower = node.get('field:coffee_maker_01:powerW');
+    const cookingSignal = node.get('semantic:cooking_signal:kitchen:coffee_maker_01:powerW');
+
+    expect(graph.layoutMode).toBe('spatial');
+    expect(kitchen).toBeDefined();
+    expect(livingRoom).toBeDefined();
+    expect(fridge).toBeDefined();
+    expect(fridgeDoor).toBeDefined();
+    expect(coffeePower).toBeDefined();
+    expect(cookingSignal).toBeDefined();
+    expect(distance2d(fridge!, kitchen!)).toBeLessThan(distance2d(fridge!, livingRoom!));
+    expect(distance2d(fridgeDoor!, fridge!)).toBeLessThan(distance2d(fridgeDoor!, kitchen!));
+    expect(cookingSignal!.z).toBeGreaterThan(coffeePower!.z);
+  });
+
   it('omits nonexistent hypothesis subjects from support edges and related ids', () => {
     const graph = createHomeMemoryGraphModel(graphMemory(), hypotheses());
     const hypothesis = graph.nodes.find((node) => node.id === 'hypothesis:room:kitchen:habit');
@@ -424,3 +481,11 @@ describe('home memory graph model', () => {
     );
   });
 });
+
+function nodeLookup<T extends { id: string }>(nodes: T[]): Map<string, T> {
+  return new Map(nodes.map((node) => [node.id, node]));
+}
+
+function distance2d(left: { x: number; y: number }, right: { x: number; y: number }): number {
+  return Math.hypot(left.x - right.x, left.y - right.y);
+}
