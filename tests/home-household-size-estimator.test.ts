@@ -175,4 +175,72 @@ describe('home household size estimator', () => {
     expect(estimate.evidence).toContain('3 resident slots');
     expect(estimate.distribution[2]).toBeGreaterThan(estimate.distribution[1]);
   });
+
+  it('raises a shared main sleep-zone candidate without changing the hard resident lower bound', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'main_sleep',
+        sequence: 1,
+        simTime: '2026-06-22T23:00:00',
+        roomId: 'master_bedroom',
+        deviceId: 'master_sleep_01',
+        deviceType: 'sleep_sensor',
+        field: 'inBed',
+        value: true
+      }),
+      deviceEvent({
+        id: 'child_sleep',
+        sequence: 2,
+        simTime: '2026-06-22T23:05:00',
+        roomId: 'child_bedroom',
+        deviceId: 'child_sleep_01',
+        deviceType: 'sleep_sensor',
+        field: 'inBed',
+        value: true
+      }),
+      deviceEvent({
+        id: 'entry_return',
+        sequence: 3,
+        simTime: '2026-06-23T17:40:00',
+        roomId: 'entrance',
+        deviceId: 'front_door_lock_01',
+        deviceType: 'door_lock',
+        field: 'lockState',
+        value: 'unlocked'
+      }),
+      deviceEvent({
+        id: 'kitchen_meal',
+        sequence: 4,
+        simTime: '2026-06-23T18:30:00',
+        roomId: 'kitchen',
+        deviceId: 'stove_01',
+        deviceType: 'stove',
+        field: 'powerW',
+        value: 720
+      }),
+      deviceEvent({
+        id: 'living_evening',
+        sequence: 5,
+        simTime: '2026-06-23T20:15:00',
+        roomId: 'living_room',
+        deviceId: 'tv_01',
+        deviceType: 'tv',
+        field: 'power',
+        value: true
+      })
+    ]);
+
+    const estimate = estimateHouseholdSizeFromMemory(memory);
+
+    expect(estimate.lowerBound).toBe(2);
+    expect(estimate.features).toMatchObject({
+      sharedSleepZones: {
+        count: 1,
+        rooms: ['master_bedroom'],
+        strength: 'medium'
+      }
+    });
+    expect(estimate.distribution[3]).toBeGreaterThan(estimate.distribution[2]);
+    expect(estimate.evidence).toContain('medium shared main sleep-zone candidate');
+  });
 });

@@ -140,6 +140,7 @@ function createHouseholdSizeReasoning(memory: HomeMemory, hypothesis: ProfileHyp
       { label: 'Distribution', value: formatDistribution(estimate.distribution) },
       { label: 'Concurrent rooms', value: String(features.concurrentActivity.roomCount) },
       { label: 'Sleep zones', value: String(features.recurringSleepZones.count) },
+      { label: 'Shared sleep candidate', value: features.sharedSleepZones.strength === 'none' ? 'none' : `${features.sharedSleepZones.strength} / ${features.sharedSleepZones.count}` },
       { label: 'Routine clusters', value: String(features.routineClusters.count) },
       { label: 'Meaningful rooms', value: String(features.meaningfulRoomCount) },
       { label: 'Weighted evidence', value: formatWeight(features.meaningfulEvidenceWeight) },
@@ -157,11 +158,11 @@ function createHouseholdSizeReasoning(memory: HomeMemory, hypothesis: ProfileHyp
       },
       {
         label: 'Collect stable resident signals',
-        detail: `${features.recurringSleepZones.count} sleep zone${plural(features.recurringSleepZones.count)} and ${features.routineClusters.count} routine cluster${plural(features.routineClusters.count)} contribute resident-pattern evidence.`
+        detail: `${features.recurringSleepZones.count} sleep zone${plural(features.recurringSleepZones.count)}, ${features.routineClusters.count} routine cluster${plural(features.routineClusters.count)}, and ${formatSharedSleepCandidate(features.sharedSleepZones)} contribute resident-pattern evidence.`
       },
       {
         label: 'Score resident distribution',
-        detail: `The estimator combines lower bound, room spread, sleep zones, routine clusters, and weak-context ratio into ${formatDistribution(estimate.distribution)}.`
+        detail: `The estimator combines lower bound, room spread, sleep zones, shared sleep-zone candidates, routine clusters, and weak-context ratio into ${formatDistribution(estimate.distribution)}.`
       },
       {
         label: 'Attach evidence',
@@ -174,6 +175,12 @@ function createHouseholdSizeReasoning(memory: HomeMemory, hypothesis: ProfileHyp
 function householdSizeRule(estimate: ReturnType<typeof estimateHouseholdSizeFromMemory>): string {
   if (estimate.features.environmentContextRatio >= 0.8) {
     return 'Mostly weak environment context keeps household size confidence capped.';
+  }
+  if (estimate.features.sharedSleepZones.strength === 'medium') {
+    return 'Shared main sleep-zone evidence raises larger-household probability without changing the hard resident lower bound.';
+  }
+  if (estimate.features.sharedSleepZones.strength === 'strong') {
+    return 'Direct shared sleep-zone evidence can raise the resident lower bound before scoring the probability distribution.';
   }
   if (estimate.lowerBound >= 2) {
     return 'Concurrent room activity and sleep-zone signals establish a resident-count lower bound before scoring the probability distribution.';
@@ -203,6 +210,11 @@ function formatDistribution(distribution: ReturnType<typeof estimateHouseholdSiz
   return ([1, 2, 3, 4, 5] as const)
     .map((count) => `${count}:${Math.round(distribution[count] * 100)}%`)
     .join('/');
+}
+
+function formatSharedSleepCandidate(candidate: ReturnType<typeof estimateHouseholdSizeFromMemory>['features']['sharedSleepZones']): string {
+  if (candidate.strength === 'none') return 'no shared main sleep-zone candidate';
+  return `${candidate.strength} shared main sleep-zone candidate${plural(candidate.count)}`;
 }
 
 function formatSignalTypes(types: string[]): string {

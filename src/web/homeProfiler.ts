@@ -489,6 +489,9 @@ function createHouseholdSize(memory: HomeMemory, activeRooms: RoomMemory[]): Pro
   const sparseEvidence = behaviorSignal <= 3;
   const mostlyWeakContext = activeRoomCount === 0;
   const distributionText = formatHouseholdDistribution(estimate.distribution);
+  const sharedSleepText = estimate.features.sharedSleepZones.strength === 'none'
+    ? 'no shared main sleep-zone candidate'
+    : `${estimate.features.sharedSleepZones.strength} shared main sleep-zone candidate`;
 
   return hypothesis({
     id: 'household:size',
@@ -498,7 +501,7 @@ function createHouseholdSize(memory: HomeMemory, activeRooms: RoomMemory[]): Pro
         ? `Observed activity is mostly weak environment context across ${rooms.length} room${plural(rooms.length)}; resident count remains uncertain.`
       : sparseEvidence
         ? `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence, ${episodes.length} behavior episode${plural(episodes.length)}, ${observedDayCount} observed day${plural(observedDayCount)}, and ${observedWeekCount} observed week${plural(observedWeekCount)} is sparse; ${longWindowRooms.length} long-window room${plural(longWindowRooms.length)} remain insufficient, so resident count remains uncertain. Current probabilistic estimate is ${estimate.label}, lower bound ${estimate.lowerBound}, distribution ${distributionText}.`
-        : `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence, ${episodes.length} behavior episode${plural(episodes.length)}, ${observedDayCount} observed day${plural(observedDayCount)}, and ${observedWeekCount} observed week${plural(observedWeekCount)} suggests ${estimate.label}; lower bound ${estimate.lowerBound}, distribution ${distributionText}. This uses ${longWindowRooms.length} long-window room${plural(longWindowRooms.length)}, ${estimate.features.concurrentActivity.roomCount} concurrent room${plural(estimate.features.concurrentActivity.roomCount)}, ${estimate.features.recurringSleepZones.count} sleep zone${plural(estimate.features.recurringSleepZones.count)}, and ${estimate.features.routineClusters.count} routine cluster${plural(estimate.features.routineClusters.count)}, so it remains probabilistic rather than a confirmed resident count.`,
+        : `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence, ${episodes.length} behavior episode${plural(episodes.length)}, ${observedDayCount} observed day${plural(observedDayCount)}, and ${observedWeekCount} observed week${plural(observedWeekCount)} suggests ${estimate.label}; lower bound ${estimate.lowerBound}, distribution ${distributionText}. This uses ${longWindowRooms.length} long-window room${plural(longWindowRooms.length)}, ${estimate.features.concurrentActivity.roomCount} concurrent room${plural(estimate.features.concurrentActivity.roomCount)}, ${estimate.features.recurringSleepZones.count} sleep zone${plural(estimate.features.recurringSleepZones.count)}, ${estimate.features.routineClusters.count} routine cluster${plural(estimate.features.routineClusters.count)}, and ${sharedSleepText}, so it remains probabilistic rather than a confirmed resident count.`,
     confidence: confidenceWithSampleSize(
       mostlyWeakContext
         ? 0.25
