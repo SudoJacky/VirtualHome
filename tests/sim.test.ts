@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { alertEscalationPolicies, createSimulator } from '../src/sim/engine';
 import { getCatalog, getHomeDefinition } from '../src/sim/catalog';
+import { createExternalContext } from '../src/sim/externalContext';
 import { getScenarioIds } from '../src/sim/scenarios';
 import { getDeviceCapability } from '../src/shared/deviceRegistry';
 import type { AbnormalityInjectedEvent, AlertCreatedEvent, AutomationTriggeredEvent, ConversationOccurredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, ExternalInteractionOccurredEvent, PersonMovedEvent, PersonState, RoomId, RuleRecoveredEvent, TwinSnapshot } from '../src/shared/types';
@@ -543,6 +544,60 @@ describe('virtual home simulator MVP', () => {
       event.measurements.power_on === true &&
       event.measurements.target_c === 25
     ))).toBe(true);
+  });
+
+  it('uses hot outdoor weather to warm occupied rooms and trigger cooling', () => {
+    const seed = 1404;
+    expect(createExternalContext({ date: '2026-07-14', seed }).weather.condition).toBe('hot');
+    const simulator = createSimulator({ seed });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-07-14T11:58:00+08:00';
+    snapshot.homeState.mode = 'morning';
+    snapshot.people.adult_1.location = 'living_room';
+    snapshot.people.adult_1.activity = 'reading';
+    snapshot.rooms.living_room.temperatureC = 27.8;
+    snapshot.rooms.living_room.humidityPercent = 58;
+    snapshot.devices.living_ac_01.state = { power: 'off', targetC: 26, mode: 'auto' };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    const heatEvents = simulator.advanceMinutes(6);
+    const warmedSnapshot = simulator.getSnapshot();
+    const warmedTemperature = warmedSnapshot.rooms.living_room.temperatureC;
+
+    expect(warmedSnapshot.devices.living_ac_01.state).toMatchObject({
+      power: 'on',
+      targetC: 25,
+      mode: 'cool'
+    });
+    expect(heatEvents.some((event) => (
+      event.type === 'AutomationTriggered' &&
+      event.ruleId === 'room_climate_comfort' &&
+      event.eventExplanation?.affectedRoomIds.includes('living_room')
+    ))).toBe(true);
+
+    simulator.advanceMinutes(10);
+
+    expect(simulator.getSnapshot().rooms.living_room.temperatureC).toBeLessThan(warmedTemperature);
+  });
+
+  it('lets kitchen cooking heat decay after the stove turns off and ventilation runs', () => {
+    const simulator = createSimulator({ seed: 505 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-10-14T19:00:00+08:00';
+    snapshot.rooms.kitchen.temperatureC = 31;
+    snapshot.rooms.kitchen.humidityPercent = 58;
+    snapshot.devices.kitchen_temp_01.state = { temperatureC: 31, humidityPercent: 58 };
+    snapshot.devices.stove_01.state = { powerW: 0, level: 0 };
+    snapshot.devices.range_hood_01.state = { power: 'on', speed: 2 };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    simulator.advanceMinutes(20);
+
+    expect(simulator.getSnapshot().rooms.kitchen.temperatureC).toBeLessThan(29.8);
   });
 
   it('applies a commuter arrival scene when adult 1 gets home', () => {

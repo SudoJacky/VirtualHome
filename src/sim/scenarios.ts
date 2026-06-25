@@ -29,6 +29,9 @@ export interface ScenarioDefinition {
     holidayName?: string | null;
     schoolDay?: boolean;
     workday?: boolean;
+    weatherCondition?: 'clear' | 'cloudy' | 'light_rain' | 'heavy_rain' | 'hot' | 'cold';
+    outdoorTemperatureC?: number;
+    precipitationMm?: number;
   };
   steps: ScenarioStep[];
 }

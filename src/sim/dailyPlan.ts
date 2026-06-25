@@ -22,6 +22,7 @@ interface CalendarProfile {
   schoolDay: boolean;
   workday: boolean;
   weatherCondition: ExternalContext['weather']['condition'];
+  outdoorTemperatureC: number;
   precipitationMm: number;
 }
 
@@ -167,7 +168,7 @@ function createWeekendSteps(calendar: CalendarProfile, random: SeededRandom, wak
 }
 
 function createSeasonOpeningSteps(calendar: CalendarProfile): ScenarioStep[] {
-  const climateState = seasonClimate(calendar.season);
+  const climateState = seasonClimate(calendar);
   return [
     step(1, [
       device('kitchen_temp_01', climateState, `season:${calendar.season}:baseline`)
@@ -252,6 +253,7 @@ function createCalendarProfile(externalContext: ExternalContext): CalendarProfil
     schoolDay: calendar.schoolDay,
     workday: calendar.workday,
     weatherCondition: externalContext.weather.condition,
+    outdoorTemperatureC: externalContext.weather.outdoorTemperatureC,
     precipitationMm: externalContext.weather.precipitationMm
   };
 }
@@ -260,11 +262,30 @@ function isRainyDay(calendar: CalendarProfile): boolean {
   return calendar.weatherCondition === 'heavy_rain' || calendar.precipitationMm >= 10;
 }
 
-function seasonClimate(season: Season): Record<string, number> {
-  if (season === 'summer') return { temperatureC: 30.5, humidityPercent: 72 };
-  if (season === 'winter') return { temperatureC: 19.2, humidityPercent: 42 };
-  if (season === 'spring') return { temperatureC: 23.4, humidityPercent: 58 };
-  return { temperatureC: 21.8, humidityPercent: 49 };
+function seasonClimate(calendar: CalendarProfile): Record<string, number> {
+  const outdoorTemperatureC = calendar.outdoorTemperatureC;
+  if (calendar.season === 'summer') {
+    return {
+      temperatureC: clampNumber(outdoorTemperatureC - 4.5, 27.5, 31.5),
+      humidityPercent: calendar.weatherCondition.includes('rain') ? 76 : 72
+    };
+  }
+  if (calendar.season === 'winter') {
+    return {
+      temperatureC: clampNumber(outdoorTemperatureC + 11, 18.5, 20.5),
+      humidityPercent: 42
+    };
+  }
+  if (calendar.season === 'spring') {
+    return {
+      temperatureC: clampNumber(outdoorTemperatureC + 1, 22, 24.5),
+      humidityPercent: calendar.weatherCondition.includes('rain') ? 64 : 58
+    };
+  }
+  return {
+    temperatureC: clampNumber(outdoorTemperatureC + 1.2, 20.5, 23.5),
+    humidityPercent: calendar.weatherCondition.includes('rain') ? 58 : 49
+  };
 }
 
 function seedFromDate(date: string): number {
@@ -327,6 +348,10 @@ function normalizeSteps(steps: ScenarioStep[], startMinute: number): ScenarioSte
 
 function clampMinute(minute: number): number {
   return Math.max(1, Math.min(1439, minute));
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.round(Math.min(max, Math.max(min, value)) * 10) / 10;
 }
 
 function formatClock(minute: number): string {

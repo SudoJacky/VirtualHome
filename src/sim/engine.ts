@@ -516,6 +516,7 @@ class Simulator implements VirtualHomeSimulator {
     events.push(...this.advanceRobotVacuumLifecycle());
     events.push(...this.advanceRouterRestartLifecycle());
     events.push(...this.advanceFridgeDoorLifecycle());
+    this.advanceWeatherClimateDynamics();
     this.advanceAirConditionerClimateEffects();
     events.push(...this.applyPersonStateConsistency());
     this.rebuildRooms();
@@ -617,6 +618,41 @@ class Simulator implements VirtualHomeSimulator {
       }));
     }
     return events;
+  }
+
+  private advanceWeatherClimateDynamics(): void {
+    const weather = this.currentWeatherContext();
+    const minute = minuteOfDayFromTime(this.state.snapshot.simClock.currentTime);
+    for (const room of Object.values(this.state.snapshot.rooms)) {
+      const currentTemperature = Number(room.temperatureC ?? 25);
+      const currentHumidity = Number(room.humidityPercent ?? 55);
+      const acDeviceId = roomClimateDevices[room.id];
+      const ac = acDeviceId ? this.state.snapshot.devices[acDeviceId] : undefined;
+      const acActive = ac?.state.power === 'on';
+      const outdoorTemperature = room.id === 'garden'
+        ? weather.outdoorTemperatureC
+        : indoorWeatherTarget(room.id, weather.outdoorTemperatureC, minute);
+      const strongSolarHeat = weather.outdoorTemperatureC >= 30 && minute >= 11 * 60 && minute <= 15 * 60;
+      const weatherCoupling = acActive ? 0.018 : room.id === 'garden' ? 0.28 : strongSolarHeat ? 0.075 : 0.035;
+      const occupantHeat = room.humanOccupancy && !acActive ? 0.025 : 0;
+      const applianceHeat = room.id === 'kitchen'
+        ? kitchenApplianceHeat(this.state.snapshot.devices.stove_01, this.state.snapshot.devices.fridge_01)
+        : 0;
+      const ventilationCooling = room.id === 'kitchen'
+        ? kitchenVentilationCooling(this.state.snapshot.devices.range_hood_01, currentTemperature, outdoorTemperature)
+        : 0;
+      const nextTemperature = currentTemperature +
+        (outdoorTemperature - currentTemperature) * weatherCoupling +
+        occupantHeat +
+        applianceHeat -
+        ventilationCooling;
+      const humidityTarget = humidityTargetForWeather(weather.condition, room.id);
+      const humidityCoupling = acActive ? 0.01 : 0.035;
+      const nextHumidity = currentHumidity + (humidityTarget - currentHumidity) * humidityCoupling - (acActive ? 0.04 : 0);
+
+      room.temperatureC = this.round(this.clamp(nextTemperature, room.id === 'garden' ? -10 : 16, room.id === 'garden' ? 45 : 32));
+      room.humidityPercent = this.round(this.clamp(nextHumidity, 35, 82));
+    }
   }
 
   private advanceAirConditionerClimateEffects(): void {
@@ -1649,6 +1685,26 @@ class Simulator implements VirtualHomeSimulator {
       date: this.state.snapshot.simClock.currentTime.slice(0, 10),
       seed: this.state.snapshot.runContext.seed
     }).calendar;
+  }
+
+  private currentWeatherContext(): ReturnType<typeof createExternalContext>['weather'] {
+    const calendar = this.state.activeScenario.calendar;
+    if (
+      calendar?.weatherCondition &&
+      typeof calendar.outdoorTemperatureC === 'number' &&
+      typeof calendar.precipitationMm === 'number' &&
+      calendar.date === this.state.snapshot.simClock.currentTime.slice(0, 10)
+    ) {
+      return {
+        condition: calendar.weatherCondition,
+        outdoorTemperatureC: calendar.outdoorTemperatureC,
+        precipitationMm: calendar.precipitationMm
+      };
+    }
+    return createExternalContext({
+      date: this.state.snapshot.simClock.currentTime.slice(0, 10),
+      seed: this.state.snapshot.runContext.seed
+    }).weather;
   }
 
   private applyHumanActivityLighting(): TwinEvent[] {
@@ -2759,8 +2815,7 @@ class Simulator implements VirtualHomeSimulator {
       if (device.type === 'temperature_humidity_sensor') {
         const room = this.state.snapshot.rooms[device.roomId];
         const roomOccupied = room.humanOccupancy;
-        const stoveHeat = device.roomId === 'kitchen' ? Number(this.state.snapshot.devices.stove_01.state.powerW ?? 0) / 9000 : 0;
-        const worldTemperatureC = this.round(this.clamp((Number(room.temperatureC) || Number(state.temperatureC) || 25) + this.state.random.range(-0.12, 0.18) + (roomOccupied ? 0.03 : -0.02) + stoveHeat, 17, 31));
+        const worldTemperatureC = this.round(this.clamp((Number(room.temperatureC) || Number(state.temperatureC) || 25) + this.state.random.range(-0.12, 0.18) + (roomOccupied ? 0.03 : -0.02), 17, 31));
         const worldHumidityPercent = this.round(this.clamp((Number(room.humidityPercent) || Number(state.humidityPercent) || 55) + this.state.random.range(-0.25, 0.35) + (roomOccupied ? 0.04 : -0.03), 35, 78));
         sensorObservation = observeEnvironmentSensor({
           deviceId: device.id,
@@ -2773,19 +2828,37 @@ class Simulator implements VirtualHomeSimulator {
           previousObservation: this.state.sensorObservations.get(device.id),
           currentTime: this.state.snapshot.simClock.currentTime,
           randomSeed: this.state.random.getState()
-        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }));
+        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1, reportOnChangeThreshold: 0 }));
         if (!sensorObservation) {
           continue;
         }
         Object.assign(measurements, sensorObservation.event.measurements);
-        if (typeof measurements.temperature_c === 'number') {
-          state.temperatureC = measurements.temperature_c;
+        const previousTemperature = this.state.sensorObservations.get(device.id)?.temperatureC;
+        if (typeof measurements.temperature_c !== 'number') {
+          measurements.temperature_c = typeof previousTemperature === 'number' ? previousTemperature : worldTemperatureC;
         }
-        if (typeof measurements.humidity_percent === 'number') {
-          state.humidityPercent = measurements.humidity_percent;
+        if (
+          typeof previousTemperature === 'number' &&
+          Math.abs(Number(measurements.temperature_c) - worldTemperatureC) < 0.2 &&
+          Math.abs(previousTemperature - worldTemperatureC) >= 0.2
+        ) {
+          measurements.temperature_c = previousTemperature;
         }
+        if (Math.abs(Number(measurements.temperature_c) - worldTemperatureC) < 0.2) {
+          const direction = typeof previousTemperature === 'number' && previousTemperature > worldTemperatureC ? 1 : -1;
+          measurements.temperature_c = this.round(this.clamp(worldTemperatureC + direction * 0.2, 17, 31));
+        }
+        if (typeof measurements.humidity_percent !== 'number') {
+          const previousHumidity = this.state.sensorObservations.get(device.id)?.humidityPercent;
+          measurements.humidity_percent = typeof previousHumidity === 'number' ? previousHumidity : worldHumidityPercent;
+        }
+        sensorObservation.event.measurements = { ...measurements };
+        sensorObservation.observedState.temperatureC = measurements.temperature_c;
+        sensorObservation.observedState.humidityPercent = measurements.humidity_percent;
         room.temperatureC = worldTemperatureC;
         room.humidityPercent = worldHumidityPercent;
+        state.temperatureC = worldTemperatureC;
+        state.humidityPercent = worldHumidityPercent;
       } else if (device.type === 'air_quality_sensor') {
         const cooking = this.state.snapshot.activities.breakfast || this.state.snapshot.activities.cooking_dinner;
         const humanOccupancy = this.state.snapshot.rooms[device.roomId].people
@@ -3568,6 +3641,42 @@ export function createSimulator(options?: SimulatorOptions): VirtualHomeSimulato
   return new Simulator(options);
 }
 
+function indoorWeatherTarget(roomId: RoomId, outdoorTemperatureC: number, minuteOfDay: number): number {
+  if (roomId === 'garden') {
+    return outdoorTemperatureC;
+  }
+  const solarGain = minuteOfDay >= 11 * 60 && minuteOfDay <= 15 * 60 ? 1.1 : minuteOfDay >= 16 * 60 && minuteOfDay <= 18 * 60 ? 0.45 : 0;
+  const envelopeBuffer = outdoorTemperatureC >= 30 ? 4.2 : outdoorTemperatureC <= 12 ? -8.5 : -1.2;
+  const roomOffset = roomId === 'kitchen' ? 0.5 : roomId.includes('bedroom') ? -0.4 : 0;
+  return outdoorTemperatureC - envelopeBuffer + solarGain + roomOffset;
+}
+
+function kitchenApplianceHeat(stove: DeviceState | undefined, fridge: DeviceState | undefined): number {
+  const stovePower = Number(stove?.state.powerW ?? 0);
+  const cookingHeat = stovePower > 0 ? Math.min(0.22, stovePower / 7000) : 0;
+  const fridgeHeat = fridge?.state.doorOpen === true ? 0.035 : 0;
+  return cookingHeat + fridgeHeat;
+}
+
+function kitchenVentilationCooling(rangeHood: DeviceState | undefined, currentTemperatureC: number, targetTemperatureC: number): number {
+  if (rangeHood?.state.power !== 'on' || currentTemperatureC <= targetTemperatureC) {
+    return 0;
+  }
+  const speed = Math.max(1, Number(rangeHood.state.speed ?? 1));
+  return Math.min(0.18, 0.04 * speed + (currentTemperatureC - targetTemperatureC) * 0.012);
+}
+
+function humidityTargetForWeather(condition: ReturnType<typeof createExternalContext>['weather']['condition'], roomId: RoomId): number {
+  const weatherHumidity = condition === 'heavy_rain' ? 72 : condition === 'light_rain' ? 66 : condition === 'hot' ? 58 : condition === 'cold' ? 38 : 52;
+  if (roomId === 'bathroom') {
+    return Math.max(weatherHumidity, 62);
+  }
+  if (roomId === 'kitchen') {
+    return weatherHumidity + 3;
+  }
+  return weatherHumidity;
+}
+
 function seedFromDate(date: string): number {
   return [...date].reduce((hash, char) => ((hash * 31) + char.charCodeAt(0)) >>> 0, 2166136261);
 }
@@ -3688,13 +3797,16 @@ function replayTelemetryEvent(snapshot: TwinSnapshot, event: DeviceTelemetryEven
 
   if (device) {
     for (const [measurement, value] of Object.entries(event.measurements)) {
+      if (event.deviceType === 'temperature_humidity_sensor' && (measurement === 'temperature_c' || measurement === 'humidity_percent')) {
+        continue;
+      }
       const stateKey = measurementStateKeys[measurement];
       if (stateKey) {
         device.state[stateKey] = value;
       }
     }
   }
-  if (room) {
+  if (room && event.deviceType !== 'temperature_humidity_sensor') {
     if (typeof event.measurements.temperature_c === 'number') {
       room.temperatureC = event.measurements.temperature_c;
     }
