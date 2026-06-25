@@ -9,6 +9,7 @@ export type HouseholdRoutineCluster =
   | 'child_sleep_activity'
   | 'main_sleep_activity'
   | 'entry_activity';
+export type SharedSleepZoneStrength = 'none' | 'weak' | 'medium' | 'strong';
 
 export type HouseholdSizeDistribution = Record<ResidentCount, number>;
 
@@ -44,6 +45,12 @@ export interface HouseholdSizeEstimate {
       count: number;
       slots: string[];
     };
+    sharedSleepZones: {
+      count: number;
+      rooms: string[];
+      strength: SharedSleepZoneStrength;
+      reasons: string[];
+    };
   };
   evidence: string[];
   summary: string;
@@ -73,12 +80,14 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
   const recurringSleepZones = estimateRecurringSleepZones(memory, meaningfulEvents, episodes);
   const routineClusters = estimateRoutineClusters(memory, meaningfulEvents, recurringSleepZones.rooms);
   const residentSlots = estimateResidentSlots(memory);
+  const sharedSleepZones = estimateSharedSleepZones(memory, recurringSleepZones, routineClusters);
   const environmentContextRatio = memory.profileEventCount === 0
     ? 1
     : roundWeight(memory.profileEvidenceByCategory.environment_context / memory.profileEventCount);
   const lowerBound = clampResidentCount(Math.max(
     concurrentActivity.lowerBound,
     recurringSleepZones.count,
+    sharedSleepZones.strength === 'strong' ? recurringSleepZones.count + sharedSleepZones.count : 1,
     1
   ));
   const distribution = createResidentDistribution({
@@ -92,7 +101,9 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
     concurrentRoomCount: concurrentActivity.roomCount,
     sleepZoneCount: recurringSleepZones.count,
     routineClusterCount: routineClusters.count,
-    residentSlotCount: residentSlots.count
+    residentSlotCount: residentSlots.count,
+    sharedSleepZoneCount: sharedSleepZones.count,
+    sharedSleepZoneStrength: sharedSleepZones.strength
   });
   const estimate = mostLikelyResidentCount(distribution);
   const confidence = estimateConfidence(distribution, {
@@ -103,7 +114,7 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
     environmentContextRatio,
     lowerBound
   });
-  const evidence = createEvidenceText(concurrentActivity, recurringSleepZones, routineClusters, residentSlots, environmentContextRatio);
+  const evidence = createEvidenceText(concurrentActivity, recurringSleepZones, routineClusters, residentSlots, sharedSleepZones, environmentContextRatio);
 
   return {
     estimate,
@@ -122,7 +133,8 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
       concurrentActivity,
       recurringSleepZones,
       routineClusters,
-      residentSlots
+      residentSlots,
+      sharedSleepZones
     },
     evidence,
     summary: createEstimateSummary(estimate, lowerBound, confidence, distribution, evidence)
@@ -254,6 +266,70 @@ function estimateResidentSlots(memory: HomeMemory): HouseholdSizeEstimate['featu
   };
 }
 
+function estimateSharedSleepZones(
+  memory: HomeMemory,
+  sleepZones: HouseholdSizeEstimate['features']['recurringSleepZones'],
+  routineClusters: HouseholdSizeEstimate['features']['routineClusters']
+): HouseholdSizeEstimate['features']['sharedSleepZones'] {
+  const mainSleepRooms = sleepZones.rooms.filter(isMainSleepRoom);
+  if (mainSleepRooms.length === 0) {
+    return {
+      count: 0,
+      rooms: [],
+      strength: 'none',
+      reasons: []
+    };
+  }
+
+  const sleepDevicesByRoom = new Map<string, Set<string>>();
+  const numericOccupancyRooms = new Set<string>();
+  for (const field of Object.values(memory.fields)) {
+    if (!mainSleepRooms.includes(field.roomId) || !isSleepField(field.deviceType, field.field)) {
+      continue;
+    }
+    const deviceIds = sleepDevicesByRoom.get(field.roomId) ?? new Set<string>();
+    deviceIds.add(field.deviceId);
+    sleepDevicesByRoom.set(field.roomId, deviceIds);
+    if (isSharedOccupancyField(field.field) && maxNumericValue(field) >= 2) {
+      numericOccupancyRooms.add(field.roomId);
+    }
+  }
+
+  const multiDeviceRooms = mainSleepRooms.filter((roomId) => (sleepDevicesByRoom.get(roomId)?.size ?? 0) >= 2);
+  const strongRooms = sortedUnique([...numericOccupancyRooms, ...multiDeviceRooms]);
+  if (strongRooms.length > 0) {
+    return {
+      count: strongRooms.length,
+      rooms: strongRooms,
+      strength: 'strong',
+      reasons: ['sleep-zone evidence directly indicates multiple bed sides, sleep devices, or occupants']
+    };
+  }
+
+  const hasChildSleep = routineClusters.clusters.includes('child_sleep_activity');
+  const supportingFamilyRoutines = routineClusters.clusters.filter((cluster) => (
+    cluster === 'meal_activity' ||
+    cluster === 'shared_evening_activity' ||
+    cluster === 'entry_activity' ||
+    cluster === 'study_or_work_activity'
+  ));
+  if (hasChildSleep && supportingFamilyRoutines.length >= 2) {
+    return {
+      count: mainSleepRooms.length,
+      rooms: mainSleepRooms,
+      strength: 'medium',
+      reasons: ['main sleep zone co-occurs with child sleep and family routine evidence']
+    };
+  }
+
+  return {
+    count: mainSleepRooms.length,
+    rooms: mainSleepRooms,
+    strength: 'weak',
+    reasons: ['main bedroom sleep evidence may represent one or two adults, but no direct shared-bed signal is present']
+  };
+}
+
 function createResidentDistribution(input: {
   lowerBound: ResidentCount;
   meaningfulRoomCount: number;
@@ -266,10 +342,15 @@ function createResidentDistribution(input: {
   sleepZoneCount: number;
   routineClusterCount: number;
   residentSlotCount: number;
+  sharedSleepZoneCount: number;
+  sharedSleepZoneStrength: SharedSleepZoneStrength;
 }): HouseholdSizeDistribution {
   const routineEstimate = clampResidentCount(Math.round((input.meaningfulRoomCount + input.routineClusterCount) / 3));
   const slotEstimate = input.residentSlotCount >= 3 ? clampResidentCount(Math.ceil(input.residentSlotCount / 2)) : null;
   const sleepEstimate = input.sleepZoneCount > 0 ? clampResidentCount(input.sleepZoneCount) : null;
+  const sharedSleepEstimate = input.sharedSleepZoneCount > 0 && input.sharedSleepZoneStrength !== 'none'
+    ? clampResidentCount(input.sleepZoneCount + input.sharedSleepZoneCount)
+    : null;
   const weakContextPenalty = input.environmentContextRatio >= 0.8 ? 1.4 : 0;
   const scores = Object.fromEntries(RESIDENT_COUNTS.map((count) => {
     let score = 1;
@@ -295,6 +376,15 @@ function createResidentDistribution(input: {
     }
     if (input.residentSlotCount >= 3 && count >= 2) {
       score += 0.65 / (count - 1);
+    }
+    if (sharedSleepEstimate !== null) {
+      if (input.sharedSleepZoneStrength === 'strong') {
+        score += 2.8 / (Math.abs(count - sharedSleepEstimate) + 1);
+      } else if (input.sharedSleepZoneStrength === 'medium') {
+        score += count === sharedSleepEstimate ? 3.2 : 0.5 / (Math.abs(count - sharedSleepEstimate) + 1);
+      } else if (count === sharedSleepEstimate) {
+        score += 0.45;
+      }
     }
     if (input.meaningfulEvidenceWeight + input.behaviorEpisodeCount < 3 && count > 1) {
       score -= 1.5;
@@ -351,6 +441,7 @@ function createEvidenceText(
   sleepZones: HouseholdSizeEstimate['features']['recurringSleepZones'],
   routineClusters: HouseholdSizeEstimate['features']['routineClusters'],
   residentSlots: HouseholdSizeEstimate['features']['residentSlots'],
+  sharedSleepZones: HouseholdSizeEstimate['features']['sharedSleepZones'],
   environmentContextRatio: number
 ): string[] {
   const evidence: string[] = [];
@@ -365,6 +456,9 @@ function createEvidenceText(
   }
   if (residentSlots.count > 0) {
     evidence.push(`${residentSlots.count} resident slot${residentSlots.count === 1 ? '' : 's'}`);
+  }
+  if (sharedSleepZones.count > 0 && sharedSleepZones.strength !== 'none') {
+    evidence.push(`${sharedSleepZones.strength} shared main sleep-zone candidate`);
   }
   if (environmentContextRatio >= 0.8) {
     evidence.push('mostly weak environment context');
@@ -436,8 +530,36 @@ function isSleepField(deviceType: string, field: string): boolean {
   );
 }
 
+function isSharedOccupancyField(field: string): boolean {
+  const normalizedField = normalize(field);
+  return (
+    normalizedField.includes('occupancycount') ||
+    normalizedField.includes('personcount') ||
+    normalizedField.includes('peoplecount') ||
+    normalizedField.includes('sleepercount') ||
+    normalizedField.includes('bedside') ||
+    normalizedField.includes('side')
+  );
+}
+
 function isBedroomLikeRoom(roomId: string): boolean {
   return roomId.includes('bedroom');
+}
+
+function isMainSleepRoom(roomId: string): boolean {
+  const normalizedRoom = normalize(roomId);
+  return (
+    normalizedRoom.includes('masterbedroom') ||
+    normalizedRoom.includes('primarybedroom') ||
+    normalizedRoom.includes('mainbedroom')
+  );
+}
+
+function maxNumericValue(field: { currentValue: unknown; numericMax?: number }): number {
+  if (typeof field.numericMax === 'number') {
+    return field.numericMax;
+  }
+  return typeof field.currentValue === 'number' ? field.currentValue : 0;
 }
 
 function minuteOfDay(simTime: string): number {
