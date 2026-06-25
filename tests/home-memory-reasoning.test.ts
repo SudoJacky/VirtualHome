@@ -144,6 +144,7 @@ describe('home memory reasoning flow', () => {
       { label: 'Distribution', value: '1:16%/2:22%/3:28%/4:19%/5:16%' },
       { label: 'Concurrent rooms', value: '1' },
       { label: 'Sleep zones', value: '0' },
+      { label: 'Shared sleep candidate', value: 'none' },
       { label: 'Routine clusters', value: '4' },
       { label: 'Meaningful rooms', value: '4' },
       { label: 'Weighted evidence', value: '2.6' },
