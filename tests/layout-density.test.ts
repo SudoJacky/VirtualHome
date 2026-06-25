@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 describe('dashboard layout density', () => {
   const mainTsx = readFileSync(path.resolve('src/web/main.tsx'), 'utf8');
   const floorplan3dTsx = readFileSync(path.resolve('src/web/Floorplan3D.tsx'), 'utf8');
+  const homeMemory3dTsx = readFileSync(path.resolve('src/web/HomeMemory3D.tsx'), 'utf8');
   const homeMemoryViewTsx = readFileSync(path.resolve('src/web/HomeMemoryView.tsx'), 'utf8');
   const styles = readFileSync(path.resolve('src/web/styles.css'), 'utf8');
 
@@ -70,5 +71,14 @@ describe('dashboard layout density', () => {
     expect(homeMemoryViewTsx).toContain('aria-label="Memory graph view mode"');
     expect(homeMemoryViewTsx).toContain("setMemoryGraphMode('topology')");
     expect(homeMemoryViewTsx).toContain('memory-view-mode-toggle');
+  });
+
+  it('keeps the spatial memory graph quiet until focus or event highlight', () => {
+    expect(homeMemory3dTsx).toContain('const renderedEdges = visibleMemoryEdges(graph.edges, highlightedEdgeIdSet, layoutMode)');
+    expect(homeMemory3dTsx).toContain('layoutMode={layoutMode}');
+    expect(homeMemory3dTsx).toContain('nodeRadius(node, layoutMode)');
+    expect(homeMemory3dTsx).toContain('shouldShowNodeLabel(node.kind, layoutMode, selected, related, highlighted)');
+    expect(homeMemory3dTsx).toContain("return selected || related || highlighted || kind === 'home' || kind === 'room';");
+    expect(homeMemory3dTsx).toContain("return highlighted || edge.kind === 'contains';");
   });
 });
