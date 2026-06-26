@@ -68,9 +68,16 @@ describe('dashboard layout density', () => {
   it('defaults the memory 3d view to a room-centered spatial map with a topology fallback', () => {
     expect(homeMemoryViewTsx).toContain("React.useState<HomeMemoryGraphLayoutMode>('spatial')");
     expect(homeMemoryViewTsx).toContain('createHomeMemoryGraphModel(memory, hypotheses, { layoutMode: memoryGraphMode })');
-    expect(homeMemoryViewTsx).toContain('aria-label="Memory graph view mode"');
+    expect(homeMemoryViewTsx).toContain('aria-label={copy.graph.viewModeLabel}');
     expect(homeMemoryViewTsx).toContain("setMemoryGraphMode('topology')");
     expect(homeMemoryViewTsx).toContain('memory-view-mode-toggle');
+  });
+
+  it('adds a lightweight language toggle for home memory explanatory copy', () => {
+    expect(homeMemoryViewTsx).toContain('memoryCopy(locale)');
+    expect(homeMemoryViewTsx).toContain('className="memory-language-toggle"');
+    expect(homeMemoryViewTsx).toContain("setLocale('zh')");
+    expect(styles).toContain('.memory-language-toggle');
   });
 
   it('keeps the spatial memory graph quiet until focus or event highlight', () => {
@@ -80,5 +87,26 @@ describe('dashboard layout density', () => {
     expect(homeMemory3dTsx).toContain('shouldShowNodeLabel(node.kind, layoutMode, selected, related, highlighted)');
     expect(homeMemory3dTsx).toContain("return selected || related || highlighted || kind === 'home' || kind === 'room';");
     expect(homeMemory3dTsx).toContain("return highlighted || edge.kind === 'contains';");
+  });
+
+  it('renders white-box memory reasoning as a full-width flow diagram', () => {
+    expect(homeMemoryViewTsx).toContain('className="memory-panel whitebox-trace-panel"');
+    expect(homeMemoryViewTsx).toContain('className="whitebox-flow-diagram"');
+    expect(homeMemoryViewTsx.indexOf('className="whitebox-flow-diagram"')).toBeGreaterThan(homeMemoryViewTsx.indexOf('className="memory-main"'));
+    expect(styles).toContain('.whitebox-flow-card:not(:last-child)::after');
+    expect(styles).toContain('grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));');
+  });
+
+  it('keeps dense white-box stage content scrollable inside each flow card', () => {
+    expect(styles).toMatch(/\.whitebox-flow-card\s*\{[^}]*height: clamp\(320px, 42vh, 460px\);/s);
+    expect(styles).toMatch(/\.whitebox-flow-card\s*\{[^}]*overflow: hidden;/s);
+    expect(styles).toMatch(/\.whitebox-card-body\s*\{[^}]*overflow: auto;/s);
+  });
+
+  it('renders a complete white-box ledger below the compact flow cards', () => {
+    expect(homeMemoryViewTsx).toContain('className="whitebox-ledger"');
+    expect(homeMemoryViewTsx).toContain('copy.whiteBox.ledgerTitle');
+    expect(homeMemoryViewTsx).toContain('className="whitebox-ledger-row"');
+    expect(styles).toContain('.whitebox-ledger-row');
   });
 });

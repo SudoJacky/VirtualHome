@@ -13,12 +13,46 @@ export type SharedSleepZoneStrength = 'none' | 'weak' | 'medium' | 'strong';
 
 export type HouseholdSizeDistribution = Record<ResidentCount, number>;
 
+export interface HouseholdScoreTerm {
+  label: string;
+  value: number;
+  formula: string;
+}
+
+export interface HouseholdResidentScoreBreakdown {
+  count: ResidentCount;
+  rawScore: number;
+  clampedScore: number;
+  probability: number;
+  terms: HouseholdScoreTerm[];
+}
+
+export interface HouseholdSizeScoringBreakdown {
+  routineEstimate: ResidentCount;
+  slotEstimate: ResidentCount | null;
+  sleepEstimate: ResidentCount | null;
+  sharedSleepEstimate: ResidentCount | null;
+  weakContextPenalty: number;
+  totalScore: number;
+  residents: HouseholdResidentScoreBreakdown[];
+  confidence: {
+    winningCount: ResidentCount;
+    winningProbability: number;
+    sampleSize: number;
+    sampleCap: number;
+    lowerBoundBoost: number;
+    weakContextPenalty: number;
+    formulaValue: number;
+  };
+}
+
 export interface HouseholdSizeEstimate {
   estimate: ResidentCount;
   label: string;
   lowerBound: ResidentCount;
   confidence: number;
   distribution: HouseholdSizeDistribution;
+  scoring: HouseholdSizeScoringBreakdown;
   features: {
     meaningfulRoomCount: number;
     longWindowRoomCount: number;
@@ -90,7 +124,7 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
     sharedSleepZones.strength === 'strong' ? recurringSleepZones.count + sharedSleepZones.count : 1,
     1
   ));
-  const distribution = createResidentDistribution({
+  const scoringInput = {
     lowerBound,
     meaningfulRoomCount: meaningfulRoomIds.length,
     meaningfulEvidenceWeight,
@@ -104,16 +138,20 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
     residentSlotCount: residentSlots.count,
     sharedSleepZoneCount: sharedSleepZones.count,
     sharedSleepZoneStrength: sharedSleepZones.strength
-  });
+  };
+  const scoring = createResidentScoringBreakdown(scoringInput);
+  const distribution = scoring.distribution;
   const estimate = mostLikelyResidentCount(distribution);
-  const confidence = estimateConfidence(distribution, {
+  const confidenceInput = {
     meaningfulEvidenceWeight,
     behaviorEpisodeCount: episodes.length,
     observedDayCount: dailySummaries.length,
     observedWeekCount: weeklySummaries.length,
     environmentContextRatio,
     lowerBound
-  });
+  };
+  const confidence = estimateConfidence(distribution, confidenceInput);
+  const confidenceBreakdown = createConfidenceBreakdown(distribution, confidenceInput);
   const evidence = createEvidenceText(concurrentActivity, recurringSleepZones, routineClusters, residentSlots, sharedSleepZones, environmentContextRatio);
 
   return {
@@ -122,6 +160,10 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
     lowerBound,
     confidence,
     distribution,
+    scoring: {
+      ...scoring.breakdown,
+      confidence: confidenceBreakdown
+    },
     features: {
       meaningfulRoomCount: meaningfulRoomIds.length,
       longWindowRoomCount: longWindowRooms.length,
@@ -330,7 +372,7 @@ function estimateSharedSleepZones(
   };
 }
 
-function createResidentDistribution(input: {
+interface ResidentScoringInput {
   lowerBound: ResidentCount;
   meaningfulRoomCount: number;
   meaningfulEvidenceWeight: number;
@@ -344,7 +386,13 @@ function createResidentDistribution(input: {
   residentSlotCount: number;
   sharedSleepZoneCount: number;
   sharedSleepZoneStrength: SharedSleepZoneStrength;
-}): HouseholdSizeDistribution {
+}
+
+function createResidentDistribution(input: ResidentScoringInput): HouseholdSizeDistribution {
+  return createResidentScoringBreakdown(input).distribution;
+}
+
+function createResidentScoringBreakdown(input: ResidentScoringInput): { distribution: HouseholdSizeDistribution; breakdown: Omit<HouseholdSizeScoringBreakdown, 'confidence'> } {
   const routineEstimate = clampResidentCount(Math.round((input.meaningfulRoomCount + input.routineClusterCount) / 3));
   const slotEstimate = input.residentSlotCount >= 3 ? clampResidentCount(Math.ceil(input.residentSlotCount / 2)) : null;
   const sleepEstimate = input.sleepZoneCount > 0 ? clampResidentCount(input.sleepZoneCount) : null;
@@ -352,50 +400,122 @@ function createResidentDistribution(input: {
     ? clampResidentCount(input.sleepZoneCount + input.sharedSleepZoneCount)
     : null;
   const weakContextPenalty = input.environmentContextRatio >= 0.8 ? 1.4 : 0;
-  const scores = Object.fromEntries(RESIDENT_COUNTS.map((count) => {
-    let score = 1;
+  const residents = RESIDENT_COUNTS.map((count) => {
+    const terms: HouseholdScoreTerm[] = [{ label: 'Base score', value: 1, formula: '1' }];
     if (count < input.lowerBound) {
-      score -= 4;
+      terms.push({ label: 'Below lower bound penalty', value: -4, formula: `${count} < lowerBound(${input.lowerBound}) ? -4 : 0` });
     }
-    score += count === input.lowerBound ? (input.lowerBound > 1 ? 1.8 : 0.4) : 0.4 / Math.max(1, Math.abs(count - input.lowerBound));
-    score += 1.2 / (Math.abs(count - routineEstimate) + 1);
+    terms.push({
+      label: 'Lower-bound distance',
+      value: count === input.lowerBound ? (input.lowerBound > 1 ? 1.8 : 0.4) : 0.4 / Math.max(1, Math.abs(count - input.lowerBound)),
+      formula: count === input.lowerBound
+        ? `count == lowerBound(${input.lowerBound}) ? ${input.lowerBound > 1 ? '1.8' : '0.4'}`
+        : `0.4 / max(1, abs(${count} - ${input.lowerBound}))`
+    });
+    terms.push({
+      label: 'Routine estimate distance',
+      value: 1.2 / (Math.abs(count - routineEstimate) + 1),
+      formula: `1.2 / (abs(${count} - routineEstimate(${routineEstimate})) + 1)`
+    });
     if (sleepEstimate !== null) {
-      score += 2.2 / (Math.abs(count - sleepEstimate) + 1);
+      terms.push({
+        label: 'Sleep-zone estimate distance',
+        value: 2.2 / (Math.abs(count - sleepEstimate) + 1),
+        formula: `2.2 / (abs(${count} - sleepEstimate(${sleepEstimate})) + 1)`
+      });
     }
     if (input.concurrentRoomCount >= 3 && count >= input.concurrentRoomCount) {
-      score += 1.6 / (count - input.concurrentRoomCount + 1);
+      terms.push({
+        label: 'Concurrent-room support',
+        value: 1.6 / (count - input.concurrentRoomCount + 1),
+        formula: `1.6 / (${count} - concurrentRoomCount(${input.concurrentRoomCount}) + 1)`
+      });
     }
     if (input.routineClusterCount >= 4 && count >= 3) {
-      score += 0.8 / (count - 2);
+      terms.push({
+        label: 'Large-routine support',
+        value: 0.8 / (count - 2),
+        formula: `0.8 / (${count} - 2)`
+      });
     }
     if (input.routineClusterCount >= 4 && count === 2) {
-      score += 0.45;
+      terms.push({ label: 'Two-resident routine support', value: 0.45, formula: 'routineClusterCount >= 4 && count == 2 ? 0.45 : 0' });
     }
     if (slotEstimate !== null) {
-      score += 1.5 / (Math.abs(count - slotEstimate) + 1);
+      terms.push({
+        label: 'Resident-slot estimate distance',
+        value: 1.5 / (Math.abs(count - slotEstimate) + 1),
+        formula: `1.5 / (abs(${count} - slotEstimate(${slotEstimate})) + 1)`
+      });
     }
     if (input.residentSlotCount >= 3 && count >= 2) {
-      score += 0.65 / (count - 1);
+      terms.push({
+        label: 'Resident-slot support',
+        value: 0.65 / (count - 1),
+        formula: `0.65 / (${count} - 1)`
+      });
     }
     if (sharedSleepEstimate !== null) {
       if (input.sharedSleepZoneStrength === 'strong') {
-        score += 2.8 / (Math.abs(count - sharedSleepEstimate) + 1);
+        terms.push({
+          label: 'Strong shared-sleep support',
+          value: 2.8 / (Math.abs(count - sharedSleepEstimate) + 1),
+          formula: `2.8 / (abs(${count} - sharedSleepEstimate(${sharedSleepEstimate})) + 1)`
+        });
       } else if (input.sharedSleepZoneStrength === 'medium') {
-        score += count === sharedSleepEstimate ? 3.2 : 0.5 / (Math.abs(count - sharedSleepEstimate) + 1);
+        terms.push({
+          label: 'Medium shared-sleep support',
+          value: count === sharedSleepEstimate ? 3.2 : 0.5 / (Math.abs(count - sharedSleepEstimate) + 1),
+          formula: count === sharedSleepEstimate
+            ? `count == sharedSleepEstimate(${sharedSleepEstimate}) ? 3.2 : fallback`
+            : `0.5 / (abs(${count} - sharedSleepEstimate(${sharedSleepEstimate})) + 1)`
+        });
       } else if (count === sharedSleepEstimate) {
-        score += 0.45;
+        terms.push({ label: 'Weak shared-sleep support', value: 0.45, formula: `count == sharedSleepEstimate(${sharedSleepEstimate}) ? 0.45 : 0` });
       }
     }
     if (input.meaningfulEvidenceWeight + input.behaviorEpisodeCount < 3 && count > 1) {
-      score -= 1.5;
+      terms.push({
+        label: 'Sparse-evidence penalty',
+        value: -1.5,
+        formula: `meaningfulEvidenceWeight(${input.meaningfulEvidenceWeight}) + behaviorEpisodeCount(${input.behaviorEpisodeCount}) < 3 && count > 1 ? -1.5 : 0`
+      });
     }
     if (weakContextPenalty > 0 && count > 1) {
-      score -= weakContextPenalty;
+      terms.push({
+        label: 'Weak-context penalty',
+        value: -weakContextPenalty,
+        formula: `environmentContextRatio(${input.environmentContextRatio}) >= 0.8 && count > 1 ? -${weakContextPenalty} : 0`
+      });
     }
-    return [count, Math.max(0.01, score)];
-  })) as HouseholdSizeDistribution;
+    const rawScore = roundScore(terms.reduce((score, term) => score + term.value, 0));
+    return {
+      count,
+      rawScore,
+      clampedScore: Math.max(0.01, rawScore),
+      probability: 0,
+      terms: terms.map((term) => ({ ...term, value: roundScore(term.value) }))
+    };
+  });
+  const scores = Object.fromEntries(residents.map((resident) => [resident.count, resident.clampedScore])) as HouseholdSizeDistribution;
+  const distribution = normalizeDistribution(scores);
+  const scoredResidents = residents.map((resident) => ({
+    ...resident,
+    probability: distribution[resident.count]
+  }));
 
-  return normalizeDistribution(scores);
+  return {
+    distribution,
+    breakdown: {
+      routineEstimate,
+      slotEstimate,
+      sleepEstimate,
+      sharedSleepEstimate,
+      weakContextPenalty,
+      totalScore: roundScore(RESIDENT_COUNTS.reduce((sum, count) => sum + scores[count], 0)),
+      residents: scoredResidents
+    }
+  };
 }
 
 function normalizeDistribution(scores: HouseholdSizeDistribution): HouseholdSizeDistribution {
@@ -434,6 +554,35 @@ function estimateConfidence(
   const weakContextPenalty = input.environmentContextRatio >= 0.8 ? 0.18 : 0;
 
   return clamp(Number(Math.min(sampleCap, probability + 0.28 + lowerBoundBoost - weakContextPenalty).toFixed(3)));
+}
+
+function createConfidenceBreakdown(
+  distribution: HouseholdSizeDistribution,
+  input: {
+    meaningfulEvidenceWeight: number;
+    behaviorEpisodeCount: number;
+    observedDayCount: number;
+    observedWeekCount: number;
+    environmentContextRatio: number;
+    lowerBound: ResidentCount;
+  }
+): HouseholdSizeScoringBreakdown['confidence'] {
+  const winningCount = mostLikelyResidentCount(distribution);
+  const winningProbability = distribution[winningCount];
+  const sampleSize = input.meaningfulEvidenceWeight + input.behaviorEpisodeCount + Math.max(0, input.observedDayCount - 1) + Math.max(0, input.observedWeekCount - 1);
+  const sampleCap = sampleSize <= 1 ? 0.45 : sampleSize <= 3 ? 0.62 : sampleSize <= 6 ? 0.78 : 0.9;
+  const lowerBoundBoost = input.lowerBound >= 2 ? 0.08 : 0;
+  const weakContextPenalty = input.environmentContextRatio >= 0.8 ? 0.18 : 0;
+
+  return {
+    winningCount,
+    winningProbability,
+    sampleSize: roundScore(sampleSize),
+    sampleCap,
+    lowerBoundBoost,
+    weakContextPenalty,
+    formulaValue: roundScore(winningProbability + 0.28 + lowerBoundBoost - weakContextPenalty)
+  };
 }
 
 function createEvidenceText(
@@ -583,6 +732,10 @@ function sortedUnique(values: string[]): string[] {
 }
 
 function roundWeight(value: number): number {
+  return Number(value.toFixed(3));
+}
+
+function roundScore(value: number): number {
   return Number(value.toFixed(3));
 }
 
