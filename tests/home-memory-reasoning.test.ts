@@ -4,7 +4,8 @@ import { createHomeMemory, reduceDeviceEvents } from '../src/web/homeMemoryModel
 import { createHomeProfileHypotheses } from '../src/web/homeProfiler';
 import {
   createEventEvidenceFlow,
-  createHypothesisReasoning
+  createHypothesisReasoning,
+  createHypothesisWhiteBoxTrace
 } from '../src/web/homeMemoryReasoning';
 
 function deviceEvent(overrides: Partial<DeviceValueEvent> = {}): DeviceValueEvent {
@@ -160,5 +161,82 @@ describe('home memory reasoning flow', () => {
       'Score resident distribution',
       'Attach evidence'
     ]);
+  });
+
+  it('creates a detailed white-box trace for household size conclusions', () => {
+    const memory = profiledMemory();
+    const hypothesis = createHomeProfileHypotheses(memory).find((candidate) => candidate.type === 'household_size');
+
+    expect(hypothesis).toBeDefined();
+    const trace = createHypothesisWhiteBoxTrace(memory, hypothesis!);
+
+    expect(trace.title).toBe('Why this conclusion was inferred');
+    expect(trace.conclusion).toEqual({
+      label: 'Probable household size',
+      type: 'household_size',
+      confidence: '56%',
+      summary: expect.stringContaining('suggests 3 residents')
+    });
+    expect(trace.sections.map((section) => section.title)).toEqual([
+      'Observed conclusion',
+      'Direct evidence',
+      'Semantic interpretation',
+      'Aggregate features',
+      'Candidate scoring',
+      'Score ledger',
+      'Confidence calculation',
+      'Missing or weak evidence'
+    ]);
+    expect(trace.sections.find((section) => section.title === 'Aggregate features')?.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'Routine clusters', value: '4', note: expect.stringContaining('meal activity') }),
+      { label: 'Environment weak-context ratio', value: '0%', note: 'High ratios cap resident-count confidence.' }
+    ]));
+    expect(trace.sections.find((section) => section.title === 'Candidate scoring')?.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: '3 residents', value: '28%' }),
+      expect.objectContaining({ label: '2 residents', value: '22%' })
+    ]));
+    expect(trace.sections.find((section) => section.title === 'Score ledger')?.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: '3 residents total', value: expect.any(String), note: expect.stringContaining('probability 28%') }),
+      expect.objectContaining({ label: '3R Base score', value: '+1', note: '1' }),
+      expect.objectContaining({ label: '3R Routine estimate distance', note: expect.stringContaining('routineEstimate') })
+    ]));
+    expect(trace.sections.find((section) => section.title === 'Confidence calculation')?.rows).toEqual(expect.arrayContaining([
+      { label: 'Final confidence', value: '56%', note: 'The UI should treat this as probabilistic, not ground truth.' }
+    ]));
+  });
+
+  it('creates a white-box trace for non-household conclusions from evidence, semantics, and rule inputs', () => {
+    const memory = profiledMemory();
+    const hypothesis = createHomeProfileHypotheses(memory).find((candidate) => candidate.id === 'room:bathroom:habit');
+
+    expect(hypothesis).toBeDefined();
+    const trace = createHypothesisWhiteBoxTrace(memory, hypothesis!);
+
+    expect(trace.conclusion).toEqual(expect.objectContaining({
+      label: 'Bathroom habit',
+      type: 'room_habit',
+      confidence: '44%'
+    }));
+    expect(trace.sections.map((section) => section.title)).toEqual([
+      'Observed conclusion',
+      'Direct evidence',
+      'Semantic interpretation',
+      'Rule inputs',
+      'Confidence calculation',
+      'Missing or weak evidence'
+    ]);
+    expect(trace.sections.find((section) => section.title === 'Direct evidence')?.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        label: 'bathroom_motion_01.motion',
+        value: 'true',
+        note: expect.stringContaining('bathroom')
+      })
+    ]));
+    expect(trace.sections.find((section) => section.title === 'Semantic interpretation')?.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        label: 'presence signal',
+        value: 'bathroom'
+      })
+    ]));
   });
 });
