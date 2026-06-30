@@ -275,4 +275,32 @@ describe('home memory reasoning flow', () => {
     expect(walkthrough.stages[6].evidence).toContain('Candidate scoring');
     expect(walkthrough.stages[6].evidence).toContain('Score ledger');
   });
+
+  it('localizes the presenter walkthrough for Chinese demos', () => {
+    const memory = profiledMemory();
+    const hypotheses = createHomeProfileHypotheses(memory);
+    const hypothesis = hypotheses.find((candidate) => candidate.type === 'household_size');
+
+    expect(hypothesis).toBeDefined();
+    const walkthrough = createMemoryDemoWalkthrough(memory, hypotheses, hypothesis!, 'zh');
+
+    expect(walkthrough.title).toBe('演示串讲');
+    expect(walkthrough.summary).toContain('设备事件');
+    expect(walkthrough.stages.map((stage) => stage.title)).toEqual([
+      '1. 设备事件流',
+      '2. 证据分类',
+      '3. 事实记忆',
+      '4. 语义解释',
+      '5. 行为片段与摘要',
+      '6. 画像结论',
+      '7. 白盒计算'
+    ]);
+    expect(walkthrough.stages[0].talkTrack).toContain('/ws/device-events');
+    expect(walkthrough.stages[0].talkTrack).toContain('设备字段');
+    expect(walkthrough.stages[0].evidence).toContain('变为');
+    expect(walkthrough.stages[1].talkTrack).toContain('画像权重');
+    expect(walkthrough.stages[5].talkTrack).toContain('概率画像');
+    expect(walkthrough.stages[6].evidence).toContain('候选评分');
+    expect(walkthrough.stages[6].evidence).toContain('评分账本');
+  });
 });

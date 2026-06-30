@@ -216,8 +216,8 @@ export function HomeMemoryView(): React.ReactElement {
     [memory, selectedHypothesis]
   );
   const demoWalkthrough = React.useMemo(
-    () => createMemoryDemoWalkthrough(memory, hypotheses, selectedHypothesis),
-    [hypotheses, memory, selectedHypothesis]
+    () => createMemoryDemoWalkthrough(memory, hypotheses, selectedHypothesis, locale),
+    [hypotheses, locale, memory, selectedHypothesis]
   );
   const status: MemorySocketStatus = paused ? 'paused' : connectionStatus;
 
@@ -470,8 +470,16 @@ const DEFAULT_DEMO_WALKTHROUGH_COPY = {
   reference: 'Where to drill down'
 };
 
+const DEFAULT_DEMO_WALKTHROUGH_COPY_ZH = {
+  eyebrow: '演示讲解',
+  title: '串讲脚本',
+  subtitle: '按照这个顺序讲，可以从设备事件一路讲到家庭记忆、画像结论和白盒计算。',
+  evidence: '讲解依据',
+  reference: '下钻位置'
+};
+
 function MemoryDemoWalkthroughPanel({ walkthrough, copy }: { walkthrough: MemoryDemoWalkthrough; copy: MemoryCopy }): React.ReactElement {
-  const panelCopy = copy.demoWalkthrough ?? DEFAULT_DEMO_WALKTHROUGH_COPY;
+  const panelCopy = copy.demoWalkthrough ?? (copy.whiteBox.eyebrow === 'White-box reasoning' ? DEFAULT_DEMO_WALKTHROUGH_COPY : DEFAULT_DEMO_WALKTHROUGH_COPY_ZH);
 
   return (
     <section className="memory-panel memory-demo-panel">
