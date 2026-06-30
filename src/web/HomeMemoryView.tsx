@@ -22,19 +22,23 @@ import {
 import {
   createEventEvidenceFlow,
   createHypothesisReasoning,
+  createHypothesisWhiteBoxTrace,
   type EventEvidenceFlow,
-  type HypothesisReasoning
+  type HypothesisReasoning,
+  type HypothesisWhiteBoxTrace
 } from './homeMemoryReasoning';
 import {
   createEvidenceExplanationSummary,
   createSemanticSignalRows,
   type SemanticSignalRow
 } from './homeMemoryViewModel';
+import { isMemoryLocale, memoryCopy, type MemoryCopy, type MemoryLocale } from './homeMemoryI18n';
 import { createHomeProfileHypotheses, type ProfileHypothesis } from './homeProfiler';
 
 type MemorySocketStatus = 'connecting' | 'live' | 'reconnecting' | 'paused' | 'offline';
 
 const RECENT_DEVICE_EVENT_LIMIT = 40;
+const MEMORY_LOCALE_STORAGE_KEY = 'virtualhome.memory.locale';
 
 export function HomeMemoryView(): React.ReactElement {
   const [memory, setMemory] = React.useState<HomeMemory>(() => createHomeMemory());
@@ -48,7 +52,9 @@ export function HomeMemoryView(): React.ReactElement {
   const [cursor, setCursor] = React.useState<DeviceEventCursor | null>(null);
   const [activeEvidenceEvent, setActiveEvidenceEvent] = React.useState<DeviceValueEvent | null>(null);
   const [memoryGraphMode, setMemoryGraphMode] = React.useState<HomeMemoryGraphLayoutMode>('spatial');
+  const [locale, setLocale] = React.useState<MemoryLocale>(() => initialMemoryLocale());
   const cursorRef = React.useRef<DeviceEventCursor | null>(null);
+  const copy = React.useMemo(() => memoryCopy(locale), [locale]);
 
   React.useEffect(() => {
     if (paused) {
@@ -203,6 +209,10 @@ export function HomeMemoryView(): React.ReactElement {
     () => (selectedHypothesis ? createHypothesisReasoning(memory, selectedHypothesis) : null),
     [memory, selectedHypothesis]
   );
+  const hypothesisWhiteBoxTrace = React.useMemo(
+    () => (selectedHypothesis ? createHypothesisWhiteBoxTrace(memory, selectedHypothesis) : null),
+    [memory, selectedHypothesis]
+  );
   const status: MemorySocketStatus = paused ? 'paused' : connectionStatus;
 
   React.useEffect(() => {
@@ -223,6 +233,10 @@ export function HomeMemoryView(): React.ReactElement {
     return () => window.clearTimeout(timer);
   }, [activeEvidenceEvent]);
 
+  React.useEffect(() => {
+    window.localStorage.setItem(MEMORY_LOCALE_STORAGE_KEY, locale);
+  }, [locale]);
+
   function clearMemory(): void {
     setMemory(createHomeMemory());
     setRecentEvents([]);
@@ -235,41 +249,57 @@ export function HomeMemoryView(): React.ReactElement {
     <div className="memory-view">
       <div className="memory-toolbar">
         <div>
-          <span className="eyebrow">Home memory</span>
-          <h1>Device-observed memory graph</h1>
-          <p>Built only from the device event socket stream.</p>
+          <span className="eyebrow">{copy.toolbar.eyebrow}</span>
+          <h1>{copy.toolbar.title}</h1>
+          <p>{copy.toolbar.subtitle}</p>
         </div>
         <div className="memory-toolbar-actions">
           <span className={`status-pill memory-status ${status}`}>
             <i />
-            {memoryStatusLabel(status)}
+            {copy.status[status]}
           </span>
           <button onClick={() => setPaused((current) => !current)} aria-pressed={paused}>
             {paused ? <Play size={15} /> : <Pause size={15} />}
-            {paused ? 'Resume' : 'Pause'}
+            {paused ? copy.toolbar.resume : copy.toolbar.pause}
           </button>
           <button onClick={clearMemory}>
             <RotateCcw size={15} />
-            Reset
+            {copy.toolbar.reset}
           </button>
-          <div className="memory-view-mode-toggle" aria-label="Memory graph view mode">
+          <div className="memory-language-toggle" aria-label={copy.language.label}>
+            <button
+              className={locale === 'en' ? 'active' : ''}
+              onClick={() => setLocale('en')}
+              aria-pressed={locale === 'en'}
+            >
+              {copy.language.english}
+            </button>
+            <button
+              className={locale === 'zh' ? 'active' : ''}
+              onClick={() => setLocale('zh')}
+              aria-pressed={locale === 'zh'}
+            >
+              {copy.language.chinese}
+            </button>
+          </div>
+          <div className="memory-view-mode-toggle" aria-label={copy.graph.viewModeLabel}>
             <button
               className={memoryGraphMode === 'spatial' ? 'active' : ''}
               onClick={() => setMemoryGraphMode('spatial')}
               aria-pressed={memoryGraphMode === 'spatial'}
-              title="Show memory grouped around room context"
+              title={copy.graph.spatialTitle}
             >
               <Map size={15} />
-              Spatial
+              {copy.graph.spatial}
             </button>
             <button
               className={memoryGraphMode === 'topology' ? 'active' : ''}
               onClick={() => setMemoryGraphMode('topology')}
               aria-pressed={memoryGraphMode === 'topology'}
-              title="Show the raw memory graph layers"
+              title={copy.graph.topologyTitle}
             >
               <Network size={15} />
-              Topology
+              {copy.graph.topology}
             </button>
           </div>
         </div>
@@ -277,7 +307,7 @@ export function HomeMemoryView(): React.ReactElement {
       {memoryWarning ? <div className="memory-warning" role="status">{memoryWarning}</div> : null}
 
       <div className="memory-main">
-        <section className="memory-graph-canvas-shell" aria-label="Home memory 3D graph">
+        <section className="memory-graph-canvas-shell" aria-label={copy.graph.canvasLabel}>
           <HomeMemory3D
             graph={graph}
             highlightedEdgeIds={graphHighlight.edgeIds}
@@ -285,18 +315,18 @@ export function HomeMemoryView(): React.ReactElement {
             selectedNodeId={selectedNodeId}
             onSelectNode={setSelectedNodeId}
           />
-          <div className="memory-layer-legend" aria-label="Home memory graph layers">
-            <span><i className="home" /> Home</span>
-            <span><i className="room" /> Rooms</span>
-            <span><i className="device" /> Devices</span>
-            <span><i className="field" /> Fields</span>
-            <span><i className="semantic" /> Semantic</span>
-            <span><i className="hypothesis" /> Hypotheses</span>
+          <div className="memory-layer-legend" aria-label={copy.graph.layerLabel}>
+            <span><i className="home" /> {copy.graph.layers.home}</span>
+            <span><i className="room" /> {copy.graph.layers.rooms}</span>
+            <span><i className="device" /> {copy.graph.layers.devices}</span>
+            <span><i className="field" /> {copy.graph.layers.fields}</span>
+            <span><i className="semantic" /> {copy.graph.layers.semantic}</span>
+            <span><i className="hypothesis" /> {copy.graph.layers.hypotheses}</span>
           </div>
-          <div className="memory-cursor-strip" aria-label="Device event cursor">
-            <span><Radio size={14} /> {cursor ? `Run ${cursor.runId}` : 'Waiting for device stream'}</span>
-            <span>{cursor ? `Sequence ${cursor.sequence}` : 'No cursor yet'}</span>
-            <span>{lastHeartbeatAt ? `Heartbeat ${formatTime(lastHeartbeatAt)}` : 'No heartbeat'}</span>
+          <div className="memory-cursor-strip" aria-label={copy.graph.cursorLabel}>
+            <span><Radio size={14} /> {cursor ? `Run ${cursor.runId}` : copy.graph.waitingStream}</span>
+            <span>{cursor ? `${copy.graph.sequence} ${cursor.sequence}` : copy.graph.noCursor}</span>
+            <span>{lastHeartbeatAt ? `${copy.graph.heartbeat} ${formatTime(lastHeartbeatAt)}` : copy.graph.noHeartbeat}</span>
           </div>
         </section>
 
@@ -307,24 +337,29 @@ export function HomeMemoryView(): React.ReactElement {
             nodeCount={graph.nodes.length}
             edgeCount={graph.edges.length}
             lastUpdateAt={lastUpdateAt}
+            copy={copy}
             onSelectHypothesis={(nodeId) => setSelectedNodeId(nodeId)}
           />
-          <SemanticSignalsPanel signals={createSemanticSignalRows(memory, 6)} />
+          <SemanticSignalsPanel signals={createSemanticSignalRows(memory, 6)} copy={copy} />
           <ReasoningFlowPanel
             eventFlow={eventFlow}
             hypothesisReasoning={hypothesisReasoning}
             selectedHypothesis={selectedHypothesis}
+            copy={copy}
             onSelectHypothesis={(nodeId) => setSelectedNodeId(nodeId)}
           />
           <SelectedMemoryPanel
             memory={memory}
             hypotheses={hypotheses}
             selectedNode={selectedNode}
+            copy={copy}
           />
         </aside>
       </div>
 
-      <RecentDeviceEventStrip events={recentEvents} />
+      {hypothesisWhiteBoxTrace ? <WhiteBoxTracePanel trace={hypothesisWhiteBoxTrace} copy={copy} /> : null}
+
+      <RecentDeviceEventStrip events={recentEvents} copy={copy} />
     </div>
   );
 }
@@ -356,12 +391,21 @@ function hypothesisForNode(hypotheses: ProfileHypothesis[], node: HomeMemoryGrap
   return hypotheses.find((hypothesis) => `hypothesis:${hypothesis.id}` === node.id) ?? null;
 }
 
+function initialMemoryLocale(): MemoryLocale {
+  if (typeof window === 'undefined') {
+    return 'en';
+  }
+  const stored = window.localStorage.getItem(MEMORY_LOCALE_STORAGE_KEY);
+  return isMemoryLocale(stored) ? stored : 'en';
+}
+
 function ProfileStatsPanel({
   memory,
   hypotheses,
   nodeCount,
   edgeCount,
   lastUpdateAt,
+  copy,
   onSelectHypothesis
 }: {
   memory: HomeMemory;
@@ -369,53 +413,54 @@ function ProfileStatsPanel({
   nodeCount: number;
   edgeCount: number;
   lastUpdateAt: string | null;
+  copy: MemoryCopy;
   onSelectHypothesis: (nodeId: string) => void;
 }): React.ReactElement {
   return (
     <section className="memory-panel">
       <div className="panel-heading">
         <div>
-          <span className="eyebrow">Profile stats</span>
-          <h2>Observed shape</h2>
+          <span className="eyebrow">{copy.profileStats.eyebrow}</span>
+          <h2>{copy.profileStats.title}</h2>
         </div>
       </div>
       <div className="memory-stats">
-        <Stat label="Events" value={memory.totalEvents} />
-        <Stat label="Rooms" value={Object.keys(memory.rooms).length} />
-        <Stat label="Devices" value={Object.keys(memory.devices).length} />
-        <Stat label="Fields" value={Object.keys(memory.fields).length} />
-        <Stat label="Episodes" value={memory.episodeCount} />
-        <Stat label="Semantic signals" value={memory.semanticSignalCount} />
-        <Stat label="Days" value={memory.dailySummaryCount} />
-        <Stat label="Weeks" value={memory.weeklySummaryCount} />
-        <Stat label="Hypotheses" value={hypotheses.length} />
-        <Stat label="Graph" value={`${nodeCount}/${edgeCount}`} />
+        <Stat label={copy.profileStats.stats.events} value={memory.totalEvents} />
+        <Stat label={copy.profileStats.stats.rooms} value={Object.keys(memory.rooms).length} />
+        <Stat label={copy.profileStats.stats.devices} value={Object.keys(memory.devices).length} />
+        <Stat label={copy.profileStats.stats.fields} value={Object.keys(memory.fields).length} />
+        <Stat label={copy.profileStats.stats.episodes} value={memory.episodeCount} />
+        <Stat label={copy.profileStats.stats.semanticSignals} value={memory.semanticSignalCount} />
+        <Stat label={copy.profileStats.stats.days} value={memory.dailySummaryCount} />
+        <Stat label={copy.profileStats.stats.weeks} value={memory.weeklySummaryCount} />
+        <Stat label={copy.profileStats.stats.hypotheses} value={hypotheses.length} />
+        <Stat label={copy.profileStats.stats.graph} value={`${nodeCount}/${edgeCount}`} />
       </div>
       <div className="memory-tree compact">
-        <MemoryTreeRow label="Home" value={memory.homeId ?? 'Unknown'} />
-        <MemoryTreeRow label="Run" value={memory.runId ?? 'No observed run'} />
-        <MemoryTreeRow label="Latest update" value={lastUpdateAt ? formatTime(lastUpdateAt) : 'Waiting'} />
+        <MemoryTreeRow label={copy.profileStats.home} value={memory.homeId ?? copy.profileStats.unknown} />
+        <MemoryTreeRow label={copy.profileStats.run} value={memory.runId ?? copy.profileStats.noObservedRun} />
+        <MemoryTreeRow label={copy.profileStats.latestUpdate} value={lastUpdateAt ? formatTime(lastUpdateAt) : copy.profileStats.waiting} />
       </div>
       <div className="memory-hypothesis-list">
         {hypotheses.slice(0, 4).map((hypothesis) => (
           <button key={hypothesis.id} onClick={() => onSelectHypothesis(`hypothesis:${hypothesis.id}`)} title={hypothesis.summary}>
             <strong>{hypothesis.label}</strong>
-            <span>{Math.round(hypothesis.confidence * 100)}% confidence</span>
+            <span>{Math.round(hypothesis.confidence * 100)}% {copy.profileStats.confidence}</span>
           </button>
         ))}
-        {hypotheses.length === 0 ? <p className="muted">No profile hypotheses yet.</p> : null}
+        {hypotheses.length === 0 ? <p className="muted">{copy.profileStats.emptyHypotheses}</p> : null}
       </div>
     </section>
   );
 }
 
-function SemanticSignalsPanel({ signals }: { signals: SemanticSignalRow[] }): React.ReactElement {
+function SemanticSignalsPanel({ signals, copy }: { signals: SemanticSignalRow[]; copy: MemoryCopy }): React.ReactElement {
   return (
     <section className="memory-panel semantic-signal-panel">
       <div className="panel-heading">
         <div>
-          <span className="eyebrow">Semantic signals</span>
-          <h2>Event meaning</h2>
+          <span className="eyebrow">{copy.semanticSignals.eyebrow}</span>
+          <h2>{copy.semanticSignals.title}</h2>
         </div>
       </div>
       <div className="semantic-signal-list">
@@ -429,7 +474,7 @@ function SemanticSignalsPanel({ signals }: { signals: SemanticSignalRow[] }): Re
             <small>{signal.strength} / {signal.weight}</small>
           </div>
         ))}
-        {signals.length === 0 ? <p className="muted">No semantic signals derived yet.</p> : null}
+        {signals.length === 0 ? <p className="muted">{copy.semanticSignals.empty}</p> : null}
       </div>
     </section>
   );
@@ -439,25 +484,27 @@ function ReasoningFlowPanel({
   eventFlow,
   hypothesisReasoning,
   selectedHypothesis,
+  copy,
   onSelectHypothesis
 }: {
   eventFlow: EventEvidenceFlow | null;
   hypothesisReasoning: HypothesisReasoning | null;
   selectedHypothesis: ProfileHypothesis | null;
+  copy: MemoryCopy;
   onSelectHypothesis: (nodeId: string) => void;
 }): React.ReactElement {
   return (
     <section className="memory-panel reasoning-flow-panel">
       <div className="panel-heading">
         <div>
-          <span className="eyebrow">Reasoning flow</span>
-          <h2>Event to profile</h2>
+          <span className="eyebrow">{copy.reasoning.eyebrow}</span>
+          <h2>{copy.reasoning.title}</h2>
         </div>
       </div>
       {eventFlow ? (
         <div className="reasoning-flow-block">
           <strong>{eventFlow.title}</strong>
-          <ReasoningSteps steps={eventFlow.steps} />
+          <ReasoningSteps steps={eventFlow.steps} copy={copy} />
           {eventFlow.relatedHypotheses.length > 0 ? (
             <div className="reasoning-chip-row">
               {eventFlow.relatedHypotheses.slice(0, 4).map((hypothesis) => (
@@ -473,7 +520,7 @@ function ReasoningFlowPanel({
           ) : null}
         </div>
       ) : (
-        <p className="muted">Waiting for a device event to explain the flow.</p>
+        <p className="muted">{copy.reasoning.waiting}</p>
       )}
 
       {hypothesisReasoning && selectedHypothesis ? (
@@ -485,33 +532,33 @@ function ReasoningFlowPanel({
           <div className="reasoning-inputs">
             {hypothesisReasoning.inputs.map((input) => (
               <div key={input.label}>
-                <span>{input.label}</span>
+                <span>{translateRowLabel(input.label, copy)}</span>
                 <strong>{input.value}</strong>
               </div>
             ))}
           </div>
           <div className="reasoning-rule">
-            <span>Rule matched</span>
+            <span>{copy.reasoning.ruleMatched}</span>
             <p>{hypothesisReasoning.rule}</p>
           </div>
-          <ReasoningSteps steps={hypothesisReasoning.steps} />
+          <ReasoningSteps steps={hypothesisReasoning.steps} copy={copy} />
         </div>
       ) : null}
     </section>
   );
 }
 
-function ReasoningSteps({ steps }: { steps: Array<{ label: string; detail: string; metrics?: Array<{ label: string; value: string }> }> }): React.ReactElement {
+function ReasoningSteps({ steps, copy }: { steps: Array<{ label: string; detail: string; metrics?: Array<{ label: string; value: string }> }>; copy: MemoryCopy }): React.ReactElement {
   return (
     <ol className="reasoning-steps">
       {steps.map((step) => (
         <li key={step.label}>
-          <strong>{step.label}</strong>
+          <strong>{translateRowLabel(step.label, copy)}</strong>
           <p>{step.detail}</p>
           {step.metrics ? (
             <div className="reasoning-metrics">
               {step.metrics.map((metric) => (
-                <span key={metric.label}>{metric.label}: {metric.value}</span>
+                <span key={metric.label}>{translateRowLabel(metric.label, copy)}: {metric.value}</span>
               ))}
             </div>
           ) : null}
@@ -521,14 +568,109 @@ function ReasoningSteps({ steps }: { steps: Array<{ label: string; detail: strin
   );
 }
 
+function WhiteBoxTracePanel({ trace, copy }: { trace: HypothesisWhiteBoxTrace; copy: MemoryCopy }): React.ReactElement {
+  return (
+    <section className="memory-panel whitebox-trace-panel">
+      <div className="panel-heading">
+        <div>
+          <span className="eyebrow">{copy.whiteBox.eyebrow}</span>
+          <h2>{whiteBoxTitle(trace.title, copy)}</h2>
+        </div>
+      </div>
+      <div className="whitebox-conclusion-banner">
+        <div>
+          <span>{trace.conclusion.type.replaceAll('_', ' ')}</span>
+          <strong>{trace.conclusion.label}</strong>
+          <p>{trace.conclusion.summary}</p>
+        </div>
+        <b title={copy.whiteBox.confidence}>{trace.conclusion.confidence}</b>
+      </div>
+      <div className="whitebox-flow-diagram" aria-label={copy.whiteBox.ariaLabel}>
+        {trace.sections.map((section, index) => (
+          <section key={section.title} className={`whitebox-flow-card ${whiteBoxStageClass(section.title)}`}>
+            <header>
+              <span>{String(index + 1).padStart(2, '0')}</span>
+              <strong>{whiteBoxSectionTitle(section.title, copy)}</strong>
+              <p>{whiteBoxSectionDescription(section, copy)}</p>
+            </header>
+            <div className="whitebox-card-body">
+              {section.rows.map((row) => (
+                <div key={`${section.title}:${row.label}:${row.value}`} className="whitebox-row">
+                  <span>{translateRowLabel(row.label, copy)}</span>
+                  <strong>{row.value}</strong>
+                  {row.note ? <small>{row.note}</small> : null}
+                </div>
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+      <div className="whitebox-ledger">
+        <div>
+          <strong>{copy.whiteBox.ledgerTitle}</strong>
+          <p>{copy.whiteBox.ledgerSubtitle}</p>
+        </div>
+        {trace.sections.map((section) => (
+          <section key={`ledger:${section.title}`} className="whitebox-ledger-section">
+            <header>
+              <strong>{whiteBoxSectionTitle(section.title, copy)}</strong>
+              <span>{section.rows.length}</span>
+            </header>
+            <div className="whitebox-ledger-rows">
+              {section.rows.map((row, index) => (
+                <div key={`ledger:${section.title}:${row.label}:${row.value}:${index}`} className="whitebox-ledger-row">
+                  <span>{translateRowLabel(row.label, copy)}</span>
+                  <strong>{row.value}</strong>
+                  {row.note ? <small>{row.note}</small> : null}
+                </div>
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function whiteBoxTitle(title: string, copy: MemoryCopy): string {
+  if (title === 'Why this conclusion was inferred' && copy.whiteBox.eyebrow !== 'White-box reasoning') {
+    return '为什么得到这个结论';
+  }
+  return title;
+}
+
+function whiteBoxSectionTitle(title: string, copy: MemoryCopy): string {
+  return copy.whiteBoxStages[title]?.title ?? title;
+}
+
+function whiteBoxSectionDescription(section: HypothesisWhiteBoxTrace['sections'][number], copy: MemoryCopy): string {
+  return copy.whiteBoxStages[section.title]?.description ?? section.description;
+}
+
+function translateRowLabel(label: string, copy: MemoryCopy): string {
+  return copy.rowLabels[label] ?? label;
+}
+
+function whiteBoxStageClass(title: string): string {
+  if (title.includes('Evidence')) return 'stage-evidence';
+  if (title.includes('Semantic')) return 'stage-semantic';
+  if (title.includes('Aggregate') || title.includes('Rule')) return 'stage-features';
+  if (title.includes('Scoring')) return 'stage-scoring';
+  if (title.includes('Confidence')) return 'stage-confidence';
+  if (title.includes('Missing')) return 'stage-gaps';
+  return 'stage-observed';
+}
+
 function SelectedMemoryPanel({
   memory,
   hypotheses,
-  selectedNode
+  selectedNode,
+  copy
 }: {
   memory: HomeMemory;
   hypotheses: ProfileHypothesis[];
   selectedNode: HomeMemoryGraphNode | null;
+  copy: MemoryCopy;
 }): React.ReactElement {
   const details = selectedNode ? selectedDetails(memory, hypotheses, selectedNode) : null;
 
@@ -536,44 +678,44 @@ function SelectedMemoryPanel({
     <section className="memory-panel">
       <div className="panel-heading">
         <div>
-          <span className="eyebrow">Selected memory</span>
-          <h2>{selectedNode?.label ?? 'No node selected'}</h2>
+          <span className="eyebrow">{copy.selectedMemory.eyebrow}</span>
+          <h2>{selectedNode?.label ?? copy.selectedMemory.emptyTitle}</h2>
         </div>
       </div>
       {selectedNode && details ? (
         <>
           <p className="memory-node-summary">{selectedNode.summary}</p>
           <div className="memory-tree">
-            <MemoryTreeRow label="Kind" value={selectedNode.kind} />
-            <MemoryTreeRow label="Activity" value={String(selectedNode.activity)} />
+            <MemoryTreeRow label={translateRowLabel('Kind', copy)} value={selectedNode.kind} />
+            <MemoryTreeRow label={translateRowLabel('Activity', copy)} value={String(selectedNode.activity)} />
             {selectedNode.confidence !== undefined ? (
-              <MemoryTreeRow label="Confidence" value={`${Math.round(selectedNode.confidence * 100)}%`} />
+              <MemoryTreeRow label={translateRowLabel('Confidence', copy)} value={`${Math.round(selectedNode.confidence * 100)}%`} />
             ) : null}
-            {details.rows.map((row) => <MemoryTreeRow key={row.label} label={row.label} value={row.value} />)}
+            {details.rows.map((row) => <MemoryTreeRow key={row.label} label={translateRowLabel(row.label, copy)} value={row.value} />)}
           </div>
-          {details.explanation ? <EvidenceBreakdown summary={details.explanation} /> : null}
-          <EvidenceList evidence={details.evidence} />
+          {details.explanation ? <EvidenceBreakdown summary={details.explanation} copy={copy} /> : null}
+          <EvidenceList evidence={details.evidence} copy={copy} />
         </>
       ) : (
-        <p className="muted">Select a sphere to inspect memory and evidence.</p>
+        <p className="muted">{copy.selectedMemory.empty}</p>
       )}
     </section>
   );
 }
 
-function EvidenceBreakdown({ summary }: { summary: ReturnType<typeof createEvidenceExplanationSummary> }): React.ReactElement {
+function EvidenceBreakdown({ summary, copy }: { summary: ReturnType<typeof createEvidenceExplanationSummary>; copy: MemoryCopy }): React.ReactElement {
   return (
     <div className="memory-evidence-breakdown">
       <div>
-        <span>Supporting</span>
+        <span>{copy.evidenceBreakdown.supporting}</span>
         <strong>{summary.supportingCount}</strong>
       </div>
       <div>
-        <span>Contradicting</span>
+        <span>{copy.evidenceBreakdown.contradicting}</span>
         <strong>{summary.contradictingCount}</strong>
       </div>
       <div>
-        <span>Missing</span>
+        <span>{copy.evidenceBreakdown.missing}</span>
         <strong>{summary.missingCount}</strong>
       </div>
       {summary.missingItems.length > 0 ? (
@@ -585,13 +727,13 @@ function EvidenceBreakdown({ summary }: { summary: ReturnType<typeof createEvide
   );
 }
 
-function RecentDeviceEventStrip({ events }: { events: DeviceValueEvent[] }): React.ReactElement {
+function RecentDeviceEventStrip({ events, copy }: { events: DeviceValueEvent[]; copy: MemoryCopy }): React.ReactElement {
   return (
-    <section className="memory-panel memory-event-strip" aria-label="Recent device events">
+    <section className="memory-panel memory-event-strip" aria-label={copy.recentEvents.ariaLabel}>
       <div className="panel-heading">
         <div>
-          <span className="eyebrow">Recent device events</span>
-          <h2>Newest first</h2>
+          <span className="eyebrow">{copy.recentEvents.eyebrow}</span>
+          <h2>{copy.recentEvents.title}</h2>
         </div>
       </div>
       <div>
@@ -604,16 +746,16 @@ function RecentDeviceEventStrip({ events }: { events: DeviceValueEvent[] }): Rea
             <small>{event.sourceEventType}</small>
           </div>
         ))}
-        {events.length === 0 ? <p className="muted">No device events observed yet.</p> : null}
+        {events.length === 0 ? <p className="muted">{copy.recentEvents.empty}</p> : null}
       </div>
     </section>
   );
 }
 
-function EvidenceList({ evidence }: { evidence: MemoryEvidence[] }): React.ReactElement {
+function EvidenceList({ evidence, copy }: { evidence: MemoryEvidence[]; copy: MemoryCopy }): React.ReactElement {
   return (
     <div className="memory-evidence-list">
-      <strong>Evidence</strong>
+      <strong>{copy.evidence.title}</strong>
       {evidence.slice(0, 6).map((item) => (
         <div key={item.id} className="memory-event-row">
           <time>{formatTime(item.simTime)}</time>
@@ -622,7 +764,7 @@ function EvidenceList({ evidence }: { evidence: MemoryEvidence[] }): React.React
           <code>{formatValue(item.value)}</code>
         </div>
       ))}
-      {evidence.length === 0 ? <p className="muted">No direct evidence attached.</p> : null}
+      {evidence.length === 0 ? <p className="muted">{copy.evidence.empty}</p> : null}
     </div>
   );
 }
@@ -787,14 +929,6 @@ function longWindowRooms(memory: HomeMemory): string[] {
 
 function newestFirst(events: DeviceValueEvent[]): DeviceValueEvent[] {
   return [...events].sort((left, right) => right.sequence - left.sequence);
-}
-
-function memoryStatusLabel(status: MemorySocketStatus): string {
-  if (status === 'live') return 'Memory live';
-  if (status === 'paused') return 'Memory paused';
-  if (status === 'reconnecting') return 'Memory reconnecting';
-  if (status === 'offline') return 'Memory offline';
-  return 'Memory connecting';
 }
 
 function formatTime(value: string): string {
