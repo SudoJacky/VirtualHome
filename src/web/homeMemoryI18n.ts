@@ -62,6 +62,13 @@ export interface MemoryCopy {
     waiting: string;
     ruleMatched: string;
   };
+  demoWalkthrough?: {
+    eyebrow: string;
+    title: string;
+    subtitle: string;
+    evidence: string;
+    reference: string;
+  };
   whiteBox: {
     eyebrow: string;
     ariaLabel: string;
@@ -184,6 +191,13 @@ const MEMORY_COPY: Record<MemoryLocale, MemoryCopy> = {
       title: 'Event to profile',
       waiting: 'Waiting for a device event to explain the flow.',
       ruleMatched: 'Rule matched'
+    },
+    demoWalkthrough: {
+      eyebrow: 'Presenter walkthrough',
+      title: 'Demo script',
+      subtitle: 'Follow this order to explain how device events become home memory and profile conclusions.',
+      evidence: 'What to point at',
+      reference: 'Where to drill down'
     },
     whiteBox: {
       eyebrow: 'White-box reasoning',

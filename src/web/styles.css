@@ -770,6 +770,145 @@ button:hover {
   min-height: 0;
 }
 
+.memory-demo-panel {
+  gap: 16px;
+}
+
+.memory-demo-panel .panel-heading p {
+  color: #60757b;
+  font-size: 13px;
+  line-height: 1.42;
+  margin: 4px 0 0;
+}
+
+.memory-demo-hero {
+  background: linear-gradient(135deg, #edf7f4 0%, #f7fafb 54%, #fff8eb 100%);
+  border: 1px solid #d7e5e2;
+  border-left: 5px solid #267e71;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.memory-demo-hero div {
+  display: grid;
+  gap: 5px;
+}
+
+.memory-demo-hero span,
+.memory-demo-reference,
+.memory-demo-stage-evidence span,
+.memory-demo-stage-metrics small {
+  color: #60757b;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.memory-demo-hero strong {
+  color: #20343b;
+  font-size: 20px;
+}
+
+.memory-demo-hero p,
+.memory-demo-stage p {
+  color: #40555b;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.memory-demo-stages {
+  counter-reset: demo-stage;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.memory-demo-stage {
+  background: #ffffff;
+  border: 1px solid #dce6e5;
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(30, 49, 55, 0.06);
+  display: grid;
+  gap: 12px;
+  min-height: 260px;
+  padding: 14px;
+  position: relative;
+}
+
+.memory-demo-stage::before {
+  background: #267e71;
+  border-radius: 999px;
+  color: #ffffff;
+  content: counter(demo-stage, decimal-leading-zero);
+  counter-increment: demo-stage;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 800;
+  height: 26px;
+  justify-content: center;
+  line-height: 26px;
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  width: 34px;
+}
+
+.memory-demo-stage > div:first-child {
+  display: grid;
+  gap: 7px;
+  padding-right: 44px;
+}
+
+.memory-demo-stage strong {
+  color: #20343b;
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.memory-demo-stage-evidence {
+  background: #f7faf9;
+  border: 1px solid #e1e8ea;
+  border-radius: 7px;
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+}
+
+.memory-demo-stage-evidence p {
+  overflow-wrap: anywhere;
+}
+
+.memory-demo-stage-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.memory-demo-stage-metrics span {
+  background: #edf3f2;
+  border-radius: 7px;
+  display: grid;
+  gap: 3px;
+  min-width: 86px;
+  padding: 7px 9px;
+}
+
+.memory-demo-stage-metrics b {
+  color: #20343b;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.memory-demo-reference {
+  align-self: end;
+  color: #267e71;
+  overflow-wrap: anywhere;
+  text-transform: none;
+}
+
 .whitebox-trace-panel {
   gap: 16px;
 }
