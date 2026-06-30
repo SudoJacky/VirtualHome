@@ -13,6 +13,7 @@ describe('home memory i18n copy', () => {
       description: expect.stringContaining('设备事件')
     });
     expect(chinese.whiteBox.ledgerTitle).toBe('完整计算账本');
+    expect(chinese.whiteBox.guidedTitle).toBe('讲解链路');
     expect(chinese.whiteBoxStages['Score ledger']?.title).toBe('评分账本');
     expect(chinese.graph.layers.hypotheses).toBe('结论');
   });
