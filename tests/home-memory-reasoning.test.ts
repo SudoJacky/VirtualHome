@@ -7,6 +7,7 @@ import {
   createHypothesisReasoning,
   createHypothesisWhiteBoxTrace
 } from '../src/web/homeMemoryReasoning';
+import { createMemoryDemoWalkthrough } from '../src/web/homeMemoryViewModel';
 
 function deviceEvent(overrides: Partial<DeviceValueEvent> = {}): DeviceValueEvent {
   return {
@@ -238,5 +239,40 @@ describe('home memory reasoning flow', () => {
         value: 'bathroom'
       })
     ]));
+  });
+
+  it('builds a presenter walkthrough that follows the full event-to-memory explanation order', () => {
+    const memory = profiledMemory();
+    const hypotheses = createHomeProfileHypotheses(memory);
+    const hypothesis = hypotheses.find((candidate) => candidate.type === 'household_size');
+
+    expect(hypothesis).toBeDefined();
+    const walkthrough = createMemoryDemoWalkthrough(memory, hypotheses, hypothesis!);
+
+    expect(walkthrough.title).toBe('Presenter walkthrough');
+    expect(walkthrough.subject).toBe('Probable household size');
+    expect(walkthrough.stages.map((stage) => stage.title)).toEqual([
+      '1. Device event stream',
+      '2. Evidence classification',
+      '3. Fact memory',
+      '4. Semantic interpretation',
+      '5. Episodes and summaries',
+      '6. Profile hypothesis',
+      '7. White-box calculation'
+    ]);
+    expect(walkthrough.stages[0].talkTrack).toContain('/ws/device-events');
+    expect(walkthrough.stages[1].metrics).toEqual(expect.arrayContaining([
+      { label: 'Category', value: 'human activity' },
+      { label: 'Strength', value: 'medium' }
+    ]));
+    expect(walkthrough.stages[3].evidence).toContain('presence signal');
+    expect(walkthrough.stages[4].metrics).toEqual(expect.arrayContaining([
+      { label: 'Episodes', value: '4' },
+      { label: 'Days', value: '1' },
+      { label: 'Weeks', value: '1' }
+    ]));
+    expect(walkthrough.stages[5].talkTrack).toContain('Probable household size');
+    expect(walkthrough.stages[6].evidence).toContain('Candidate scoring');
+    expect(walkthrough.stages[6].evidence).toContain('Score ledger');
   });
 });

@@ -29,7 +29,9 @@ import {
 } from './homeMemoryReasoning';
 import {
   createEvidenceExplanationSummary,
+  createMemoryDemoWalkthrough,
   createSemanticSignalRows,
+  type MemoryDemoWalkthrough,
   type SemanticSignalRow
 } from './homeMemoryViewModel';
 import { isMemoryLocale, memoryCopy, type MemoryCopy, type MemoryLocale } from './homeMemoryI18n';
@@ -213,6 +215,10 @@ export function HomeMemoryView(): React.ReactElement {
     () => (selectedHypothesis ? createHypothesisWhiteBoxTrace(memory, selectedHypothesis) : null),
     [memory, selectedHypothesis]
   );
+  const demoWalkthrough = React.useMemo(
+    () => createMemoryDemoWalkthrough(memory, hypotheses, selectedHypothesis),
+    [hypotheses, memory, selectedHypothesis]
+  );
   const status: MemorySocketStatus = paused ? 'paused' : connectionStatus;
 
   React.useEffect(() => {
@@ -357,6 +363,8 @@ export function HomeMemoryView(): React.ReactElement {
         </aside>
       </div>
 
+      <MemoryDemoWalkthroughPanel walkthrough={demoWalkthrough} copy={copy} />
+
       {hypothesisWhiteBoxTrace ? <WhiteBoxTracePanel trace={hypothesisWhiteBoxTrace} copy={copy} /> : null}
 
       <RecentDeviceEventStrip events={recentEvents} copy={copy} />
@@ -450,6 +458,60 @@ function ProfileStatsPanel({
         ))}
         {hypotheses.length === 0 ? <p className="muted">{copy.profileStats.emptyHypotheses}</p> : null}
       </div>
+    </section>
+  );
+}
+
+const DEFAULT_DEMO_WALKTHROUGH_COPY = {
+  eyebrow: 'Demo walkthrough',
+  title: 'Presenter script',
+  subtitle: 'Follow this order to explain how device events become home memory, profile conclusions, and white-box calculation.',
+  evidence: 'What to point at',
+  reference: 'Where to drill down'
+};
+
+function MemoryDemoWalkthroughPanel({ walkthrough, copy }: { walkthrough: MemoryDemoWalkthrough; copy: MemoryCopy }): React.ReactElement {
+  const panelCopy = copy.demoWalkthrough ?? DEFAULT_DEMO_WALKTHROUGH_COPY;
+
+  return (
+    <section className="memory-panel memory-demo-panel">
+      <div className="panel-heading">
+        <div>
+          <span className="eyebrow">{panelCopy.eyebrow}</span>
+          <h2>{panelCopy.title}</h2>
+          <p>{panelCopy.subtitle}</p>
+        </div>
+      </div>
+      <div className="memory-demo-hero">
+        <div>
+          <span>{walkthrough.title}</span>
+          <strong>{walkthrough.subject}</strong>
+          <p>{walkthrough.summary}</p>
+        </div>
+      </div>
+      <ol className="memory-demo-stages">
+        {walkthrough.stages.map((stage) => (
+          <li key={stage.id} className="memory-demo-stage">
+            <div>
+              <strong>{stage.title}</strong>
+              <p>{stage.talkTrack}</p>
+            </div>
+            <div className="memory-demo-stage-evidence">
+              <span>{panelCopy.evidence}</span>
+              <p>{stage.evidence}</p>
+            </div>
+            <div className="memory-demo-stage-metrics">
+              {stage.metrics.map((metric) => (
+                <span key={`${stage.id}:${metric.label}`}>
+                  <small>{translateRowLabel(metric.label, copy)}</small>
+                  <b>{metric.value}</b>
+                </span>
+              ))}
+            </div>
+            <small className="memory-demo-reference">{panelCopy.reference}: {stage.reference}</small>
+          </li>
+        ))}
+      </ol>
     </section>
   );
 }
