@@ -66,6 +66,8 @@ export interface MemoryCopy {
     eyebrow: string;
     ariaLabel: string;
     confidence: string;
+    guidedTitle: string;
+    guidedSubtitle: string;
     ledgerTitle: string;
     ledgerSubtitle: string;
   };
@@ -187,6 +189,8 @@ const MEMORY_COPY: Record<MemoryLocale, MemoryCopy> = {
       eyebrow: 'White-box reasoning',
       ariaLabel: 'White-box memory reasoning flow',
       confidence: 'confidence',
+      guidedTitle: 'Guided explanation chain',
+      guidedSubtitle: 'Use this path to explain the calculation from observed device facts to the final profile conclusion.',
       ledgerTitle: 'Complete calculation ledger',
       ledgerSubtitle: 'All evidence rows, semantic rows, feature rows, scoring terms, formulas, and uncertainty notes are listed here without truncation.'
     },
@@ -296,6 +300,8 @@ const MEMORY_COPY: Record<MemoryLocale, MemoryCopy> = {
       eyebrow: '白盒推理',
       ariaLabel: '家庭记忆白盒推理流程',
       confidence: '置信度',
+      guidedTitle: '讲解链路',
+      guidedSubtitle: '可以按这条路径向别人解释：系统如何从设备观测事实一步步计算出画像结论。',
       ledgerTitle: '完整计算账本',
       ledgerSubtitle: '这里完整展开所有证据、语义、特征、评分项、公式和不确定性说明，不做截断。'
     },

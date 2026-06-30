@@ -109,4 +109,11 @@ describe('dashboard layout density', () => {
     expect(homeMemoryViewTsx).toContain('className="whitebox-ledger-row"');
     expect(styles).toContain('.whitebox-ledger-row');
   });
+
+  it('renders a guided white-box explanation chain before the full ledger', () => {
+    expect(homeMemoryViewTsx).toContain('className="whitebox-guided-chain"');
+    expect(homeMemoryViewTsx).toContain('guidedExplanationSteps(trace, copy)');
+    expect(homeMemoryViewTsx.indexOf('className="whitebox-guided-chain"')).toBeLessThan(homeMemoryViewTsx.indexOf('className="whitebox-ledger"'));
+    expect(styles).toContain('.whitebox-guided-step:not(:last-child)::after');
+  });
 });

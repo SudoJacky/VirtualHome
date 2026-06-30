@@ -605,6 +605,24 @@ function WhiteBoxTracePanel({ trace, copy }: { trace: HypothesisWhiteBoxTrace; c
           </section>
         ))}
       </div>
+      <div className="whitebox-guided-chain">
+        <div>
+          <strong>{copy.whiteBox.guidedTitle}</strong>
+          <p>{copy.whiteBox.guidedSubtitle}</p>
+        </div>
+        <ol>
+          {guidedExplanationSteps(trace, copy).map((step, index) => (
+            <li key={`${step.title}:${index}`} className="whitebox-guided-step">
+              <span>{String(index + 1).padStart(2, '0')}</span>
+              <div>
+                <strong>{step.title}</strong>
+                <p>{step.detail}</p>
+                {step.reference ? <small>{step.reference}</small> : null}
+              </div>
+            </li>
+          ))}
+        </ol>
+      </div>
       <div className="whitebox-ledger">
         <div>
           <strong>{copy.whiteBox.ledgerTitle}</strong>
@@ -630,6 +648,175 @@ function WhiteBoxTracePanel({ trace, copy }: { trace: HypothesisWhiteBoxTrace; c
       </div>
     </section>
   );
+}
+
+function guidedExplanationSteps(trace: HypothesisWhiteBoxTrace, copy: MemoryCopy): Array<{ title: string; detail: string; reference?: string }> {
+  const zh = copy.whiteBox.eyebrow !== 'White-box reasoning';
+  const directEvidence = whiteBoxSection(trace, 'Direct evidence');
+  const semantic = whiteBoxSection(trace, 'Semantic interpretation');
+  const aggregate = whiteBoxSection(trace, 'Aggregate features');
+  const ruleInputs = whiteBoxSection(trace, 'Rule inputs');
+  const candidateScoring = whiteBoxSection(trace, 'Candidate scoring');
+  const scoreLedger = whiteBoxSection(trace, 'Score ledger');
+  const confidence = whiteBoxSection(trace, 'Confidence calculation');
+  const gaps = whiteBoxSection(trace, 'Missing or weak evidence');
+
+  if (trace.conclusion.type === 'household_size' && aggregate && candidateScoring && scoreLedger) {
+    const lowerBound = rowValue(aggregate, 'Lower bound');
+    const sleepZones = rowValue(aggregate, 'Sleep zones');
+    const routineClusters = rowValue(aggregate, 'Routine clusters');
+    const weightedEvidence = rowValue(aggregate, 'Weighted evidence');
+    const strongestCandidate = strongestCandidateText(candidateScoring);
+    const confidenceRow = rowValue(confidence, 'Final confidence') ?? trace.conclusion.confidence;
+
+    return zh
+      ? [
+          {
+            title: '先明确要解释的结论',
+            detail: `当前结论是「${trace.conclusion.label}」，置信度为 ${trace.conclusion.confidence}。这不是模拟真值，而是由设备事件推出来的画像假设。`,
+            reference: '对应账本：观测结论'
+          },
+          {
+            title: '再说明输入来自哪些设备事实',
+            detail: `系统先收集 ${directEvidence?.rows.length ?? 0} 条直接设备证据，例如设备字段变化、房间、时间、证据强度和画像权重。`,
+            reference: '对应账本：直接证据'
+          },
+          {
+            title: '把设备事实翻译成语义信号',
+            detail: `这些事件会被归一成 ${semantic?.rows.length ?? 0} 条语义信号，例如 presence、sleep、environment 或 cooking 等信号，高层推理只读取这些可解释语义。`,
+            reference: '对应账本：语义解释'
+          },
+          {
+            title: '提取住户数量相关的聚合特征',
+            detail: `用于人数推断的关键特征包括：下界 ${lowerBound ?? 'unknown'}、睡眠区 ${sleepZones ?? 'unknown'}、routine cluster ${routineClusters ?? 'unknown'}、加权证据 ${weightedEvidence ?? 'unknown'}。`,
+            reference: '对应账本：聚合特征'
+          },
+          {
+            title: '分别给每个候选人数打分',
+            detail: `每个候选人数都从 base score 开始，再根据下界距离、routine、sleep zone、resident slot、shared sleep、弱环境证据等项加分或扣分。当前最高候选是 ${strongestCandidate}。`,
+            reference: '对应账本：候选评分、评分账本'
+          },
+          {
+            title: '把原始分数归一化成概率',
+            detail: '每个候选人数的 clamped score 会除以 total score，得到 1/2/3/4/5 人的概率分布；评分账本里能看到每一项公式和每个候选的合计。',
+            reference: '对应账本：评分账本'
+          },
+          {
+            title: '最后计算置信度并保留不确定性',
+            detail: `最终置信度为 ${confidenceRow}。它还会受到样本量上限、winning probability、lower-bound boost、weak-context penalty 等限制，所以结果仍然是概率判断。`,
+            reference: '对应账本：置信度计算、缺失或弱证据'
+          }
+        ]
+      : [
+          {
+            title: 'Start with the conclusion being explained',
+            detail: `The selected conclusion is "${trace.conclusion.label}" with ${trace.conclusion.confidence} confidence. It is a profile hypothesis inferred from device events, not simulation truth.`,
+            reference: 'Ledger: Observed conclusion'
+          },
+          {
+            title: 'Show the observed device facts',
+            detail: `The system first collects ${directEvidence?.rows.length ?? 0} direct evidence rows: device field changes, rooms, times, evidence strengths, and profile weights.`,
+            reference: 'Ledger: Direct evidence'
+          },
+          {
+            title: 'Translate facts into semantic signals',
+            detail: `Those events are normalized into ${semantic?.rows.length ?? 0} semantic signals, such as presence, sleep, environment, or cooking signals. Higher-level rules read these meanings.`,
+            reference: 'Ledger: Semantic interpretation'
+          },
+          {
+            title: 'Extract household-size features',
+            detail: `The resident-count features are lower bound ${lowerBound ?? 'unknown'}, sleep zones ${sleepZones ?? 'unknown'}, routine clusters ${routineClusters ?? 'unknown'}, and weighted evidence ${weightedEvidence ?? 'unknown'}.`,
+            reference: 'Ledger: Aggregate features'
+          },
+          {
+            title: 'Score every resident-count candidate',
+            detail: `Each candidate starts with a base score and then receives additions or penalties for lower-bound distance, routines, sleep zones, resident slots, shared sleep, and weak context. The strongest candidate is ${strongestCandidate}.`,
+            reference: 'Ledger: Candidate scoring, Score ledger'
+          },
+          {
+            title: 'Normalize raw scores into probabilities',
+            detail: 'Each candidate clamped score is divided by the total score to produce the 1/2/3/4/5 resident probability distribution. The score ledger shows every formula term.',
+            reference: 'Ledger: Score ledger'
+          },
+          {
+            title: 'Apply confidence caps and uncertainty',
+            detail: `Final confidence is ${confidenceRow}. It is limited by sample cap, winning probability, lower-bound boost, and weak-context penalty, so the output remains probabilistic.`,
+            reference: 'Ledger: Confidence calculation, Missing or weak evidence'
+          }
+        ];
+  }
+
+  return zh
+    ? [
+        {
+          title: '先明确结论',
+          detail: `当前结论是「${trace.conclusion.label}」，置信度为 ${trace.conclusion.confidence}。`,
+          reference: '对应账本：观测结论'
+        },
+        {
+          title: '展示直接证据',
+          detail: `这个结论引用了 ${directEvidence?.rows.length ?? 0} 条设备证据。`,
+          reference: '对应账本：直接证据'
+        },
+        {
+          title: '解释语义归一',
+          detail: `设备证据被转换成 ${semantic?.rows.length ?? 0} 条语义信号，供画像规则读取。`,
+          reference: '对应账本：语义解释'
+        },
+        {
+          title: '说明规则输入',
+          detail: `规则读取 ${ruleInputs?.rows.length ?? 0} 类输入，包括事件数量、房间、设备、时间桶、语义信号和图谱主体。`,
+          reference: '对应账本：规则输入'
+        },
+        {
+          title: '说明置信度和缺口',
+          detail: `最后得到 ${trace.conclusion.confidence} 置信度；还需要查看 ${gaps?.rows.length ?? 0} 条缺失或弱证据来理解不确定性。`,
+          reference: '对应账本：置信度计算、缺失或弱证据'
+        }
+      ]
+    : [
+        {
+          title: 'Start with the selected conclusion',
+          detail: `The selected conclusion is "${trace.conclusion.label}" with ${trace.conclusion.confidence} confidence.`,
+          reference: 'Ledger: Observed conclusion'
+        },
+        {
+          title: 'Show direct evidence',
+          detail: `This conclusion references ${directEvidence?.rows.length ?? 0} observed device evidence rows.`,
+          reference: 'Ledger: Direct evidence'
+        },
+        {
+          title: 'Explain semantic normalization',
+          detail: `Device evidence is converted into ${semantic?.rows.length ?? 0} semantic signals before profile rules read it.`,
+          reference: 'Ledger: Semantic interpretation'
+        },
+        {
+          title: 'Explain rule inputs',
+          detail: `The rule reads ${ruleInputs?.rows.length ?? 0} input groups, including events, rooms, devices, time buckets, semantic signals, and graph subjects.`,
+          reference: 'Ledger: Rule inputs'
+        },
+        {
+          title: 'Explain confidence and gaps',
+          detail: `The final confidence is ${trace.conclusion.confidence}; ${gaps?.rows.length ?? 0} missing or weak evidence rows explain remaining uncertainty.`,
+          reference: 'Ledger: Confidence calculation, Missing or weak evidence'
+        }
+      ];
+}
+
+function whiteBoxSection(trace: HypothesisWhiteBoxTrace, title: string): HypothesisWhiteBoxTrace['sections'][number] | undefined {
+  return trace.sections.find((section) => section.title === title);
+}
+
+function rowValue(section: HypothesisWhiteBoxTrace['sections'][number] | undefined, label: string): string | undefined {
+  return section?.rows.find((row) => row.label === label)?.value;
+}
+
+function strongestCandidateText(section: HypothesisWhiteBoxTrace['sections'][number]): string {
+  const scored = section.rows
+    .map((row) => ({ label: row.label, probability: Number(row.value.replace('%', '')) }))
+    .filter((row) => Number.isFinite(row.probability))
+    .sort((left, right) => right.probability - left.probability)[0];
+  return scored ? `${scored.label} (${scored.probability}%)` : 'unknown';
 }
 
 function whiteBoxTitle(title: string, copy: MemoryCopy): string {
