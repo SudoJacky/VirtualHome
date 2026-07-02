@@ -44,6 +44,23 @@ export interface HomeMemoryLlmConfig {
   };
 }
 
+export interface HomeMemoryLlmConfigSummary {
+  provider: Omit<LlmProviderConfig, 'apiKey'> & {
+    apiKeyConfigured: boolean;
+  };
+  budget: HomeMemoryLlmConfig['budget'];
+  gates: HomeMemoryLlmConfig['gates'];
+}
+
+export interface HomeMemoryLlmConfigPatch {
+  provider?: Partial<Omit<LlmProviderConfig, 'provider' | 'apiKey'>> & {
+    apiKey?: string;
+    clearApiKey?: boolean;
+  };
+  budget?: Partial<HomeMemoryLlmConfig['budget']>;
+  gates?: Partial<HomeMemoryLlmConfig['gates']>;
+}
+
 export interface HomeMemoryLlmInvocationDecision {
   shouldCall: boolean;
   purpose: HomeMemoryLlmPurpose;
@@ -143,6 +160,15 @@ export interface RequestHomeMemoryLlmEnrichmentResult {
   cacheKey: string;
   enrichment: HomeMemoryLlmEnrichment;
   errors: string[];
+}
+
+export interface HomeMemoryLlmStreamEvent {
+  event: 'decision' | 'cache' | 'provider_delta' | 'fallback';
+  data: Record<string, unknown>;
+}
+
+export interface RequestHomeMemoryLlmStreamingInput extends RequestHomeMemoryLlmEnrichmentInput {
+  onEvent?: (event: HomeMemoryLlmStreamEvent) => void;
 }
 
 export interface UnknownSchemaCandidate {
@@ -248,6 +274,56 @@ export function resolveHomeMemoryLlmConfig(env: Record<string, string | undefine
       minEvidenceCountForUnknownSchema: parsePositiveInteger(env.HOME_MEMORY_LLM_MIN_EVIDENCE_COUNT_FOR_UNKNOWN_SCHEMA) ?? DEFAULT_CONFIG.gates.minEvidenceCountForUnknownSchema,
       minConfidenceForReview: parseRatio(env.HOME_MEMORY_LLM_MIN_CONFIDENCE_FOR_REVIEW) ?? DEFAULT_CONFIG.gates.minConfidenceForReview,
       maxConfidenceForReview: parseRatio(env.HOME_MEMORY_LLM_MAX_CONFIDENCE_FOR_REVIEW) ?? DEFAULT_CONFIG.gates.maxConfidenceForReview
+    }
+  };
+}
+
+export function summarizeHomeMemoryLlmConfig(config: HomeMemoryLlmConfig): HomeMemoryLlmConfigSummary {
+  return {
+    provider: {
+      enabled: config.provider.enabled,
+      provider: config.provider.provider,
+      baseUrl: config.provider.baseUrl,
+      model: config.provider.model,
+      timeoutMs: config.provider.timeoutMs,
+      maxRetries: config.provider.maxRetries,
+      apiKeyConfigured: Boolean(config.provider.apiKey)
+    },
+    budget: { ...config.budget },
+    gates: { ...config.gates }
+  };
+}
+
+export function applyHomeMemoryLlmConfigPatch(
+  current: HomeMemoryLlmConfig,
+  patch: HomeMemoryLlmConfigPatch
+): HomeMemoryLlmConfig {
+  const providerPatch = patch.provider ?? {};
+  const apiKey = providerPatch.clearApiKey
+    ? undefined
+    : providerPatch.apiKey && providerPatch.apiKey.trim().length > 0
+      ? providerPatch.apiKey.trim()
+      : current.provider.apiKey;
+
+  return {
+    provider: {
+      enabled: providerPatch.enabled ?? current.provider.enabled,
+      provider: 'openai-compatible',
+      baseUrl: providerPatch.baseUrl?.trim() ?? current.provider.baseUrl,
+      model: providerPatch.model?.trim() || current.provider.model,
+      apiKey,
+      timeoutMs: providerPatch.timeoutMs ?? current.provider.timeoutMs,
+      maxRetries: providerPatch.maxRetries ?? current.provider.maxRetries
+    },
+    budget: {
+      maxCallsPerHomePerHour: patch.budget?.maxCallsPerHomePerHour ?? current.budget.maxCallsPerHomePerHour,
+      maxCallsPerHomePerDay: patch.budget?.maxCallsPerHomePerDay ?? current.budget.maxCallsPerHomePerDay,
+      maxBatchSize: patch.budget?.maxBatchSize ?? current.budget.maxBatchSize
+    },
+    gates: {
+      minEvidenceCountForUnknownSchema: patch.gates?.minEvidenceCountForUnknownSchema ?? current.gates.minEvidenceCountForUnknownSchema,
+      minConfidenceForReview: patch.gates?.minConfidenceForReview ?? current.gates.minConfidenceForReview,
+      maxConfidenceForReview: patch.gates?.maxConfidenceForReview ?? current.gates.maxConfidenceForReview
     }
   };
 }
@@ -487,6 +563,123 @@ export async function requestHomeMemoryLlmEnrichment(input: RequestHomeMemoryLlm
   };
 }
 
+export async function requestHomeMemoryLlmEnrichmentStream(input: RequestHomeMemoryLlmStreamingInput): Promise<RequestHomeMemoryLlmEnrichmentResult> {
+  const evidenceIds = input.hypothesis.evidence.map((evidence) => evidence.id);
+  const cacheKey = createHomeMemoryLlmCacheKey({
+    purpose: input.purpose,
+    homeId: input.memory.homeId ?? '',
+    runId: input.memory.runId ?? '',
+    hypothesisId: input.hypothesis.id,
+    evidenceIds,
+    model: input.config.provider.model,
+    promptVersion: 1,
+    schemaVersion: 1
+  });
+
+  const cachedErrors = input.cached
+    ? validateCachedEnrichment({
+      cached: input.cached,
+      memory: input.memory,
+      expectedPurpose: input.purpose,
+      maxConfidence: input.hypothesis.confidence
+    })
+    : [];
+  if (input.cached && cachedErrors.length === 0) {
+    input.onEvent?.({ event: 'cache', data: { cacheKey, reason: 'Cache hit; no provider stream needed.' } });
+    return {
+      source: 'cache',
+      cacheKey,
+      enrichment: structuredClone(input.cached),
+      errors: []
+    };
+  }
+
+  const fallback = () => createDeterministicHomeMemoryLlmEnrichment({
+    purpose: input.purpose,
+    hypothesis: input.hypothesis,
+    evidenceIds,
+    prompt: input.prompt,
+    baseUrl: input.config.provider.baseUrl
+  });
+
+  const decision = decideHomeMemoryLlmInvocation({
+    config: input.config,
+    purpose: input.purpose,
+    homeId: input.memory.homeId ?? '',
+    runId: input.memory.runId ?? '',
+    trigger: input.trigger,
+    hypothesisId: input.hypothesis.id,
+    confidence: input.hypothesis.confidence,
+    evidenceIds,
+    callsThisHour: input.callsThisHour,
+    callsToday: input.callsToday
+  });
+  input.onEvent?.({
+    event: 'decision',
+    data: {
+      shouldCall: decision.shouldCall,
+      reason: decision.reason,
+      cacheKey: decision.cacheKey,
+      purpose: decision.purpose
+    }
+  });
+
+  if (!decision.shouldCall) {
+    const errors = [...cachedErrors, decision.reason];
+    input.onEvent?.({ event: 'fallback', data: { reason: decision.reason, errors } });
+    return {
+      source: 'deterministic-fallback',
+      cacheKey,
+      enrichment: fallback(),
+      errors
+    };
+  }
+
+  const errors: string[] = [...cachedErrors];
+  const fetcher = input.fetcher ?? fetch;
+  for (let attempt = 0; attempt <= input.config.provider.maxRetries; attempt += 1) {
+    try {
+      const jsonText = await requestOpenAiCompatibleJsonStream({
+        config: input.config,
+        prompt: input.prompt,
+        fetcher,
+        onDelta: (content) => input.onEvent?.({ event: 'provider_delta', data: { content } })
+      });
+      const parsed = parseHomeMemoryLlmEnrichmentJson({
+        jsonText,
+        model: input.config.provider.model,
+        baseUrl: input.config.provider.baseUrl,
+        prompt: input.prompt,
+        memory: input.memory
+      });
+      if (parsed.ok) {
+        if (parsed.enrichment.confidence > input.hypothesis.confidence) {
+          errors.push('LLM enrichment confidence cannot exceed baseline confidence.');
+          break;
+        }
+        return {
+          source: 'llm',
+          cacheKey,
+          enrichment: parsed.enrichment,
+          errors: []
+        };
+      }
+      errors.push(...parsed.errors);
+      break;
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  input.onEvent?.({ event: 'fallback', data: { reason: 'Provider stream failed validation or request handling.', errors } });
+  return {
+    source: 'deterministic-fallback',
+    cacheKey,
+    enrichment: fallback(),
+    errors
+  };
+}
+
 export async function requestUnknownSchemaMapping(input: RequestUnknownSchemaMappingInput): Promise<RequestHomeMemoryLlmEnrichmentResult> {
   const cacheKey = createHomeMemoryLlmCacheKey({
     purpose: 'unknown_schema_mapping',
@@ -642,6 +835,7 @@ async function requestOpenAiCompatibleJson(input: {
     },
     body: JSON.stringify({
       model: input.config.provider.model,
+      stream: false,
       response_format: { type: 'json_object' },
       messages: [
         {
@@ -672,6 +866,129 @@ async function requestOpenAiCompatibleJson(input: {
     throw new Error('LLM provider response did not include message content');
   }
   return content;
+}
+
+async function requestOpenAiCompatibleJsonStream(input: {
+  config: HomeMemoryLlmConfig;
+  prompt: string;
+  fetcher: HomeMemoryLlmFetch;
+  onDelta: (content: string) => void;
+}): Promise<string> {
+  const response = await input.fetcher(`${input.config.provider.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(input.config.provider.apiKey ? { authorization: `Bearer ${input.config.provider.apiKey}` } : {})
+    },
+    body: JSON.stringify({
+      model: input.config.provider.model,
+      stream: true,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: 'You are an evidence-locked Home Memory reviewer. Return only JSON matching the requested schema. Do not add claims without evidence IDs.'
+        },
+        {
+          role: 'user',
+          content: input.prompt
+        }
+      ]
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`LLM provider request failed with status ${response.status}`);
+  }
+
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.includes('text/event-stream')) {
+    const payload = await response.json() as {
+      choices?: Array<{
+        message?: { content?: unknown };
+      }>;
+    };
+    const content = payload.choices?.[0]?.message?.content;
+    if (typeof content !== 'string' || content.trim().length === 0) {
+      throw new Error('LLM provider response did not include message content');
+    }
+    input.onDelta(content);
+    return content;
+  }
+
+  const complete = await readOpenAiCompatibleSseContent(response, input.onDelta);
+  if (complete.trim().length === 0) {
+    throw new Error('LLM provider stream did not include content deltas');
+  }
+  return complete;
+}
+
+async function readOpenAiCompatibleSseContent(
+  response: Response,
+  onDelta: (content: string) => void
+): Promise<string> {
+  let complete = '';
+  let doneSeen = false;
+
+  function consumeBuffer(text: string, flush = false): string {
+    const blocks = text.split(/\n\n+/);
+    const completeBlocks = flush ? blocks : blocks.slice(0, -1);
+    for (const block of completeBlocks) {
+      for (const data of parseSseDataBlock(block)) {
+        if (data === '[DONE]') {
+          doneSeen = true;
+          continue;
+        }
+        if (doneSeen) {
+          continue;
+        }
+        const parsed = JSON.parse(data) as {
+          choices?: Array<{
+            delta?: { content?: unknown };
+            message?: { content?: unknown };
+          }>;
+        };
+        const delta = parsed.choices?.[0]?.delta?.content ?? parsed.choices?.[0]?.message?.content;
+        if (typeof delta === 'string' && delta.length > 0) {
+          complete += delta;
+          onDelta(delta);
+        }
+      }
+    }
+    return flush ? '' : blocks[blocks.length - 1] ?? '';
+  }
+
+  if (!response.body) {
+    consumeBuffer(await response.text(), true);
+    return complete;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    buffer = consumeBuffer(buffer);
+    if (doneSeen) {
+      break;
+    }
+  }
+  buffer += decoder.decode();
+  consumeBuffer(buffer, true);
+  return complete;
+}
+
+function parseSseDataBlock(block: string): string[] {
+  const data = block
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice('data:'.length).trimStart())
+    .join('\n');
+  return data.length > 0 ? [data] : [];
 }
 
 function baseInvocationDecision(input: DecideHomeMemoryLlmInvocationInput): HomeMemoryLlmInvocationDecision {

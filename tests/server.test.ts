@@ -8,6 +8,18 @@ import { getHomeDefinition } from '../src/sim/catalog';
 import { resolveHomeMemoryLlmConfig } from '../src/sim/llm/homeMemoryEnrichment';
 import { deviceCapabilities } from '../src/shared/deviceRegistry';
 
+function parseServerSentEvents(body: string): Array<{ event: string; data: Record<string, unknown> }> {
+  return body
+    .split(/\n\n+/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => {
+      const event = block.match(/^event: (.+)$/m)?.[1] ?? 'message';
+      const data = block.match(/^data: (.+)$/m)?.[1] ?? '{}';
+      return { event, data: JSON.parse(data) as Record<string, unknown> };
+    });
+}
+
 describe('server API', () => {
   const dirs: string[] = [];
 
@@ -709,6 +721,204 @@ describe('server API', () => {
     await server.close();
   });
 
+  it('serves and updates masked runtime memory LLM config', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-memory-llm-config-api-'));
+    dirs.push(dir);
+    const server = createServer({
+      databasePath: path.join(dir, 'twin.db'),
+      autoTick: false,
+      homeMemoryLlm: resolveHomeMemoryLlmConfig({
+        HOME_MEMORY_LLM_ENABLED: 'true',
+        HOME_MEMORY_LLM_BASE_URL: 'https://llm.example.test/v1',
+        HOME_MEMORY_LLM_API_KEY: 'secret-token',
+        HOME_MEMORY_LLM_MODEL: 'memory-model'
+      })
+    });
+
+    const initial = await server.inject({ method: 'GET', url: '/api/memory/llm/config' });
+
+    expect(initial.statusCode).toBe(200);
+    expect(initial.json()).toMatchObject({
+      provider: {
+        enabled: true,
+        provider: 'openai-compatible',
+        baseUrl: 'https://llm.example.test/v1',
+        model: 'memory-model',
+        apiKeyConfigured: true
+      }
+    });
+    expect(JSON.stringify(initial.json())).not.toContain('secret-token');
+
+    const update = await server.inject({
+      method: 'PUT',
+      url: '/api/memory/llm/config',
+      payload: {
+        provider: {
+          enabled: false,
+          baseUrl: 'https://new-llm.example.test/v1',
+          model: 'new-memory-model',
+          apiKey: '',
+          timeoutMs: 23000,
+          maxRetries: 2
+        },
+        budget: {
+          maxCallsPerHomePerHour: 3,
+          maxCallsPerHomePerDay: 9,
+          maxBatchSize: 4
+        },
+        gates: {
+          minEvidenceCountForUnknownSchema: 3,
+          minConfidenceForReview: 0.2,
+          maxConfidenceForReview: 0.8
+        }
+      }
+    });
+
+    expect(update.statusCode).toBe(200);
+    expect(update.json()).toMatchObject({
+      provider: {
+        enabled: false,
+        baseUrl: 'https://new-llm.example.test/v1',
+        model: 'new-memory-model',
+        apiKeyConfigured: true,
+        timeoutMs: 23000,
+        maxRetries: 2
+      },
+      budget: {
+        maxCallsPerHomePerHour: 3,
+        maxCallsPerHomePerDay: 9,
+        maxBatchSize: 4
+      },
+      gates: {
+        minEvidenceCountForUnknownSchema: 3,
+        minConfidenceForReview: 0.2,
+        maxConfidenceForReview: 0.8
+      }
+    });
+
+    const cleared = await server.inject({
+      method: 'PUT',
+      url: '/api/memory/llm/config',
+      payload: { provider: { clearApiKey: true } }
+    });
+
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json().provider.apiKeyConfigured).toBe(false);
+
+    const invalidConfidenceBand = await server.inject({
+      method: 'PUT',
+      url: '/api/memory/llm/config',
+      payload: {
+        gates: {
+          minConfidenceForReview: 0.9,
+          maxConfidenceForReview: 0.2
+        }
+      }
+    });
+
+    expect(invalidConfidenceBand.statusCode).toBe(400);
+
+    await server.close();
+  });
+
+  it('streams memory LLM provider deltas and the validated result', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-memory-llm-stream-api-'));
+    dirs.push(dir);
+    const providerJson = JSON.stringify({
+      purpose: 'hypothesis_explanation',
+      claim: 'Streamed provider explanation remains evidence-locked.',
+      type: 'hypothesis_explanation',
+      confidence: 0.1,
+      supportingEvidenceIds: ['placeholder'],
+      contradictingEvidenceIds: [],
+      missingEvidence: [],
+      alternatives: []
+    });
+    const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
+      const prompt = JSON.parse(body.messages[1].content) as { evidenceIds: string[] };
+      const jsonText = providerJson.replace('placeholder', prompt.evidenceIds[0]);
+      return new Response([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: jsonText.slice(0, 45) } }] })}\n\n`,
+        `data: ${JSON.stringify({ choices: [{ delta: { content: jsonText.slice(45) } }] })}\n\n`,
+        'data: [DONE]\n\n'
+      ].join(''), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' }
+      });
+    });
+    const server = createServer({
+      databasePath: path.join(dir, 'twin.db'),
+      autoTick: false,
+      homeMemoryLlm: resolveHomeMemoryLlmConfig({
+        HOME_MEMORY_LLM_ENABLED: 'true',
+        HOME_MEMORY_LLM_BASE_URL: 'https://llm.example.test/v1',
+        HOME_MEMORY_LLM_MODEL: 'memory-model'
+      }),
+      homeMemoryLlmFetch: fetcher
+    });
+
+    await server.inject({ method: 'POST', url: '/api/scenarios/weekday_normal/start' });
+    await server.inject({ method: 'POST', url: '/api/control/advance', payload: { minutes: 30 } });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/memory/llm/stream?purpose=hypothesis_explanation&type=presence_signal'
+    });
+    const events = parseServerSentEvents(response.body);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('text/event-stream');
+    expect(events.map((event) => event.event)).toEqual(expect.arrayContaining(['start', 'decision', 'provider_delta', 'result']));
+    expect(events.filter((event) => event.event === 'provider_delta').map((event) => event.data.content).join('')).toContain('Streamed provider explanation');
+    expect(events.find((event) => event.event === 'result')?.data).toMatchObject({
+      source: 'llm',
+      enrichment: {
+        claim: 'Streamed provider explanation remains evidence-locked.',
+        metadata: {
+          model: 'memory-model'
+        }
+      },
+      errors: []
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    await server.close();
+  });
+
+  it('streams fallback events when the memory LLM provider is disabled', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-memory-llm-stream-fallback-api-'));
+    dirs.push(dir);
+    const fetcher = vi.fn();
+    const server = createServer({
+      databasePath: path.join(dir, 'twin.db'),
+      autoTick: false,
+      homeMemoryLlmFetch: fetcher
+    });
+
+    await server.inject({ method: 'POST', url: '/api/scenarios/weekday_normal/start' });
+    await server.inject({ method: 'POST', url: '/api/control/advance', payload: { minutes: 30 } });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/memory/llm/stream?purpose=hypothesis_explanation&type=presence_signal'
+    });
+    const events = parseServerSentEvents(response.body);
+
+    expect(response.statusCode).toBe(200);
+    expect(events.map((event) => event.event)).toEqual(expect.arrayContaining(['decision', 'fallback', 'result']));
+    expect(events.some((event) => event.event === 'provider_delta')).toBe(false);
+    expect(events.find((event) => event.event === 'result')?.data).toMatchObject({
+      source: 'deterministic-fallback',
+      errors: expect.arrayContaining([
+        expect.stringMatching(/disabled/i)
+      ])
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
   it('reports planned memory LLM batch work without calling the provider', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-memory-llm-batch-plan-api-'));
     dirs.push(dir);
@@ -838,6 +1048,8 @@ describe('server API', () => {
       '/api/memory/query-plan',
       '/api/memory/llm/batch-plan',
       '/api/memory/llm/batch',
+      '/api/memory/llm/config',
+      '/api/memory/llm/stream',
       '/api/memory/llm/metrics',
       '/api/device-twins',
       '/api/device-capabilities',

@@ -28,6 +28,11 @@ export interface GetJsonOptions {
   timeoutMs?: number;
 }
 
+export interface PutJsonOptions {
+  fetcher?: FetchLike;
+  timeoutMs?: number;
+}
+
 export type AlertStatusCommand = 'active' | 'acknowledged' | 'resolved' | 'ignored';
 export type DeviceCommandValue = string | number | boolean | null;
 
@@ -81,6 +86,36 @@ export async function getJson<T = unknown>(
   try {
     const response = await fetcher(url, {
       method: 'GET',
+      signal: controller.signal
+    });
+    const body = await readJson(response);
+    if (!response.ok) {
+      throw new ApiClientError(formatApiError(body, response), response.status);
+    }
+    return body as T;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function putJson<T = unknown>(
+  url: string,
+  payload: unknown,
+  fetcherOrOptions: FetchLike | PutJsonOptions = fetch,
+  timeoutMs = 10000
+): Promise<T> {
+  const options = typeof fetcherOrOptions === 'function'
+    ? { fetcher: fetcherOrOptions, timeoutMs }
+    : fetcherOrOptions;
+  const fetcher = options.fetcher ?? fetch;
+  const requestTimeoutMs = options.timeoutMs ?? 10000;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+  try {
+    const response = await fetcher(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
       signal: controller.signal
     });
     const body = await readJson(response);

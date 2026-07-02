@@ -3,14 +3,27 @@ import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { z } from 'zod';
 import { getHomeDefinition } from '../sim/catalog';
 import { createSimulator } from '../sim/engine';
 import { getScenarioIds } from '../sim/scenarios';
-import { resolveHomeMemoryLlmConfig, type HomeMemoryLlmConfig, type HomeMemoryLlmEnrichment, type HomeMemoryLlmFetch, type HomeMemoryLlmPurpose, type HomeMemoryLlmTrigger } from '../sim/llm/homeMemoryEnrichment';
+import {
+  applyHomeMemoryLlmConfigPatch,
+  createHomeMemoryLlmCacheKey,
+  requestHomeMemoryLlmEnrichmentStream,
+  resolveHomeMemoryLlmConfig,
+  summarizeHomeMemoryLlmConfig,
+  type HomeMemoryLlmConfig,
+  type HomeMemoryLlmEnrichment,
+  type HomeMemoryLlmFetch,
+  type HomeMemoryLlmPurpose,
+  type HomeMemoryLlmTrigger
+} from '../sim/llm/homeMemoryEnrichment';
 import { getDeviceCapability, getDeviceCapabilityMetadata } from '../shared/deviceRegistry';
 import { getDeviceSupportedCommands } from '../shared/deviceInstanceCapabilities';
 import type { HomeDefinition, StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
+import { createHomeProfileHypotheses, type ProfileHypothesis } from '../web/homeProfiler';
 import { createDeviceAccessRecords } from './deviceAccess';
 import { buildDeviceReplayPage, projectDeviceValueEvents } from './deviceEventStream';
 import { loadHomeDefinitionFromFile } from './homeDefinitionLoader';
@@ -89,6 +102,39 @@ const memoryLlmBatchBodySchema = z.object({
   includePortraitSummary: z.boolean().optional(),
   summaryPeriod: z.enum(['daily', 'weekly']).optional(),
   limit: z.number().int().min(1).max(100).optional()
+});
+const memoryLlmConfigBodySchema = z.object({
+  provider: z.object({
+    enabled: z.boolean().optional(),
+    baseUrl: z.string().trim().max(500).optional(),
+    model: z.string().trim().min(1).max(120).optional(),
+    apiKey: z.string().max(500).optional(),
+    clearApiKey: z.boolean().optional(),
+    timeoutMs: z.number().int().min(1000).max(120000).optional(),
+    maxRetries: z.number().int().min(0).max(5).optional()
+  }).optional(),
+  budget: z.object({
+    maxCallsPerHomePerHour: z.number().int().min(1).max(1000).optional(),
+    maxCallsPerHomePerDay: z.number().int().min(1).max(10000).optional(),
+    maxBatchSize: z.number().int().min(1).max(100).optional()
+  }).optional(),
+  gates: z.object({
+    minEvidenceCountForUnknownSchema: z.number().int().min(1).max(100).optional(),
+    minConfidenceForReview: z.number().min(0).max(1).optional(),
+    maxConfidenceForReview: z.number().min(0).max(1).optional()
+  }).optional()
+}).refine((value) => {
+  const min = value.gates?.minConfidenceForReview;
+  const max = value.gates?.maxConfidenceForReview;
+  return min === undefined || max === undefined || min <= max;
+}, {
+  path: ['gates', 'minConfidenceForReview'],
+  message: 'minConfidenceForReview must be less than or equal to maxConfidenceForReview'
+});
+const memoryLlmStreamQuerySchema = z.object({
+  runId: z.string().min(1).optional(),
+  purpose: z.enum(['hypothesis_explanation', 'reliability_review']).default('hypothesis_explanation'),
+  type: z.enum(['household_size', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster', 'routine_window', 'behavior_flow', 'resident_slot', 'room_function', 'device_contribution', 'state_anomaly']).optional()
 });
 const memoryEntityQuerySchema = z.object({
   runId: z.string().min(1).optional(),
@@ -180,7 +226,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
   const homeDefinition = options.homeDefinition ?? (options.homeDefinitionPath
     ? loadHomeDefinitionFromFile(options.homeDefinitionPath)
     : getHomeDefinition());
-  const homeMemoryLlm = options.homeMemoryLlm ?? resolveHomeMemoryLlmConfig({});
+  let homeMemoryLlm = options.homeMemoryLlm ?? resolveHomeMemoryLlmConfig({});
   const homeMemoryLlmCache = new Map<string, HomeMemoryLlmEnrichment>();
   const homeMemoryLlmCalls: Array<{ homeId: string; cacheKey: string; at: number }> = [];
   const homeMemoryLlmResults: HomeMemoryLlmResultEvent[] = [];
@@ -611,7 +657,111 @@ export function createServer(options: ServerOptions): FastifyInstance {
     });
   });
 
+  app.get('/api/memory/llm/config', async () => summarizeHomeMemoryLlmConfig(homeMemoryLlm));
+
+  app.put('/api/memory/llm/config', async (request, reply) => {
+    const result = memoryLlmConfigBodySchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    homeMemoryLlm = applyHomeMemoryLlmConfigPatch(homeMemoryLlm, result.data);
+    return summarizeHomeMemoryLlmConfig(homeMemoryLlm);
+  });
+
+  app.get('/api/memory/llm/stream', async (request, reply) => {
+    const result = memoryLlmStreamQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+
+    const stream = new PassThrough();
+    reply.header('content-type', 'text/event-stream; charset=utf-8');
+    reply.header('cache-control', 'no-cache');
+    reply.header('connection', 'keep-alive');
+
+    void streamMemoryLlmResult(stream, result.data);
+    return reply.send(stream);
+  });
+
   app.get('/api/memory/llm/metrics', async () => createHomeMemoryLlmMetrics());
+
+  async function streamMemoryLlmResult(
+    stream: PassThrough,
+    query: z.infer<typeof memoryLlmStreamQuerySchema>
+  ): Promise<void> {
+    try {
+      const { memory, runId, snapshot } = getMemoryView(query.runId);
+      recordAccess('/api/memory/llm/stream', 'ml-observation', runId, snapshot.simClock.sequence, {
+        purpose: query.purpose,
+        type: query.type
+      });
+      const hypothesis = createHomeProfileHypotheses(memory)
+        .filter((candidate) => !query.type || candidate.type === query.type)
+        .sort((left, right) => right.confidence - left.confidence || left.id.localeCompare(right.id))[0];
+
+      if (!hypothesis) {
+        writeSse(stream, 'error', { message: 'No matching hypothesis is available for LLM streaming.' });
+        return;
+      }
+
+      const homeId = memory.homeId ?? '';
+      const evidenceIds = hypothesis.evidence.map((evidence) => evidence.id);
+      const cacheKey = createHomeMemoryLlmCacheKey({
+        purpose: query.purpose,
+        homeId,
+        runId: memory.runId ?? '',
+        hypothesisId: hypothesis.id,
+        evidenceIds,
+        model: homeMemoryLlm.provider.model,
+        promptVersion: 1,
+        schemaVersion: 1
+      });
+      writeSse(stream, 'start', {
+        purpose: query.purpose,
+        hypothesisId: hypothesis.id,
+        model: homeMemoryLlm.provider.model,
+        evidenceCount: evidenceIds.length
+      });
+
+      const llmResult = await requestHomeMemoryLlmEnrichmentStream({
+        config: homeMemoryLlm,
+        purpose: query.purpose,
+        trigger: 'user_request',
+        prompt: createStreamingHypothesisPrompt(query.purpose, hypothesis),
+        memory,
+        hypothesis,
+        fetcher: options.homeMemoryLlmFetch,
+        cached: homeMemoryLlmCacheStore.get(cacheKey),
+        callsThisHour: homeMemoryLlmUsage.callsThisHour(homeId),
+        callsToday: homeMemoryLlmUsage.callsToday(homeId),
+        onEvent: (event) => writeSse(stream, event.event, event.data)
+      });
+
+      if (llmResult.source === 'llm') {
+        homeMemoryLlmCacheStore.set(llmResult.cacheKey, llmResult.enrichment);
+        homeMemoryLlmUsage.recordCall(homeId, llmResult.cacheKey);
+      }
+      homeMemoryLlmUsage.recordResult?.({
+        homeId,
+        cacheKey: llmResult.cacheKey,
+        purpose: query.purpose,
+        trigger: 'user_request',
+        source: llmResult.source,
+        errors: llmResult.errors
+      });
+
+      writeSse(stream, 'result', {
+        source: llmResult.source,
+        cacheKey: llmResult.cacheKey,
+        enrichment: llmResult.enrichment,
+        errors: llmResult.errors
+      });
+    } catch (error) {
+      writeSse(stream, 'error', { message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      stream.end();
+    }
+  }
 
   app.get('/api/device-twins', async (request, reply) => {
     const result = privacyQuerySchema.safeParse(request.query);
@@ -1009,6 +1159,35 @@ function maxTokensForHomeMemoryPurpose(purpose: HomeMemoryLlmPurpose): number {
     daily_portrait_summary: 1200
   };
   return tokens[purpose];
+}
+
+function writeSse(stream: PassThrough, event: string, data: Record<string, unknown>): void {
+  stream.write(`event: ${event}\n`);
+  stream.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function createStreamingHypothesisPrompt(purpose: HomeMemoryLlmPurpose, hypothesis: ProfileHypothesis): string {
+  if (purpose === 'reliability_review') {
+    return JSON.stringify({
+      purpose,
+      hypothesisId: hypothesis.id,
+      type: hypothesis.type,
+      confidence: hypothesis.confidence,
+      summary: hypothesis.summary,
+      evidenceIds: hypothesis.evidence.map((evidence) => evidence.id),
+      supportingEvidenceIds: hypothesis.supportingEvidence.map((evidence) => evidence.id),
+      contradictingEvidenceIds: hypothesis.contradictingEvidence.map((evidence) => evidence.id),
+      missingEvidence: hypothesis.missingEvidence
+    });
+  }
+
+  return JSON.stringify({
+    purpose,
+    hypothesisId: hypothesis.id,
+    type: hypothesis.type,
+    confidence: hypothesis.confidence,
+    evidenceIds: hypothesis.evidence.map((evidence) => evidence.id)
+  });
 }
 
 function hashRequest(scope: string, payload: unknown): string {

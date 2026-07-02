@@ -127,6 +127,17 @@ describe('dashboard layout density', () => {
     expect(styles).toContain('.llm-trace-source');
   });
 
+  it('renders configurable and streaming LLM controls', () => {
+    expect(homeMemoryViewTsx).toContain('/api/memory/llm/config');
+    expect(homeMemoryViewTsx).toContain('/api/memory/llm/stream');
+    expect(homeMemoryViewTsx).toContain('saveHomeMemoryLlmConfig');
+    expect(homeMemoryViewTsx).toContain('startHomeMemoryLlmStream');
+    expect(homeMemoryViewTsx).toContain('className="llm-config-grid"');
+    expect(homeMemoryViewTsx).toContain('className="llm-stream-log"');
+    expect(styles).toContain('.llm-config-grid');
+    expect(styles).toContain('.llm-stream-log');
+  });
+
   it('renders event state ledger with presenter narration and state changes', () => {
     expect(homeMemoryViewTsx).toContain('StateLedgerPanel');
     expect(homeMemoryViewTsx).toContain('className="memory-panel state-ledger-panel"');
