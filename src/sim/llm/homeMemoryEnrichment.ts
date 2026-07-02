@@ -539,8 +539,10 @@ export async function requestHomeMemoryLlmEnrichment(input: RequestHomeMemoryLlm
       if (parsed.ok) {
         if (parsed.enrichment.confidence > input.hypothesis.confidence) {
           errors.push('LLM enrichment confidence cannot exceed baseline confidence.');
+          logHomeMemoryLlm('warn', 'validator_rejected', { reason: 'confidence exceeds baseline', purpose: input.purpose });
           break;
         }
+        logHomeMemoryLlm('debug', 'validator_passed', { purpose: input.purpose, supportingEvidenceCount: parsed.enrichment.supportingEvidenceIds.length });
         return {
           source: 'llm',
           cacheKey,
@@ -548,9 +550,11 @@ export async function requestHomeMemoryLlmEnrichment(input: RequestHomeMemoryLlm
           errors: []
         };
       }
+      logHomeMemoryLlm('warn', 'validator_rejected', { purpose: input.purpose, errors: parsed.errors });
       errors.push(...parsed.errors);
       break;
     } catch (error) {
+      logHomeMemoryLlm('warn', 'provider_request_error', { purpose: input.purpose, error: errorMessage(error) });
       errors.push(error instanceof Error ? error.message : String(error));
     }
   }
@@ -626,6 +630,7 @@ export async function requestHomeMemoryLlmEnrichmentStream(input: RequestHomeMem
 
   if (!decision.shouldCall) {
     const errors = [...cachedErrors, decision.reason];
+    logHomeMemoryLlm('debug', 'fallback', { purpose: input.purpose, reason: decision.reason, source: 'deterministic-fallback' });
     input.onEvent?.({ event: 'fallback', data: { reason: decision.reason, errors } });
     return {
       source: 'deterministic-fallback',
@@ -655,8 +660,10 @@ export async function requestHomeMemoryLlmEnrichmentStream(input: RequestHomeMem
       if (parsed.ok) {
         if (parsed.enrichment.confidence > input.hypothesis.confidence) {
           errors.push('LLM enrichment confidence cannot exceed baseline confidence.');
+          logHomeMemoryLlm('warn', 'validator_rejected', { reason: 'confidence exceeds baseline', purpose: input.purpose });
           break;
         }
+        logHomeMemoryLlm('debug', 'validator_passed', { purpose: input.purpose, supportingEvidenceCount: parsed.enrichment.supportingEvidenceIds.length });
         return {
           source: 'llm',
           cacheKey,
@@ -664,13 +671,16 @@ export async function requestHomeMemoryLlmEnrichmentStream(input: RequestHomeMem
           errors: []
         };
       }
+      logHomeMemoryLlm('warn', 'validator_rejected', { purpose: input.purpose, errors: parsed.errors });
       errors.push(...parsed.errors);
       break;
     } catch (error) {
+      logHomeMemoryLlm('warn', 'provider_request_error', { purpose: input.purpose, error: errorMessage(error) });
       errors.push(error instanceof Error ? error.message : String(error));
     }
   }
 
+  logHomeMemoryLlm('debug', 'fallback', { purpose: input.purpose, reason: 'Provider stream failed validation or request handling.', source: 'deterministic-fallback' });
   input.onEvent?.({ event: 'fallback', data: { reason: 'Provider stream failed validation or request handling.', errors } });
   return {
     source: 'deterministic-fallback',
@@ -827,7 +837,16 @@ async function requestOpenAiCompatibleJson(input: {
   prompt: string;
   fetcher: HomeMemoryLlmFetch;
 }): Promise<string> {
-  const response = await input.fetcher(`${input.config.provider.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+  const url = `${input.config.provider.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  logHomeMemoryLlm('debug', 'provider_request_start', {
+    mode: 'json',
+    host: providerHost(input.config.provider.baseUrl),
+    model: input.config.provider.model,
+    timeoutMs: input.config.provider.timeoutMs,
+    maxRetries: input.config.provider.maxRetries,
+    apiKeyConfigured: Boolean(input.config.provider.apiKey)
+  });
+  const response = await input.fetcher(url, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -848,6 +867,11 @@ async function requestOpenAiCompatibleJson(input: {
         }
       ]
     })
+  });
+  logHomeMemoryLlm('debug', 'provider_response', {
+    mode: 'json',
+    status: response.status,
+    contentType: response.headers.get('content-type') ?? 'unknown'
   });
 
   if (!response.ok) {
@@ -874,7 +898,16 @@ async function requestOpenAiCompatibleJsonStream(input: {
   fetcher: HomeMemoryLlmFetch;
   onDelta: (content: string) => void;
 }): Promise<string> {
-  const response = await input.fetcher(`${input.config.provider.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+  const url = `${input.config.provider.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  logHomeMemoryLlm('debug', 'provider_request_start', {
+    mode: 'stream',
+    host: providerHost(input.config.provider.baseUrl),
+    model: input.config.provider.model,
+    timeoutMs: input.config.provider.timeoutMs,
+    maxRetries: input.config.provider.maxRetries,
+    apiKeyConfigured: Boolean(input.config.provider.apiKey)
+  });
+  const response = await input.fetcher(url, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -896,6 +929,11 @@ async function requestOpenAiCompatibleJsonStream(input: {
       ]
     })
   });
+  logHomeMemoryLlm('debug', 'provider_response', {
+    mode: 'stream',
+    status: response.status,
+    contentType: response.headers.get('content-type') ?? 'unknown'
+  });
 
   if (!response.ok) {
     throw new Error(`LLM provider request failed with status ${response.status}`);
@@ -912,6 +950,7 @@ async function requestOpenAiCompatibleJsonStream(input: {
     if (typeof content !== 'string' || content.trim().length === 0) {
       throw new Error('LLM provider response did not include message content');
     }
+    logHomeMemoryLlm('debug', 'provider_delta', { mode: 'json-fallback', chunkLength: content.length, totalLength: content.length });
     input.onDelta(content);
     return content;
   }
@@ -952,6 +991,7 @@ async function readOpenAiCompatibleSseContent(
         if (typeof delta === 'string' && delta.length > 0) {
           complete += delta;
           onDelta(delta);
+          logHomeMemoryLlm('debug', 'provider_delta', { mode: 'stream', chunkLength: delta.length, totalLength: complete.length });
         }
       }
     }
@@ -989,6 +1029,34 @@ function parseSseDataBlock(block: string): string[] {
     .map((line) => line.slice('data:'.length).trimStart())
     .join('\n');
   return data.length > 0 ? [data] : [];
+}
+
+function logHomeMemoryLlm(level: 'debug' | 'info' | 'warn', event: string, data: Record<string, unknown>): void {
+  const configuredLevel = (process.env.HOME_MEMORY_LLM_LOG_LEVEL ?? 'debug').toLowerCase();
+  if (configuredLevel === 'silent') {
+    return;
+  }
+  if (level === 'debug' && configuredLevel !== 'debug') {
+    return;
+  }
+  const payload = JSON.stringify(data);
+  if (level === 'warn') {
+    console.warn(`[home-memory-llm] ${event} ${payload}`);
+    return;
+  }
+  console.info(`[home-memory-llm] ${event} ${payload}`);
+}
+
+function providerHost(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return baseUrl ? 'invalid-url' : 'missing-base-url';
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function baseInvocationDecision(input: DecideHomeMemoryLlmInvocationInput): HomeMemoryLlmInvocationDecision {

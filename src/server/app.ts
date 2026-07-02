@@ -657,20 +657,41 @@ export function createServer(options: ServerOptions): FastifyInstance {
     });
   });
 
-  app.get('/api/memory/llm/config', async () => summarizeHomeMemoryLlmConfig(homeMemoryLlm));
+  app.get('/api/memory/llm/config', async () => {
+    logHomeMemoryLlm('debug', 'config_get', {
+      enabled: homeMemoryLlm.provider.enabled,
+      host: providerHost(homeMemoryLlm.provider.baseUrl),
+      model: homeMemoryLlm.provider.model,
+      apiKeyConfigured: Boolean(homeMemoryLlm.provider.apiKey)
+    });
+    return summarizeHomeMemoryLlmConfig(homeMemoryLlm);
+  });
 
   app.put('/api/memory/llm/config', async (request, reply) => {
     const result = memoryLlmConfigBodySchema.safeParse(request.body ?? {});
     if (!result.success) {
+      logHomeMemoryLlm('warn', 'config_update_rejected', { issues: result.error.issues.map((issue) => issue.message) });
       return sendValidationError(reply, result.error);
     }
     homeMemoryLlm = applyHomeMemoryLlmConfigPatch(homeMemoryLlm, result.data);
+    logHomeMemoryLlm('info', 'config_update', {
+      enabled: homeMemoryLlm.provider.enabled,
+      host: providerHost(homeMemoryLlm.provider.baseUrl),
+      model: homeMemoryLlm.provider.model,
+      timeoutMs: homeMemoryLlm.provider.timeoutMs,
+      maxRetries: homeMemoryLlm.provider.maxRetries,
+      apiKeyConfigured: Boolean(homeMemoryLlm.provider.apiKey),
+      maxCallsPerHomePerHour: homeMemoryLlm.budget.maxCallsPerHomePerHour,
+      maxCallsPerHomePerDay: homeMemoryLlm.budget.maxCallsPerHomePerDay,
+      maxBatchSize: homeMemoryLlm.budget.maxBatchSize
+    });
     return summarizeHomeMemoryLlmConfig(homeMemoryLlm);
   });
 
   app.get('/api/memory/llm/stream', async (request, reply) => {
     const result = memoryLlmStreamQuerySchema.safeParse(request.query);
     if (!result.success) {
+      logHomeMemoryLlm('warn', 'stream_request_rejected', { issues: result.error.issues.map((issue) => issue.message) });
       return sendValidationError(reply, result.error);
     }
 
@@ -700,6 +721,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
         .sort((left, right) => right.confidence - left.confidence || left.id.localeCompare(right.id))[0];
 
       if (!hypothesis) {
+        logHomeMemoryLlm('warn', 'stream_no_hypothesis', { purpose: query.purpose, type: query.type ?? 'any' });
         writeSse(stream, 'error', { message: 'No matching hypothesis is available for LLM streaming.' });
         return;
       }
@@ -722,6 +744,16 @@ export function createServer(options: ServerOptions): FastifyInstance {
         model: homeMemoryLlm.provider.model,
         evidenceCount: evidenceIds.length
       });
+      logHomeMemoryLlm('debug', 'stream_start', {
+        purpose: query.purpose,
+        hypothesisId: hypothesis.id,
+        evidenceCount: evidenceIds.length,
+        enabled: homeMemoryLlm.provider.enabled,
+        host: providerHost(homeMemoryLlm.provider.baseUrl),
+        model: homeMemoryLlm.provider.model,
+        budgetHour: `${homeMemoryLlmUsage.callsThisHour(homeId)}/${homeMemoryLlm.budget.maxCallsPerHomePerHour}`,
+        budgetDay: `${homeMemoryLlmUsage.callsToday(homeId)}/${homeMemoryLlm.budget.maxCallsPerHomePerDay}`
+      });
 
       const llmResult = await requestHomeMemoryLlmEnrichmentStream({
         config: homeMemoryLlm,
@@ -734,7 +766,10 @@ export function createServer(options: ServerOptions): FastifyInstance {
         cached: homeMemoryLlmCacheStore.get(cacheKey),
         callsThisHour: homeMemoryLlmUsage.callsThisHour(homeId),
         callsToday: homeMemoryLlmUsage.callsToday(homeId),
-        onEvent: (event) => writeSse(stream, event.event, event.data)
+        onEvent: (event) => {
+          logHomeMemoryLlm(event.event === 'fallback' ? 'info' : 'debug', event.event, event.data);
+          writeSse(stream, event.event, event.data);
+        }
       });
 
       if (llmResult.source === 'llm') {
@@ -756,7 +791,14 @@ export function createServer(options: ServerOptions): FastifyInstance {
         enrichment: llmResult.enrichment,
         errors: llmResult.errors
       });
+      logHomeMemoryLlm('info', 'result', {
+        purpose: query.purpose,
+        source: llmResult.source,
+        errorCount: llmResult.errors.length,
+        claimLength: llmResult.enrichment.claim.length
+      });
     } catch (error) {
+      logHomeMemoryLlm('warn', 'stream_error', { error: errorMessage(error) });
       writeSse(stream, 'error', { message: error instanceof Error ? error.message : String(error) });
     } finally {
       stream.end();
@@ -1164,6 +1206,34 @@ function maxTokensForHomeMemoryPurpose(purpose: HomeMemoryLlmPurpose): number {
 function writeSse(stream: PassThrough, event: string, data: Record<string, unknown>): void {
   stream.write(`event: ${event}\n`);
   stream.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function logHomeMemoryLlm(level: 'debug' | 'info' | 'warn', event: string, data: Record<string, unknown>): void {
+  const configuredLevel = (process.env.HOME_MEMORY_LLM_LOG_LEVEL ?? 'debug').toLowerCase();
+  if (configuredLevel === 'silent') {
+    return;
+  }
+  if (level === 'debug' && configuredLevel !== 'debug') {
+    return;
+  }
+  const payload = JSON.stringify(data);
+  if (level === 'warn') {
+    console.warn(`[home-memory-llm] ${event} ${payload}`);
+    return;
+  }
+  console.info(`[home-memory-llm] ${event} ${payload}`);
+}
+
+function providerHost(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return baseUrl ? 'invalid-url' : 'missing-base-url';
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function createStreamingHypothesisPrompt(purpose: HomeMemoryLlmPurpose, hypothesis: ProfileHypothesis): string {
