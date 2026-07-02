@@ -4,6 +4,7 @@ import { createHomeMemory, reduceDeviceEvents } from '../src/web/homeMemoryModel
 import { createHomeProfileHypotheses } from '../src/web/homeProfiler';
 import {
   createEvidenceExplanationSummary,
+  createHomeMemoryLlmTrace,
   createSemanticSignalRows
 } from '../src/web/homeMemoryViewModel';
 
@@ -109,6 +110,111 @@ describe('home memory view model', () => {
       missingItems: expect.arrayContaining([
         'Repeated semantic signals across more days would make this behavior pattern more stable.'
       ])
+    });
+  });
+
+  it('creates display rows for Home Memory LLM participation', () => {
+    const trace = createHomeMemoryLlmTrace({
+      hypothesis: {
+        id: 'presence:recent-activity',
+        label: 'Recent presence signal',
+        llmEnrichmentSource: 'llm',
+        llmEnrichment: {
+          claim: 'Kitchen and living room evidence support recent activity.',
+          missingEvidence: ['More days would improve confidence.'],
+          contradictingEvidenceIds: [],
+          alternatives: [{ claim: 'Could be automation', confidence: 0.2, evidenceIds: ['living_tv'] }]
+        },
+        llmReliabilityReviewSource: 'cache',
+        llmReliabilityReview: {
+          claim: 'Cached review says evidence is plausible but limited.',
+          missingEvidence: ['No repeated day pattern yet.'],
+          contradictingEvidenceIds: ['garage_device']
+        }
+      },
+      portrait: {
+        llmSummarySource: 'deterministic-fallback',
+        llmSummary: {
+          claim: 'Rule-based portrait summary.',
+          missingEvidence: ['More weekly evidence is needed.'],
+          contradictingEvidenceIds: []
+        }
+      },
+      batchPlan: {
+        items: [
+          {
+            purpose: 'semantic_candidate',
+            targetId: 'semantic-window:kitchen:evening',
+            shouldCall: true,
+            reason: 'Eligible for batch enrichment.',
+            cached: false
+          },
+          {
+            purpose: 'reliability_review',
+            targetId: 'presence:recent-activity',
+            shouldCall: false,
+            reason: 'Hypothesis confidence is outside review band.',
+            cached: false
+          }
+        ]
+      },
+      metrics: {
+        enabled: true,
+        cacheSize: 1,
+        rates: {
+          cacheHitRate: 0.25,
+          fallbackRate: 0.5,
+          validationRejectionRate: 0.125,
+          userTriggeredCallRatio: 0.75
+        },
+        budgets: {
+          callsThisHour: 2,
+          maxCallsPerHomePerHour: 10,
+          callsToday: 4,
+          maxCallsPerHomePerDay: 50
+        }
+      }
+    });
+
+    expect(trace).toMatchObject({
+      enabled: true,
+      metrics: [
+        { label: 'Cache hit', value: '25%' },
+        { label: 'Fallback', value: '50%' },
+        { label: 'Validation rejected', value: '13%' },
+        { label: 'Budget', value: '2/10 hour, 4/50 day' }
+      ],
+      rows: [
+        {
+          label: 'Hypothesis explanation',
+          source: 'llm',
+          claim: 'Kitchen and living room evidence support recent activity.',
+          missingEvidence: ['More days would improve confidence.']
+        },
+        {
+          label: 'Reliability review',
+          source: 'cache',
+          claim: 'Cached review says evidence is plausible but limited.',
+          contradictingEvidenceIds: ['garage_device']
+        },
+        {
+          label: 'Portrait summary',
+          source: 'deterministic-fallback',
+          claim: 'Rule-based portrait summary.'
+        }
+      ],
+      batchItems: [
+        {
+          purpose: 'semantic_candidate',
+          source: 'planned',
+          reason: 'Eligible for batch enrichment.'
+        },
+        {
+          purpose: 'reliability_review',
+          source: 'skipped',
+          reason: 'Hypothesis confidence is outside review band.'
+        }
+      ]
     });
   });
 });

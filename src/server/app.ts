@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { getHomeDefinition } from '../sim/catalog';
 import { createSimulator } from '../sim/engine';
 import { getScenarioIds } from '../sim/scenarios';
+import { resolveHomeMemoryLlmConfig, type HomeMemoryLlmConfig, type HomeMemoryLlmEnrichment, type HomeMemoryLlmFetch, type HomeMemoryLlmPurpose, type HomeMemoryLlmTrigger } from '../sim/llm/homeMemoryEnrichment';
 import { getDeviceCapability, getDeviceCapabilityMetadata } from '../shared/deviceRegistry';
 import { getDeviceSupportedCommands } from '../shared/deviceInstanceCapabilities';
 import type { HomeDefinition, StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
@@ -15,11 +16,20 @@ import { buildDeviceReplayPage, projectDeviceValueEvents } from './deviceEventSt
 import { loadHomeDefinitionFromFile } from './homeDefinitionLoader';
 import {
   buildHomeMemoryFromEvents,
+  createHouseholdPortraitWithEnrichment,
   createMemorySummary,
   queryMemoryEntities,
   queryMemoryEpisodes,
   queryMemoryEvidence,
-  queryMemoryHypotheses
+  queryMemoryHypothesesWithEnrichment,
+  planMemoryQuery,
+  queryUnknownSchemaMappings,
+  querySemanticCandidates,
+  createMemoryReliabilityReport,
+  createHomeMemoryLlmBatchPlan,
+  executeHomeMemoryLlmBatch,
+  type HomeMemoryLlmCacheStore,
+  type HomeMemoryLlmUsageTracker
 } from './memoryQuery';
 import { buildOpenApiDocument } from './openapi';
 import { TwinDatabase } from './persistence';
@@ -35,6 +45,8 @@ export interface ServerOptions {
   telemetryRetentionEvents?: number;
   homeDefinition?: HomeDefinition;
   homeDefinitionPath?: string;
+  homeMemoryLlm?: HomeMemoryLlmConfig;
+  homeMemoryLlmFetch?: HomeMemoryLlmFetch;
 }
 
 const limitQuerySchema = z.object({
@@ -49,6 +61,34 @@ const telemetrySummaryQuerySchema = z.object({
 const booleanQuerySchema = z.enum(['true', 'false']).transform((value) => value === 'true').optional();
 const memoryRunQuerySchema = z.object({
   runId: z.string().min(1).optional()
+});
+const memoryPortraitQuerySchema = z.object({
+  runId: z.string().min(1).optional(),
+  includeLlmEnrichment: booleanQuerySchema,
+  summaryPeriod: z.enum(['daily', 'weekly']).optional()
+});
+const memoryNaturalLanguageQuerySchema = z.object({
+  runId: z.string().min(1).optional(),
+  question: z.string().trim().min(1).max(500)
+});
+const memorySchemaMappingQuerySchema = z.object({
+  runId: z.string().min(1).optional(),
+  includeLlmEnrichment: booleanQuerySchema,
+  minEvidenceCount: z.coerce.number().int().min(1).max(100).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional()
+});
+const memorySemanticCandidateQuerySchema = memorySchemaMappingQuerySchema;
+const memoryLlmBatchPlanQuerySchema = z.object({
+  runId: z.string().min(1).optional(),
+  includePortraitSummary: booleanQuerySchema,
+  summaryPeriod: z.enum(['daily', 'weekly']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional()
+});
+const memoryLlmBatchBodySchema = z.object({
+  runId: z.string().min(1).optional(),
+  includePortraitSummary: z.boolean().optional(),
+  summaryPeriod: z.enum(['daily', 'weekly']).optional(),
+  limit: z.number().int().min(1).max(100).optional()
 });
 const memoryEntityQuerySchema = z.object({
   runId: z.string().min(1).optional(),
@@ -79,8 +119,10 @@ const memoryEvidenceQuerySchema = z.object({
 });
 const memoryHypothesisQuerySchema = z.object({
   runId: z.string().min(1).optional(),
-  type: z.enum(['household_size', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster']).optional(),
-  includeEvidence: booleanQuerySchema
+  type: z.enum(['household_size', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster', 'routine_window', 'behavior_flow', 'resident_slot', 'room_function', 'device_contribution', 'state_anomaly']).optional(),
+  includeEvidence: booleanQuerySchema,
+  includeLlmEnrichment: booleanQuerySchema,
+  includeReliability: booleanQuerySchema
 });
 const auditQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(100)
@@ -120,6 +162,16 @@ type UpdateResponse = {
   events: TwinEvent[];
 };
 
+type HomeMemoryLlmResultEvent = {
+  homeId: string;
+  cacheKey: string;
+  purpose: HomeMemoryLlmPurpose;
+  trigger: HomeMemoryLlmTrigger;
+  source: 'cache' | 'llm' | 'deterministic-fallback';
+  errors: string[];
+  at: number;
+};
+
 const websocketReplayLimit = 500;
 
 export function createServer(options: ServerOptions): FastifyInstance {
@@ -128,11 +180,63 @@ export function createServer(options: ServerOptions): FastifyInstance {
   const homeDefinition = options.homeDefinition ?? (options.homeDefinitionPath
     ? loadHomeDefinitionFromFile(options.homeDefinitionPath)
     : getHomeDefinition());
+  const homeMemoryLlm = options.homeMemoryLlm ?? resolveHomeMemoryLlmConfig({});
+  const homeMemoryLlmCache = new Map<string, HomeMemoryLlmEnrichment>();
+  const homeMemoryLlmCalls: Array<{ homeId: string; cacheKey: string; at: number }> = [];
+  const homeMemoryLlmResults: HomeMemoryLlmResultEvent[] = [];
+  const homeMemoryLlmUsage: HomeMemoryLlmUsageTracker = {
+    callsThisHour(homeId) {
+      pruneHomeMemoryLlmCalls();
+      const hourAgo = Date.now() - 60 * 60 * 1000;
+      return homeMemoryLlmCalls.filter((entry) => entry.homeId === homeId && entry.at >= hourAgo).length;
+    },
+    callsToday(homeId) {
+      pruneHomeMemoryLlmCalls();
+      const today = new Date().toISOString().slice(0, 10);
+      return homeMemoryLlmCalls.filter((entry) => (
+        entry.homeId === homeId &&
+        new Date(entry.at).toISOString().slice(0, 10) === today
+      )).length;
+    },
+    recordCall(homeId, cacheKey) {
+      homeMemoryLlmCalls.push({ homeId, cacheKey, at: Date.now() });
+      pruneHomeMemoryLlmCalls();
+    },
+    recordResult(event) {
+      homeMemoryLlmResults.push({ ...event, at: Date.now() });
+      pruneHomeMemoryLlmResults();
+    }
+  };
   const simulator = createSimulator({ seed: 20260617, homeDefinition });
   const db = new TwinDatabase(options.databasePath, {
     snapshotIntervalEvents: options.snapshotIntervalEvents,
     telemetryRetentionEvents: options.telemetryRetentionEvents
   });
+  const homeMemoryLlmCacheStore: HomeMemoryLlmCacheStore = {
+    get(cacheKey) {
+      const cached = homeMemoryLlmCache.get(cacheKey);
+      if (cached) {
+        return cached;
+      }
+
+      const persisted = db.getHomeMemoryLlmEnrichment(cacheKey);
+      if (!persisted) {
+        return undefined;
+      }
+
+      homeMemoryLlmCache.set(cacheKey, persisted);
+      return persisted;
+    },
+    set(cacheKey, enrichment) {
+      homeMemoryLlmCache.set(cacheKey, enrichment);
+      db.recordHomeMemoryLlmEnrichment({
+        cacheKey,
+        purpose: enrichment.purpose,
+        model: enrichment.metadata.model,
+        enrichment
+      });
+    }
+  };
   const latestSnapshot = db.getLatestSnapshot();
   const restorableSnapshot = latestSnapshot?.runId && snapshotMatchesHomeDefinition(latestSnapshot, homeDefinition)
     ? latestSnapshot
@@ -150,6 +254,69 @@ export function createServer(options: ServerOptions): FastifyInstance {
   app.register(websocket);
 
   app.get('/api/openapi.json', async () => buildOpenApiDocument());
+
+  function pruneHomeMemoryLlmCalls(): void {
+    const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    while (homeMemoryLlmCalls.length > 0 && homeMemoryLlmCalls[0].at < dayAgo) {
+      homeMemoryLlmCalls.shift();
+    }
+  }
+
+  function pruneHomeMemoryLlmResults(): void {
+    const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    while (homeMemoryLlmResults.length > 0 && homeMemoryLlmResults[0].at < dayAgo) {
+      homeMemoryLlmResults.shift();
+    }
+  }
+
+  function createHomeMemoryLlmMetrics(): Record<string, unknown> {
+    pruneHomeMemoryLlmCalls();
+    pruneHomeMemoryLlmResults();
+    const snapshot = simulator.getSnapshot();
+    const homeId = snapshot.homeId;
+    const countResults = (predicate: (event: HomeMemoryLlmResultEvent) => boolean): number => (
+      homeMemoryLlmResults.filter(predicate).length
+    );
+    const sourceCounts = {
+      llm: countResults((event) => event.source === 'llm'),
+      cache: countResults((event) => event.source === 'cache'),
+      deterministicFallback: countResults((event) => event.source === 'deterministic-fallback')
+    };
+    const totalRequests = homeMemoryLlmResults.length;
+    const callsByPurpose = groupCount(homeMemoryLlmResults.filter((event) => event.source === 'llm'), (event) => event.purpose);
+    const requestsByPurpose = groupCount(homeMemoryLlmResults, (event) => event.purpose);
+    const estimatedTokensByPurpose = Object.fromEntries(
+      Object.entries(callsByPurpose).map(([purpose, count]) => [purpose, count * maxTokensForHomeMemoryPurpose(purpose as HomeMemoryLlmPurpose)])
+    );
+    const validationRejectionCount = countResults((event) => event.errors.some(isValidationRejectionError));
+    const userTriggeredCount = countResults((event) => event.trigger === 'user_request');
+
+    return {
+      enabled: homeMemoryLlm.provider.enabled,
+      provider: homeMemoryLlm.provider.provider,
+      model: homeMemoryLlm.provider.model,
+      cacheSize: homeMemoryLlmCache.size,
+      unsupportedClaimRate: 0,
+      totalRequests,
+      sourceCounts,
+      rates: {
+        cacheHitRate: ratio(sourceCounts.cache, totalRequests),
+        fallbackRate: ratio(sourceCounts.deterministicFallback, totalRequests),
+        validationRejectionRate: ratio(validationRejectionCount, totalRequests),
+        userTriggeredCallRatio: ratio(userTriggeredCount, totalRequests)
+      },
+      callsByPurpose,
+      requestsByPurpose,
+      estimatedTokensByPurpose,
+      validationRejectionCount,
+      budgets: {
+        maxCallsPerHomePerHour: homeMemoryLlm.budget.maxCallsPerHomePerHour,
+        maxCallsPerHomePerDay: homeMemoryLlm.budget.maxCallsPerHomePerDay,
+        callsThisHour: homeMemoryLlmUsage.callsThisHour(homeId),
+        callsToday: homeMemoryLlmUsage.callsToday(homeId)
+      }
+    };
+  }
 
   function recordAndBroadcast(events: TwinEvent[]): TwinSnapshot {
     const snapshot = simulator.getSnapshot();
@@ -329,9 +496,122 @@ export function createServer(options: ServerOptions): FastifyInstance {
     recordAccess('/api/memory/profile/hypotheses', 'ml-observation', runId, snapshot.simClock.sequence, query);
     return {
       runId,
-      items: queryMemoryHypotheses(memory, query)
+      items: await queryMemoryHypothesesWithEnrichment(memory, query, {
+        llmConfig: homeMemoryLlm,
+        fetcher: options.homeMemoryLlmFetch,
+        llmCache: homeMemoryLlmCacheStore,
+        llmUsage: homeMemoryLlmUsage
+      })
     };
   });
+
+  app.get('/api/memory/portrait', async (request, reply) => {
+    const result = memoryPortraitQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const { memory, runId, snapshot } = getMemoryView(result.data.runId);
+    const { runId: _runId, ...query } = result.data;
+    recordAccess('/api/memory/portrait', 'ml-observation', runId, snapshot.simClock.sequence, query);
+    return createHouseholdPortraitWithEnrichment(memory, query, {
+      llmConfig: homeMemoryLlm,
+      fetcher: options.homeMemoryLlmFetch,
+      llmCache: homeMemoryLlmCacheStore,
+      llmUsage: homeMemoryLlmUsage
+    });
+  });
+
+  app.get('/api/memory/query-plan', async (request, reply) => {
+    const result = memoryNaturalLanguageQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const { memory, runId, snapshot } = getMemoryView(result.data.runId);
+    const { runId: _runId, ...query } = result.data;
+    recordAccess('/api/memory/query-plan', 'ml-observation', runId, snapshot.simClock.sequence, query);
+    return planMemoryQuery(memory, query, {
+      llmConfig: homeMemoryLlm,
+      fetcher: options.homeMemoryLlmFetch,
+      llmCache: homeMemoryLlmCacheStore,
+      llmUsage: homeMemoryLlmUsage
+    });
+  });
+
+  app.get('/api/memory/schema-mappings', async (request, reply) => {
+    const result = memorySchemaMappingQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const { memory, runId, snapshot } = getMemoryView(result.data.runId);
+    const { runId: _runId, ...query } = result.data;
+    recordAccess('/api/memory/schema-mappings', 'ml-observation', runId, snapshot.simClock.sequence, query);
+    return queryUnknownSchemaMappings(memory, query, {
+      llmConfig: homeMemoryLlm,
+      fetcher: options.homeMemoryLlmFetch,
+      llmCache: homeMemoryLlmCacheStore,
+      llmUsage: homeMemoryLlmUsage
+    });
+  });
+
+  app.get('/api/memory/semantic-candidates', async (request, reply) => {
+    const result = memorySemanticCandidateQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const { memory, runId, snapshot } = getMemoryView(result.data.runId);
+    const { runId: _runId, ...query } = result.data;
+    recordAccess('/api/memory/semantic-candidates', 'ml-observation', runId, snapshot.simClock.sequence, query);
+    return querySemanticCandidates(memory, query, {
+      llmConfig: homeMemoryLlm,
+      fetcher: options.homeMemoryLlmFetch,
+      llmCache: homeMemoryLlmCacheStore,
+      llmUsage: homeMemoryLlmUsage
+    });
+  });
+
+  app.get('/api/memory/reliability', async (request, reply) => {
+    const result = memoryRunQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const { memory, runId, snapshot } = getMemoryView(result.data.runId);
+    recordAccess('/api/memory/reliability', 'ml-observation', runId, snapshot.simClock.sequence);
+    return createMemoryReliabilityReport(memory);
+  });
+
+  app.get('/api/memory/llm/batch-plan', async (request, reply) => {
+    const result = memoryLlmBatchPlanQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const { memory, runId, snapshot } = getMemoryView(result.data.runId);
+    const { runId: _runId, ...query } = result.data;
+    recordAccess('/api/memory/llm/batch-plan', 'ml-observation', runId, snapshot.simClock.sequence, query);
+    return createHomeMemoryLlmBatchPlan(memory, query, {
+      llmConfig: homeMemoryLlm,
+      fetcher: options.homeMemoryLlmFetch,
+      llmCache: homeMemoryLlmCacheStore,
+      llmUsage: homeMemoryLlmUsage
+    });
+  });
+
+  app.post('/api/memory/llm/batch', async (request, reply) => {
+    const result = memoryLlmBatchBodySchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const { memory, runId, snapshot } = getMemoryView(result.data.runId);
+    const { runId: _runId, ...query } = result.data;
+    recordAccess('/api/memory/llm/batch', 'ml-observation', runId, snapshot.simClock.sequence, query);
+    return executeHomeMemoryLlmBatch(memory, query, {
+      llmConfig: homeMemoryLlm,
+      fetcher: options.homeMemoryLlmFetch,
+      llmCache: homeMemoryLlmCacheStore,
+      llmUsage: homeMemoryLlmUsage
+    });
+  });
+
+  app.get('/api/memory/llm/metrics', async () => createHomeMemoryLlmMetrics());
 
   app.get('/api/device-twins', async (request, reply) => {
     const result = privacyQuerySchema.safeParse(request.query);
@@ -700,6 +980,35 @@ function sendNotFound(reply: FastifyReply, message: string): FastifyReply {
 function stripIdempotencyKey<T extends { idempotencyKey?: string }>(payload: T): Omit<T, 'idempotencyKey'> {
   const { idempotencyKey: _idempotencyKey, ...rest } = payload;
   return rest;
+}
+
+function groupCount(events: HomeMemoryLlmResultEvent[], keyOf: (event: HomeMemoryLlmResultEvent) => string): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const event of events) {
+    const key = keyOf(event);
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function ratio(numerator: number, denominator: number): number {
+  return denominator > 0 ? Number((numerator / denominator).toFixed(6)) : 0;
+}
+
+function isValidationRejectionError(error: string): boolean {
+  return /evidence|schema|json|confidence|claim|cached enrichment/i.test(error) && !/budget|disabled|baseUrl/i.test(error);
+}
+
+function maxTokensForHomeMemoryPurpose(purpose: HomeMemoryLlmPurpose): number {
+  const tokens: Record<HomeMemoryLlmPurpose, number> = {
+    unknown_schema_mapping: 600,
+    semantic_candidate: 700,
+    hypothesis_explanation: 800,
+    reliability_review: 900,
+    query_planning: 900,
+    daily_portrait_summary: 1200
+  };
+  return tokens[purpose];
 }
 
 function hashRequest(scope: string, payload: unknown): string {

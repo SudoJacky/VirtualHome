@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import type { HomeMemoryLlmEnrichment, HomeMemoryLlmPurpose } from '../sim/llm/homeMemoryEnrichment';
 import type { DeviceTelemetryEvent, TwinEvent, TwinSnapshot } from '../shared/types';
 
 export interface TwinDatabaseOptions {
@@ -23,6 +24,13 @@ export interface AccessAuditInput {
 export interface AccessAuditRecord extends AccessAuditInput {
   id: number;
   ts: string;
+}
+
+export interface HomeMemoryLlmEnrichmentRecord {
+  cacheKey: string;
+  purpose: HomeMemoryLlmPurpose;
+  model: string;
+  enrichment: HomeMemoryLlmEnrichment;
 }
 
 export class TwinDatabase {
@@ -88,6 +96,15 @@ export class TwinDatabase {
         sequence INTEGER,
         details_json TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS home_memory_llm_enrichments (
+        cache_key TEXT PRIMARY KEY,
+        purpose TEXT NOT NULL,
+        model TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        enrichment_json TEXT NOT NULL
+      );
     `);
     this.ensureColumn('snapshots', 'home_id', "TEXT NOT NULL DEFAULT 'home_001'");
     this.ensureColumn('snapshots', 'run_id', 'TEXT');
@@ -110,6 +127,9 @@ export class TwinDatabase {
 
       CREATE INDEX IF NOT EXISTS access_audit_ts_idx
         ON access_audit(ts, id);
+
+      CREATE INDEX IF NOT EXISTS home_memory_llm_enrichments_purpose_idx
+        ON home_memory_llm_enrichments(purpose, updated_at);
     `);
   }
 
@@ -236,6 +256,32 @@ export class TwinDatabase {
       sequence: row.sequence,
       details: JSON.parse(row.details_json) as Record<string, unknown>
     }));
+  }
+
+  getHomeMemoryLlmEnrichment(cacheKey: string): HomeMemoryLlmEnrichment | null {
+    const row = this.db.prepare('SELECT enrichment_json FROM home_memory_llm_enrichments WHERE cache_key = ?')
+      .get(cacheKey) as { enrichment_json: string } | undefined;
+    return row ? JSON.parse(row.enrichment_json) as HomeMemoryLlmEnrichment : null;
+  }
+
+  recordHomeMemoryLlmEnrichment(record: HomeMemoryLlmEnrichmentRecord): void {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO home_memory_llm_enrichments (cache_key, purpose, model, created_at, updated_at, enrichment_json)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(cache_key) DO UPDATE SET
+        purpose = excluded.purpose,
+        model = excluded.model,
+        updated_at = excluded.updated_at,
+        enrichment_json = excluded.enrichment_json
+    `).run(
+      record.cacheKey,
+      record.purpose,
+      record.model,
+      now,
+      now,
+      JSON.stringify(record.enrichment)
+    );
   }
 
   close(): void {

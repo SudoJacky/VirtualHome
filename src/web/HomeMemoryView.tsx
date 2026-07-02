@@ -1,5 +1,6 @@
 import React from 'react';
 import { Map, Network, Pause, Play, Radio, RotateCcw } from 'lucide-react';
+import { getJson } from './apiClient';
 import {
   buildDeviceEventSocketUrl,
   cursorFromDeviceRunChanged,
@@ -29,8 +30,13 @@ import {
 } from './homeMemoryReasoning';
 import {
   createEvidenceExplanationSummary,
+  createHomeMemoryLlmTrace,
   createMemoryDemoWalkthrough,
   createSemanticSignalRows,
+  type HomeMemoryLlmTrace,
+  type HomeMemoryLlmTraceBatchInput,
+  type HomeMemoryLlmTraceEnrichment,
+  type HomeMemoryLlmSource,
   type MemoryDemoWalkthrough,
   type SemanticSignalRow
 } from './homeMemoryViewModel';
@@ -41,6 +47,48 @@ type MemorySocketStatus = 'connecting' | 'live' | 'reconnecting' | 'paused' | 'o
 
 const RECENT_DEVICE_EVENT_LIMIT = 40;
 const MEMORY_LOCALE_STORAGE_KEY = 'virtualhome.memory.locale';
+
+interface HomeMemoryLlmApiHypothesis {
+  id: string;
+  label: string;
+  llmEnrichmentSource?: HomeMemoryLlmSource;
+  llmEnrichment?: HomeMemoryLlmTraceEnrichment;
+  llmEnrichmentErrors?: string[];
+  llmReliabilityReviewSource?: HomeMemoryLlmSource;
+  llmReliabilityReview?: HomeMemoryLlmTraceEnrichment;
+  llmReliabilityReviewErrors?: string[];
+}
+
+interface HomeMemoryLlmApiHypothesisResponse {
+  items: HomeMemoryLlmApiHypothesis[];
+}
+
+interface HomeMemoryLlmApiPortrait {
+  llmSummarySource?: HomeMemoryLlmSource;
+  llmSummary?: HomeMemoryLlmTraceEnrichment;
+  llmSummaryErrors?: string[];
+}
+
+interface HomeMemoryLlmApiBatchPlan {
+  items: HomeMemoryLlmTraceBatchInput[];
+}
+
+interface HomeMemoryLlmApiMetrics {
+  enabled: boolean;
+  cacheSize: number;
+  rates: {
+    cacheHitRate: number;
+    fallbackRate: number;
+    validationRejectionRate: number;
+    userTriggeredCallRatio: number;
+  };
+  budgets: {
+    callsThisHour: number;
+    maxCallsPerHomePerHour: number;
+    callsToday: number;
+    maxCallsPerHomePerDay: number;
+  };
+}
 
 export function HomeMemoryView(): React.ReactElement {
   const [memory, setMemory] = React.useState<HomeMemory>(() => createHomeMemory());
@@ -55,6 +103,12 @@ export function HomeMemoryView(): React.ReactElement {
   const [activeEvidenceEvent, setActiveEvidenceEvent] = React.useState<DeviceValueEvent | null>(null);
   const [memoryGraphMode, setMemoryGraphMode] = React.useState<HomeMemoryGraphLayoutMode>('spatial');
   const [locale, setLocale] = React.useState<MemoryLocale>(() => initialMemoryLocale());
+  const [llmHypotheses, setLlmHypotheses] = React.useState<HomeMemoryLlmApiHypothesis[]>([]);
+  const [llmPortrait, setLlmPortrait] = React.useState<HomeMemoryLlmApiPortrait | null>(null);
+  const [llmBatchPlan, setLlmBatchPlan] = React.useState<HomeMemoryLlmApiBatchPlan | null>(null);
+  const [llmMetrics, setLlmMetrics] = React.useState<HomeMemoryLlmApiMetrics | null>(null);
+  const [llmTraceError, setLlmTraceError] = React.useState<string | null>(null);
+  const [llmTraceLoading, setLlmTraceLoading] = React.useState(false);
   const cursorRef = React.useRef<DeviceEventCursor | null>(null);
   const copy = React.useMemo(() => memoryCopy(locale), [locale]);
 
@@ -219,6 +273,20 @@ export function HomeMemoryView(): React.ReactElement {
     () => createMemoryDemoWalkthrough(memory, hypotheses, selectedHypothesis, locale),
     [hypotheses, locale, memory, selectedHypothesis]
   );
+  const selectedLlmHypothesis = React.useMemo(
+    () => llmHypotheses.find((hypothesis) => hypothesis.id === selectedHypothesis?.id) ?? llmHypotheses[0] ?? null,
+    [llmHypotheses, selectedHypothesis?.id]
+  );
+  const llmTrace = React.useMemo(
+    () => createHomeMemoryLlmTrace({
+      hypothesis: selectedLlmHypothesis,
+      portrait: llmPortrait,
+      batchPlan: llmBatchPlan,
+      metrics: llmMetrics,
+      error: llmTraceError
+    }),
+    [llmBatchPlan, llmMetrics, llmPortrait, llmTraceError, selectedLlmHypothesis]
+  );
   const status: MemorySocketStatus = paused ? 'paused' : connectionStatus;
 
   React.useEffect(() => {
@@ -243,12 +311,68 @@ export function HomeMemoryView(): React.ReactElement {
     window.localStorage.setItem(MEMORY_LOCALE_STORAGE_KEY, locale);
   }, [locale]);
 
+  React.useEffect(() => {
+    if (!memory.runId) {
+      return undefined;
+    }
+    let disposed = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const [batchPlan, metrics] = await Promise.all([
+          getJson<HomeMemoryLlmApiBatchPlan>('/api/memory/llm/batch-plan?includePortraitSummary=true'),
+          getJson<HomeMemoryLlmApiMetrics>('/api/memory/llm/metrics')
+        ]);
+        if (disposed) return;
+        setLlmBatchPlan(batchPlan);
+        setLlmMetrics(metrics);
+        setLlmTraceError(null);
+      } catch (error) {
+        if (!disposed) {
+          setLlmTraceError(errorMessage(error));
+        }
+      }
+    }, 600);
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+    };
+  }, [memory.runId, memory.totalEvents]);
+
   function clearMemory(): void {
     setMemory(createHomeMemory());
     setRecentEvents([]);
     setSelectedNodeId(null);
     setMemoryWarning(null);
     setActiveEvidenceEvent(null);
+    setLlmHypotheses([]);
+    setLlmPortrait(null);
+    setLlmBatchPlan(null);
+    setLlmMetrics(null);
+    setLlmTraceError(null);
+  }
+
+  async function refreshHomeMemoryLlmTrace(): Promise<void> {
+    const hypothesisTraceUrl = '/api/memory/profile/hypotheses?includeLlmEnrichment=true&includeReliability=true';
+    const typeQuery = selectedHypothesis ? `&type=${encodeURIComponent(selectedHypothesis.type)}` : '';
+    setLlmTraceLoading(true);
+    try {
+      const [hypothesisResponse, portrait, batchPlan, metrics] = await Promise.all([
+        getJson<HomeMemoryLlmApiHypothesisResponse>(`${hypothesisTraceUrl}${typeQuery}`),
+        getJson<HomeMemoryLlmApiPortrait>('/api/memory/portrait?includeLlmEnrichment=true'),
+        getJson<HomeMemoryLlmApiBatchPlan>('/api/memory/llm/batch-plan?includePortraitSummary=true'),
+        getJson<HomeMemoryLlmApiMetrics>('/api/memory/llm/metrics')
+      ]);
+      setLlmHypotheses(hypothesisResponse.items);
+      setLlmPortrait(portrait);
+      setLlmBatchPlan(batchPlan);
+      setLlmMetrics(metrics);
+      setLlmTraceError(null);
+    } catch (error) {
+      setLlmTraceError(errorMessage(error));
+    } finally {
+      setLlmTraceLoading(false);
+    }
   }
 
   return (
@@ -353,6 +477,11 @@ export function HomeMemoryView(): React.ReactElement {
             selectedHypothesis={selectedHypothesis}
             copy={copy}
             onSelectHypothesis={(nodeId) => setSelectedNodeId(nodeId)}
+          />
+          <HomeMemoryLlmTracePanel
+            trace={llmTrace}
+            loading={llmTraceLoading}
+            onRefresh={refreshHomeMemoryLlmTrace}
           />
           <SelectedMemoryPanel
             memory={memory}
@@ -614,6 +743,79 @@ function ReasoningFlowPanel({
           <ReasoningSteps steps={hypothesisReasoning.steps} copy={copy} />
         </div>
       ) : null}
+    </section>
+  );
+}
+
+function HomeMemoryLlmTracePanel({
+  trace,
+  loading,
+  onRefresh
+}: {
+  trace: HomeMemoryLlmTrace;
+  loading: boolean;
+  onRefresh: () => Promise<void>;
+}): React.ReactElement {
+  return (
+    <section className="memory-panel llm-trace-panel">
+      <div className="panel-heading">
+        <div>
+          <span className="eyebrow">LLM Trace</span>
+          <h2>{trace.enabled ? 'Provider participation' : 'Deterministic boundary'}</h2>
+        </div>
+        <button onClick={() => void onRefresh()} disabled={loading}>
+          {loading ? 'Refreshing' : 'Refresh'}
+        </button>
+      </div>
+
+      <div className="llm-trace-metrics">
+        {trace.metrics.map((metric) => (
+          <div key={metric.label}>
+            <span>{metric.label}</span>
+            <strong>{metric.value}</strong>
+          </div>
+        ))}
+      </div>
+
+      {trace.error ? <p className="memory-warning compact">{trace.error}</p> : null}
+
+      <div className="llm-trace-rows">
+        {trace.rows.map((row) => (
+          <article key={row.label} className="llm-trace-row">
+            <header>
+              <strong>{row.label}</strong>
+              <span className={`llm-trace-source ${row.source}`}>{row.source}</span>
+            </header>
+            <p>{row.claim}</p>
+            <div className="llm-trace-evidence">
+              <span>Missing {row.missingEvidence.length}</span>
+              <span>Contradicting {row.contradictingEvidenceIds.length}</span>
+              <span>Alternatives {row.alternatives.length}</span>
+            </div>
+            {row.errors.length > 0 ? (
+              <ul>
+                {row.errors.slice(0, 2).map((error) => <li key={error}>{error}</li>)}
+              </ul>
+            ) : null}
+          </article>
+        ))}
+        {trace.rows.length === 0 ? <p className="muted">No LLM enrichment has been requested for the selected memory yet.</p> : null}
+      </div>
+
+      <div className="llm-trace-batch">
+        <div>
+          <strong>Batch gatekeeper</strong>
+          <span>{trace.cacheSize} cached enrichments</span>
+        </div>
+        {trace.batchItems.map((item) => (
+          <div key={`${item.purpose}:${item.targetId}`} className="llm-trace-batch-row">
+            <span className={`llm-trace-source ${item.source}`}>{item.source}</span>
+            <strong>{item.purpose.replaceAll('_', ' ')}</strong>
+            <small title={item.targetId}>{item.reason}</small>
+          </div>
+        ))}
+        {trace.batchItems.length === 0 ? <p className="muted">No eligible batch work is currently planned.</p> : null}
+      </div>
     </section>
   );
 }
@@ -1196,4 +1398,8 @@ function formatValue(value: DeviceValueEvent['value']): string {
   if (value === null) return 'null';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   return String(value);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

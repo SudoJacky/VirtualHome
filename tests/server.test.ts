@@ -2,9 +2,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { WebSocket } from '@fastify/websocket';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from '../src/server/app';
 import { getHomeDefinition } from '../src/sim/catalog';
+import { resolveHomeMemoryLlmConfig } from '../src/sim/llm/homeMemoryEnrichment';
 import { deviceCapabilities } from '../src/shared/deviceRegistry';
 
 describe('server API', () => {
@@ -109,6 +110,704 @@ describe('server API', () => {
       evidenceCount: expect.any(Number)
     });
 
+    const enrichedHypotheses = await server.inject({
+      method: 'GET',
+      url: '/api/memory/profile/hypotheses?type=presence_signal&includeLlmEnrichment=true&includeReliability=true'
+    });
+    expect(enrichedHypotheses.statusCode).toBe(200);
+    expect(enrichedHypotheses.json().items[0]).toMatchObject({
+      type: 'presence_signal',
+      llmEnrichment: {
+        purpose: 'hypothesis_explanation',
+        metadata: {
+          model: 'deterministic-fallback'
+        }
+      },
+      reliability: {
+        unsupportedClaimCount: 0,
+        explanationSource: 'rule_template'
+      }
+    });
+
+    const schemaMappings = await server.inject({
+      method: 'GET',
+      url: '/api/memory/schema-mappings?includeLlmEnrichment=true'
+    });
+    expect(schemaMappings.statusCode).toBe(200);
+    expect(schemaMappings.json()).toMatchObject({
+      runId: expect.any(String),
+      items: expect.any(Array)
+    });
+
+    const semanticCandidates = await server.inject({
+      method: 'GET',
+      url: '/api/memory/semantic-candidates?includeLlmEnrichment=true'
+    });
+    expect(semanticCandidates.statusCode).toBe(200);
+    expect(semanticCandidates.json()).toMatchObject({
+      runId: expect.any(String),
+      items: expect.any(Array)
+    });
+
+    const reliability = await server.inject({ method: 'GET', url: '/api/memory/reliability' });
+    expect(reliability.statusCode).toBe(200);
+    expect(reliability.json()).toMatchObject({
+      runId: expect.any(String),
+      factLayer: {
+        eventCoverage: expect.any(Number),
+        sequenceConsistency: expect.any(Number),
+        runIsolation: expect.any(Number)
+      },
+      semanticLayer: {
+        evidenceLinkCorrectness: expect.any(Number)
+      },
+      portraitLayer: {
+        unsupportedClaimCount: 0
+      },
+      graphLayer: {
+        edgeEndpointIntegrity: expect.any(Number),
+        missingEvidenceReferenceCount: 0
+      }
+    });
+
+    const portrait = await server.inject({ method: 'GET', url: '/api/memory/portrait' });
+    expect(portrait.statusCode).toBe(200);
+    expect(portrait.json()).toMatchObject({
+      homeId: 'default_home',
+      runId: expect.any(String),
+      sections: expect.arrayContaining([
+        expect.objectContaining({
+          id: 'household_composition',
+          explanationSource: 'rule_template',
+          evidenceIds: expect.any(Array),
+          missingEvidence: expect.any(Array)
+        }),
+        expect.objectContaining({
+          id: 'evidence_quality',
+          evidenceIds: expect.any(Array)
+        })
+      ]),
+      evidenceQuality: {
+        unsupportedClaimCount: 0
+      }
+    });
+
+    await server.close();
+  });
+
+  it('uses configured LLM provider for opt-in memory hypothesis enrichment', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-memory-llm-api-'));
+    dirs.push(dir);
+    const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
+      const prompt = JSON.parse(body.messages[1].content) as { evidenceIds: string[] };
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              purpose: 'hypothesis_explanation',
+              claim: 'Provider-backed API explanation remains evidence-locked.',
+              type: 'hypothesis_explanation',
+              confidence: 0.5,
+              supportingEvidenceIds: [prompt.evidenceIds[0]],
+              contradictingEvidenceIds: [],
+              missingEvidence: ['More observations would improve confidence.'],
+              alternatives: []
+            })
+          }
+        }]
+      }), { status: 200 });
+    });
+    const server = createServer({
+      databasePath: path.join(dir, 'twin.db'),
+      autoTick: false,
+      homeMemoryLlm: resolveHomeMemoryLlmConfig({
+        HOME_MEMORY_LLM_ENABLED: 'true',
+        HOME_MEMORY_LLM_BASE_URL: 'https://llm.example.test/v1',
+        HOME_MEMORY_LLM_MODEL: 'memory-model'
+      }),
+      homeMemoryLlmFetch: fetcher
+    });
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 30 }
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/memory/profile/hypotheses?type=presence_signal&includeLlmEnrichment=true'
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items[0]).toMatchObject({
+      type: 'presence_signal',
+      llmEnrichment: {
+        claim: 'Provider-backed API explanation remains evidence-locked.',
+        metadata: {
+          model: 'memory-model'
+        }
+      },
+      llmEnrichmentSource: 'llm'
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    await server.close();
+  });
+
+  it('reuses cached memory LLM enrichment for repeated hypothesis requests', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-memory-llm-cache-api-'));
+    dirs.push(dir);
+    const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
+      const prompt = JSON.parse(body.messages[1].content) as { evidenceIds: string[] };
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              purpose: 'hypothesis_explanation',
+              claim: 'Cached API explanation remains evidence-locked.',
+              type: 'hypothesis_explanation',
+              confidence: 0.1,
+              supportingEvidenceIds: [prompt.evidenceIds[0]],
+              contradictingEvidenceIds: [],
+              missingEvidence: [],
+              alternatives: []
+            })
+          }
+        }]
+      }), { status: 200 });
+    });
+    const server = createServer({
+      databasePath: path.join(dir, 'twin.db'),
+      autoTick: false,
+      homeMemoryLlm: resolveHomeMemoryLlmConfig({
+        HOME_MEMORY_LLM_ENABLED: 'true',
+        HOME_MEMORY_LLM_BASE_URL: 'https://llm.example.test/v1',
+        HOME_MEMORY_LLM_MODEL: 'memory-model'
+      }),
+      homeMemoryLlmFetch: fetcher
+    });
+
+    await server.inject({ method: 'POST', url: '/api/scenarios/weekday_normal/start' });
+    await server.inject({ method: 'POST', url: '/api/control/advance', payload: { minutes: 30 } });
+
+    const first = await server.inject({
+      method: 'GET',
+      url: '/api/memory/profile/hypotheses?type=presence_signal&includeLlmEnrichment=true'
+    });
+    const second = await server.inject({
+      method: 'GET',
+      url: '/api/memory/profile/hypotheses?type=presence_signal&includeLlmEnrichment=true'
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(first.json().items[0]).toMatchObject({
+      llmEnrichmentSource: 'llm'
+    });
+    expect(second.json().items[0]).toMatchObject({
+      llmEnrichmentSource: 'cache',
+      llmEnrichment: {
+        claim: 'Cached API explanation remains evidence-locked.'
+      }
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    await server.close();
+  });
+
+  it('persists cached memory LLM enrichment across server restarts', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-memory-llm-persistent-cache-api-'));
+    dirs.push(dir);
+    const databasePath = path.join(dir, 'twin.db');
+    const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
+      const prompt = JSON.parse(body.messages[1].content) as { evidenceIds: string[] };
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              purpose: 'hypothesis_explanation',
+              claim: 'Persistent API explanation remains evidence-locked.',
+              type: 'hypothesis_explanation',
+              confidence: 0.1,
+              supportingEvidenceIds: [prompt.evidenceIds[0]],
+              contradictingEvidenceIds: [],
+              missingEvidence: [],
+              alternatives: []
+            })
+          }
+        }]
+      }), { status: 200 });
+    });
+    const llmConfig = resolveHomeMemoryLlmConfig({
+      HOME_MEMORY_LLM_ENABLED: 'true',
+      HOME_MEMORY_LLM_BASE_URL: 'https://llm.example.test/v1',
+      HOME_MEMORY_LLM_MODEL: 'memory-model'
+    });
+
+    let firstServer: ReturnType<typeof createServer> | undefined;
+    let secondServer: ReturnType<typeof createServer> | undefined;
+    try {
+      firstServer = createServer({
+        databasePath,
+        autoTick: false,
+        homeMemoryLlm: llmConfig,
+        homeMemoryLlmFetch: fetcher
+      });
+      await firstServer.inject({ method: 'POST', url: '/api/scenarios/weekday_normal/start' });
+      await firstServer.inject({ method: 'POST', url: '/api/control/advance', payload: { minutes: 30 } });
+
+      const first = await firstServer.inject({
+        method: 'GET',
+        url: '/api/memory/profile/hypotheses?type=presence_signal&includeLlmEnrichment=true'
+      });
+      expect(first.statusCode).toBe(200);
+      expect(first.json().items[0]).toMatchObject({
+        llmEnrichmentSource: 'llm',
+        llmEnrichment: {
+          claim: 'Persistent API explanation remains evidence-locked.'
+        }
+      });
+      await firstServer.close();
+      firstServer = undefined;
+
+      secondServer = createServer({
+        databasePath,
+        autoTick: false,
+        homeMemoryLlm: llmConfig,
+        homeMemoryLlmFetch: fetcher
+      });
+      const second = await secondServer.inject({
+        method: 'GET',
+        url: '/api/memory/profile/hypotheses?type=presence_signal&includeLlmEnrichment=true'
+      });
+
+      expect(second.statusCode).toBe(200);
+      expect(second.json().items[0]).toMatchObject({
+        llmEnrichmentSource: 'cache',
+        llmEnrichment: {
+          claim: 'Persistent API explanation remains evidence-locked.'
+        }
+      });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    } finally {
+      await secondServer?.close();
+      await firstServer?.close();
+    }
+  });
+
+  it('enforces memory LLM call budgets across API requests', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-memory-llm-budget-api-'));
+    dirs.push(dir);
+    const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
+      const prompt = JSON.parse(body.messages[1].content) as { evidenceIds: string[] };
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              purpose: 'hypothesis_explanation',
+              claim: 'Budgeted API explanation remains evidence-locked.',
+              type: 'hypothesis_explanation',
+              confidence: 0.1,
+              supportingEvidenceIds: [prompt.evidenceIds[0]],
+              contradictingEvidenceIds: [],
+              missingEvidence: [],
+              alternatives: []
+            })
+          }
+        }]
+      }), { status: 200 });
+    });
+    const llmConfig = resolveHomeMemoryLlmConfig({
+      HOME_MEMORY_LLM_ENABLED: 'true',
+      HOME_MEMORY_LLM_BASE_URL: 'https://llm.example.test/v1',
+      HOME_MEMORY_LLM_MODEL: 'memory-model'
+    });
+    const server = createServer({
+      databasePath: path.join(dir, 'twin.db'),
+      autoTick: false,
+      homeMemoryLlm: {
+        ...llmConfig,
+        budget: {
+          ...llmConfig.budget,
+          maxCallsPerHomePerHour: 1,
+          maxCallsPerHomePerDay: 1
+        }
+      },
+      homeMemoryLlmFetch: fetcher
+    });
+
+    await server.inject({ method: 'POST', url: '/api/scenarios/weekday_normal/start' });
+    await server.inject({ method: 'POST', url: '/api/control/advance', payload: { minutes: 30 } });
+
+    const first = await server.inject({
+      method: 'GET',
+      url: '/api/memory/profile/hypotheses?type=presence_signal&includeLlmEnrichment=true'
+    });
+    const second = await server.inject({
+      method: 'GET',
+      url: '/api/memory/profile/hypotheses?type=daily_rhythm&includeLlmEnrichment=true'
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(first.json().items[0]).toMatchObject({
+      llmEnrichmentSource: 'llm'
+    });
+    expect(second.json().items[0]).toMatchObject({
+      llmEnrichmentSource: 'deterministic-fallback',
+      llmEnrichmentErrors: expect.arrayContaining([
+        expect.stringMatching(/budget exhausted/i)
+      ])
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    await server.close();
+  });
+
+  it('adds cached opt-in LLM summary to the household portrait API', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-memory-portrait-llm-api-'));
+    dirs.push(dir);
+    const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
+      const prompt = JSON.parse(body.messages[1].content) as { evidenceIds: string[] };
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              purpose: 'daily_portrait_summary',
+              claim: 'API portrait summary remains evidence-locked.',
+              type: 'portrait_summary',
+              confidence: 0.4,
+              supportingEvidenceIds: [prompt.evidenceIds[0]],
+              contradictingEvidenceIds: [],
+              missingEvidence: ['More observed days would improve the portrait.'],
+              alternatives: []
+            })
+          }
+        }]
+      }), { status: 200 });
+    });
+    const server = createServer({
+      databasePath: path.join(dir, 'twin.db'),
+      autoTick: false,
+      homeMemoryLlm: resolveHomeMemoryLlmConfig({
+        HOME_MEMORY_LLM_ENABLED: 'true',
+        HOME_MEMORY_LLM_BASE_URL: 'https://llm.example.test/v1',
+        HOME_MEMORY_LLM_MODEL: 'memory-model'
+      }),
+      homeMemoryLlmFetch: fetcher
+    });
+
+    await server.inject({ method: 'POST', url: '/api/scenarios/weekday_normal/start' });
+    await server.inject({ method: 'POST', url: '/api/control/advance', payload: { minutes: 30 } });
+
+    const first = await server.inject({
+      method: 'GET',
+      url: '/api/memory/portrait?includeLlmEnrichment=true'
+    });
+    const second = await server.inject({
+      method: 'GET',
+      url: '/api/memory/portrait?includeLlmEnrichment=true'
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({
+      llmSummarySource: 'llm',
+      llmSummary: {
+        purpose: 'daily_portrait_summary',
+        type: 'portrait_summary',
+        claim: 'API portrait summary remains evidence-locked.'
+      }
+    });
+    expect(second.json()).toMatchObject({
+      llmSummarySource: 'cache',
+      llmSummary: {
+        claim: 'API portrait summary remains evidence-locked.'
+      }
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    await server.close();
+  });
+
+  it('adds cached provider-backed plans for natural-language memory queries', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-memory-query-plan-api-'));
+    dirs.push(dir);
+    const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
+      const prompt = JSON.parse(body.messages[1].content) as { evidenceIds: string[] };
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              purpose: 'query_planning',
+              claim: 'Use recent evidence before answering the memory question.',
+              type: 'query_plan',
+              confidence: 0.4,
+              supportingEvidenceIds: [prompt.evidenceIds[0]],
+              contradictingEvidenceIds: [],
+              missingEvidence: [],
+              alternatives: []
+            })
+          }
+        }]
+      }), { status: 200 });
+    });
+    const server = createServer({
+      databasePath: path.join(dir, 'twin.db'),
+      autoTick: false,
+      homeMemoryLlm: resolveHomeMemoryLlmConfig({
+        HOME_MEMORY_LLM_ENABLED: 'true',
+        HOME_MEMORY_LLM_BASE_URL: 'https://llm.example.test/v1',
+        HOME_MEMORY_LLM_MODEL: 'memory-model'
+      }),
+      homeMemoryLlmFetch: fetcher
+    });
+
+    await server.inject({ method: 'POST', url: '/api/scenarios/weekday_normal/start' });
+    await server.inject({ method: 'POST', url: '/api/control/advance', payload: { minutes: 30 } });
+
+    const first = await server.inject({
+      method: 'GET',
+      url: '/api/memory/query-plan?question=presence'
+    });
+    const second = await server.inject({
+      method: 'GET',
+      url: '/api/memory/query-plan?question=presence'
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({
+      question: 'presence',
+      planSource: 'llm',
+      plan: {
+        purpose: 'query_planning',
+        type: 'query_plan'
+      },
+      execution: {
+        target: 'hypotheses',
+        evidenceIds: expect.any(Array)
+      }
+    });
+    expect(second.json()).toMatchObject({
+      planSource: 'cache',
+      plan: {
+        claim: 'Use recent evidence before answering the memory question.'
+      }
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    await server.close();
+  });
+
+  it('reports memory LLM cache, budget, fallback, and token metrics', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-memory-llm-metrics-api-'));
+    dirs.push(dir);
+    const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
+      const prompt = JSON.parse(body.messages[1].content) as { purpose: string; evidenceIds: string[] };
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              purpose: prompt.purpose,
+              claim: 'Metrics test explanation remains evidence-locked.',
+              type: prompt.purpose === 'query_planning' ? 'query_plan' : 'hypothesis_explanation',
+              confidence: 0.1,
+              supportingEvidenceIds: [prompt.evidenceIds[0]],
+              contradictingEvidenceIds: [],
+              missingEvidence: [],
+              alternatives: []
+            })
+          }
+        }]
+      }), { status: 200 });
+    });
+    const llmConfig = resolveHomeMemoryLlmConfig({
+      HOME_MEMORY_LLM_ENABLED: 'true',
+      HOME_MEMORY_LLM_BASE_URL: 'https://llm.example.test/v1',
+      HOME_MEMORY_LLM_MODEL: 'memory-model'
+    });
+    const server = createServer({
+      databasePath: path.join(dir, 'twin.db'),
+      autoTick: false,
+      homeMemoryLlm: {
+        ...llmConfig,
+        budget: {
+          ...llmConfig.budget,
+          maxCallsPerHomePerHour: 1,
+          maxCallsPerHomePerDay: 1
+        }
+      },
+      homeMemoryLlmFetch: fetcher
+    });
+
+    await server.inject({ method: 'POST', url: '/api/scenarios/weekday_normal/start' });
+    await server.inject({ method: 'POST', url: '/api/control/advance', payload: { minutes: 30 } });
+
+    await server.inject({
+      method: 'GET',
+      url: '/api/memory/profile/hypotheses?type=presence_signal&includeLlmEnrichment=true'
+    });
+    await server.inject({
+      method: 'GET',
+      url: '/api/memory/profile/hypotheses?type=presence_signal&includeLlmEnrichment=true'
+    });
+    await server.inject({
+      method: 'GET',
+      url: '/api/memory/query-plan?question=presence'
+    });
+
+    const response = await server.inject({ method: 'GET', url: '/api/memory/llm/metrics' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      enabled: true,
+      provider: 'openai-compatible',
+      cacheSize: 1,
+      unsupportedClaimRate: 0,
+      totalRequests: 3,
+      sourceCounts: {
+        llm: 1,
+        cache: 1,
+        deterministicFallback: 1
+      },
+      rates: {
+        cacheHitRate: expect.any(Number),
+        fallbackRate: expect.any(Number),
+        validationRejectionRate: expect.any(Number),
+        userTriggeredCallRatio: 1
+      },
+      callsByPurpose: {
+        hypothesis_explanation: 1
+      },
+      estimatedTokensByPurpose: {
+        hypothesis_explanation: 800
+      },
+      budgets: {
+        maxCallsPerHomePerHour: 1,
+        maxCallsPerHomePerDay: 1,
+        callsThisHour: expect.any(Number),
+        callsToday: expect.any(Number)
+      }
+    });
+    expect(response.json().rates.cacheHitRate).toBeCloseTo(1 / 3, 3);
+    expect(response.json().rates.fallbackRate).toBeCloseTo(1 / 3, 3);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    await server.close();
+  });
+
+  it('reports planned memory LLM batch work without calling the provider', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-memory-llm-batch-plan-api-'));
+    dirs.push(dir);
+    const fetcher = vi.fn();
+    const server = createServer({
+      databasePath: path.join(dir, 'twin.db'),
+      autoTick: false,
+      homeMemoryLlm: resolveHomeMemoryLlmConfig({
+        HOME_MEMORY_LLM_ENABLED: 'true',
+        HOME_MEMORY_LLM_BASE_URL: 'https://llm.example.test/v1',
+        HOME_MEMORY_LLM_MODEL: 'memory-model'
+      }),
+      homeMemoryLlmFetch: fetcher
+    });
+
+    await server.inject({ method: 'POST', url: '/api/scenarios/weekday_normal/start' });
+    await server.inject({ method: 'POST', url: '/api/control/advance', payload: { minutes: 30 } });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/memory/llm/batch-plan?includePortraitSummary=true'
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      runId: expect.any(String),
+      realtimeDeviceEventCallsAllowed: false,
+      maxBatchSize: expect.any(Number),
+      candidateCount: expect.any(Number),
+      allowedCount: expect.any(Number),
+      estimatedMaxTokens: expect.any(Number),
+      items: expect.any(Array)
+    });
+    expect(response.json().items.every((item: { trigger: string }) => item.trigger !== 'device_event')).toBe(true);
+    expect(fetcher).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it('executes memory LLM batch work through an opt-in endpoint', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-memory-llm-batch-api-'));
+    dirs.push(dir);
+    const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
+      const prompt = JSON.parse(body.messages[1].content) as { purpose: string; evidenceIds?: string[]; candidate?: { evidenceIds: string[] } };
+      const evidenceIds = prompt.evidenceIds ?? prompt.candidate?.evidenceIds ?? [];
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              purpose: prompt.purpose,
+              claim: 'Batch enrichment is evidence-locked.',
+              type: prompt.purpose === 'daily_portrait_summary' ? 'portrait_summary' : 'semantic_candidate',
+              confidence: 0.1,
+              supportingEvidenceIds: evidenceIds,
+              contradictingEvidenceIds: [],
+              missingEvidence: [],
+              alternatives: []
+            })
+          }
+        }]
+      }), { status: 200 });
+    });
+    const server = createServer({
+      databasePath: path.join(dir, 'twin.db'),
+      autoTick: false,
+      homeMemoryLlm: resolveHomeMemoryLlmConfig({
+        HOME_MEMORY_LLM_ENABLED: 'true',
+        HOME_MEMORY_LLM_BASE_URL: 'https://llm.example.test/v1',
+        HOME_MEMORY_LLM_MODEL: 'memory-model'
+      }),
+      homeMemoryLlmFetch: fetcher
+    });
+
+    await server.inject({ method: 'POST', url: '/api/scenarios/weekday_normal/start' });
+    await server.inject({ method: 'POST', url: '/api/control/advance', payload: { minutes: 30 } });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/memory/llm/batch',
+      payload: { includePortraitSummary: true, limit: 1 }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      runId: expect.any(String),
+      plan: {
+        realtimeDeviceEventCallsAllowed: false,
+        items: expect.any(Array)
+      },
+      results: [
+        expect.objectContaining({
+          source: 'llm',
+          errors: []
+        })
+      ]
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
     await server.close();
   });
 
@@ -132,6 +831,14 @@ describe('server API', () => {
       '/api/memory/episodes',
       '/api/memory/evidence',
       '/api/memory/profile/hypotheses',
+      '/api/memory/schema-mappings',
+      '/api/memory/semantic-candidates',
+      '/api/memory/reliability',
+      '/api/memory/portrait',
+      '/api/memory/query-plan',
+      '/api/memory/llm/batch-plan',
+      '/api/memory/llm/batch',
+      '/api/memory/llm/metrics',
       '/api/device-twins',
       '/api/device-capabilities',
       '/api/home-definition',
@@ -190,6 +897,15 @@ describe('server API', () => {
       'timed-out',
       'none'
     ]);
+    expect(document.components.schemas.MemoryHypothesis.properties).toHaveProperty('reliability');
+    expect(document.components.schemas.MemoryHypothesis.properties).toHaveProperty('llmEnrichment');
+    expect(document.components.schemas.MemoryHypothesis.properties).toHaveProperty('llmEnrichmentSource');
+    expect(document.components.schemas.MemoryHypothesis.properties).toHaveProperty('llmReliabilityReview');
+    expect(document.components.schemas.MemoryHypothesis.properties).toHaveProperty('llmReliabilityReviewSource');
+    expect(document.components.schemas).toHaveProperty('UnknownSchemaMappingResult');
+    expect(document.components.schemas).toHaveProperty('SemanticCandidateResult');
+    expect(document.components.schemas).toHaveProperty('MemoryReliabilityReport');
+    expect(document.components.schemas).toHaveProperty('HomeMemoryLlmBatchPlan');
     expect(document.components.schemas).toHaveProperty('AbnormalityInjectedEvent');
     expect(document.components.schemas).toHaveProperty('AlertCreatedEvent');
     expect(document.components.schemas).toHaveProperty('AlertStatusChangedEvent');

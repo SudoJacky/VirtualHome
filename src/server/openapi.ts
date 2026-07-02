@@ -1125,12 +1125,80 @@ const memoryEvidenceSchema: JsonSchema = {
   }
 };
 
+const memoryLlmEnrichmentSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'purpose', 'claim', 'type', 'confidence', 'supportingEvidenceIds', 'contradictingEvidenceIds', 'missingEvidence', 'alternatives', 'metadata'],
+  properties: {
+    id: stringSchema,
+    purpose: { type: 'string', enum: ['unknown_schema_mapping', 'semantic_candidate', 'hypothesis_explanation', 'reliability_review', 'query_planning', 'daily_portrait_summary'] },
+    claim: stringSchema,
+    type: { type: 'string', enum: ['semantic_candidate', 'hypothesis_explanation', 'reliability_review', 'query_plan', 'portrait_summary'] },
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
+    supportingEvidenceIds: {
+      type: 'array',
+      items: stringSchema
+    },
+    contradictingEvidenceIds: {
+      type: 'array',
+      items: stringSchema
+    },
+    missingEvidence: {
+      type: 'array',
+      items: stringSchema
+    },
+    alternatives: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['claim', 'confidence', 'evidenceIds'],
+        properties: {
+          claim: stringSchema,
+          confidence: { type: 'number', minimum: 0, maximum: 1 },
+          evidenceIds: {
+            type: 'array',
+            items: stringSchema
+          }
+        }
+      }
+    },
+    metadata: {
+      type: 'object',
+      required: ['model', 'baseUrlHash', 'promptVersion', 'schemaVersion', 'inputHash', 'outputHash', 'createdAt'],
+      properties: {
+        model: stringSchema,
+        baseUrlHash: stringSchema,
+        promptVersion: { type: 'integer', minimum: 1 },
+        schemaVersion: { type: 'integer', minimum: 1 },
+        inputHash: stringSchema,
+        outputHash: stringSchema,
+        createdAt: isoDateTimeSchema
+      }
+    }
+  }
+};
+
+const memoryHypothesisReliabilitySchema: JsonSchema = {
+  type: 'object',
+  required: ['evidenceCount', 'supportingEvidenceCount', 'contradictingEvidenceCount', 'missingEvidence', 'unsupportedClaimCount', 'explanationSource'],
+  properties: {
+    evidenceCount: { type: 'integer', minimum: 0 },
+    supportingEvidenceCount: { type: 'integer', minimum: 0 },
+    contradictingEvidenceCount: { type: 'integer', minimum: 0 },
+    missingEvidence: {
+      type: 'array',
+      items: stringSchema
+    },
+    unsupportedClaimCount: { type: 'integer', minimum: 0 },
+    explanationSource: { type: 'string', enum: ['rule_template', 'llm_enrichment', 'mixed'] }
+  }
+};
+
 const memoryHypothesisSchema: JsonSchema = {
   type: 'object',
   required: ['id', 'type', 'label', 'summary', 'confidence', 'updatedAt', 'evidenceCount', 'subjectIds'],
   properties: {
     id: stringSchema,
-    type: { type: 'string', enum: ['household_size', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster'] },
+    type: { type: 'string', enum: ['household_size', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster', 'routine_window', 'behavior_flow', 'resident_slot', 'room_function', 'device_contribution', 'state_anomaly'] },
     label: stringSchema,
     summary: stringSchema,
     confidence: { type: 'number', minimum: 0, maximum: 1 },
@@ -1143,6 +1211,19 @@ const memoryHypothesisSchema: JsonSchema = {
     evidence: {
       type: 'array',
       items: { $ref: '#/components/schemas/MemoryEvidence' }
+    },
+    reliability: memoryHypothesisReliabilitySchema,
+    llmEnrichment: memoryLlmEnrichmentSchema,
+    llmEnrichmentSource: { type: 'string', enum: ['cache', 'llm', 'deterministic-fallback'] },
+    llmEnrichmentErrors: {
+      type: 'array',
+      items: stringSchema
+    },
+    llmReliabilityReview: memoryLlmEnrichmentSchema,
+    llmReliabilityReviewSource: { type: 'string', enum: ['cache', 'llm', 'deterministic-fallback'] },
+    llmReliabilityReviewErrors: {
+      type: 'array',
+      items: stringSchema
     }
   }
 };
@@ -1202,6 +1283,388 @@ const memorySummarySchema: JsonSchema = {
       items: { $ref: '#/components/schemas/MemoryEvidence' }
     },
     updatedAt: { anyOf: [isoDateTimeSchema, { type: 'null' }] }
+  }
+};
+
+const householdPortraitSchema: JsonSchema = {
+  type: 'object',
+  required: ['homeId', 'runId', 'updatedAt', 'confidence', 'sections', 'evidenceQuality'],
+  properties: {
+    homeId: { anyOf: [stringSchema, { type: 'null' }] },
+    runId: { anyOf: [stringSchema, { type: 'null' }] },
+    updatedAt: { anyOf: [isoDateTimeSchema, { type: 'null' }] },
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
+    sections: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['id', 'label', 'summary', 'confidence', 'evidenceIds', 'missingEvidence', 'contradictingEvidenceIds', 'updatedAt', 'explanationSource', 'hypothesisIds'],
+        properties: {
+          id: { type: 'string', enum: ['household_composition', 'daily_rhythm', 'room_functions', 'routine_patterns', 'behavior_flows', 'device_contribution', 'current_presence', 'anomalies_and_uncertainty', 'evidence_quality'] },
+          label: stringSchema,
+          summary: stringSchema,
+          confidence: { type: 'number', minimum: 0, maximum: 1 },
+          evidenceIds: {
+            type: 'array',
+            items: stringSchema
+          },
+          missingEvidence: {
+            type: 'array',
+            items: stringSchema
+          },
+          contradictingEvidenceIds: {
+            type: 'array',
+            items: stringSchema
+          },
+          updatedAt: { anyOf: [isoDateTimeSchema, { type: 'null' }] },
+          explanationSource: { type: 'string', enum: ['rule_template', 'llm_enrichment', 'mixed'] },
+          hypothesisIds: {
+            type: 'array',
+            items: stringSchema
+          }
+        }
+      }
+    },
+    evidenceQuality: {
+      type: 'object',
+      required: ['evidenceCount', 'independentDeviceCount', 'distinctRoomCount', 'observedDayCount', 'observedWeekCount', 'environmentContextRatio', 'unsupportedClaimCount', 'missingEvidence'],
+      properties: {
+        evidenceCount: { type: 'integer', minimum: 0 },
+        independentDeviceCount: { type: 'integer', minimum: 0 },
+        distinctRoomCount: { type: 'integer', minimum: 0 },
+        observedDayCount: { type: 'integer', minimum: 0 },
+        observedWeekCount: { type: 'integer', minimum: 0 },
+        environmentContextRatio: { type: 'number', minimum: 0, maximum: 1 },
+        unsupportedClaimCount: { type: 'integer', minimum: 0 },
+        missingEvidence: {
+          type: 'array',
+          items: stringSchema
+        }
+      }
+    },
+    llmSummary: {
+      type: 'object',
+      additionalProperties: true
+    },
+    llmSummarySource: { type: 'string', enum: ['cache', 'llm', 'deterministic-fallback'] },
+    llmSummaryErrors: {
+      type: 'array',
+      items: stringSchema
+    }
+  }
+};
+
+const memoryQueryPlanSchema: JsonSchema = {
+  type: 'object',
+  required: ['question', 'plan', 'planSource', 'execution'],
+  properties: {
+    question: stringSchema,
+    plan: {
+      type: 'object',
+      additionalProperties: true
+    },
+    planSource: { type: 'string', enum: ['cache', 'llm', 'deterministic-fallback'] },
+    planErrors: {
+      type: 'array',
+      items: stringSchema
+    },
+    execution: {
+      type: 'object',
+      required: ['target', 'query', 'evidenceIds', 'items'],
+      properties: {
+        target: { type: 'string', enum: ['evidence', 'hypotheses', 'summary'] },
+        query: {
+          type: 'object',
+          additionalProperties: true
+        },
+        evidenceIds: {
+          type: 'array',
+          items: stringSchema
+        },
+        items: {
+          type: 'array',
+          items: { type: 'object', additionalProperties: true }
+        }
+      }
+    }
+  }
+};
+
+const unknownSchemaMappingResultSchema: JsonSchema = {
+  type: 'object',
+  required: ['homeId', 'runId', 'items'],
+  properties: {
+    homeId: { anyOf: [stringSchema, { type: 'null' }] },
+    runId: { anyOf: [stringSchema, { type: 'null' }] },
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['candidate'],
+        properties: {
+          candidate: {
+            type: 'object',
+            required: ['id', 'homeId', 'runId', 'deviceType', 'field', 'deviceIds', 'roomIds', 'evidenceIds', 'observedValues'],
+            properties: {
+              id: stringSchema,
+              homeId: stringSchema,
+              runId: stringSchema,
+              deviceType: stringSchema,
+              field: stringSchema,
+              deviceIds: {
+                type: 'array',
+                items: stringSchema
+              },
+              roomIds: {
+                type: 'array',
+                items: stringSchema
+              },
+              evidenceIds: {
+                type: 'array',
+                items: stringSchema
+              },
+              observedValues: {
+                type: 'array',
+                items: {
+                  anyOf: [
+                    stringSchema,
+                    { type: 'number' },
+                    { type: 'boolean' },
+                    { type: 'null' }
+                  ]
+                }
+              }
+            }
+          },
+          mapping: memoryLlmEnrichmentSchema,
+          mappingSource: { type: 'string', enum: ['cache', 'llm', 'deterministic-fallback'] },
+          mappingErrors: {
+            type: 'array',
+            items: stringSchema
+          }
+        }
+      }
+    }
+  }
+};
+
+const semanticCandidateResultSchema: JsonSchema = {
+  type: 'object',
+  required: ['homeId', 'runId', 'items'],
+  properties: {
+    homeId: { anyOf: [stringSchema, { type: 'null' }] },
+    runId: { anyOf: [stringSchema, { type: 'null' }] },
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['window'],
+        properties: {
+          window: {
+            type: 'object',
+            required: ['id', 'homeId', 'runId', 'roomId', 'timeBucket', 'evidenceIds', 'deviceIds', 'deterministicSignalTypes'],
+            properties: {
+              id: stringSchema,
+              homeId: stringSchema,
+              runId: stringSchema,
+              roomId: stringSchema,
+              timeBucket: { type: 'string', enum: ['morning', 'daytime', 'evening', 'night'] },
+              evidenceIds: {
+                type: 'array',
+                items: stringSchema
+              },
+              deviceIds: {
+                type: 'array',
+                items: stringSchema
+              },
+              deterministicSignalTypes: {
+                type: 'array',
+                items: stringSchema
+              }
+            }
+          },
+          candidate: memoryLlmEnrichmentSchema,
+          candidateSource: { type: 'string', enum: ['cache', 'llm', 'deterministic-fallback'] },
+          candidateErrors: {
+            type: 'array',
+            items: stringSchema
+          }
+        }
+      }
+    }
+  }
+};
+
+const memoryReliabilityReportSchema: JsonSchema = {
+  type: 'object',
+  required: ['homeId', 'runId', 'updatedAt', 'factLayer', 'semanticLayer', 'portraitLayer', 'graphLayer'],
+  properties: {
+    homeId: { anyOf: [stringSchema, { type: 'null' }] },
+    runId: { anyOf: [stringSchema, { type: 'null' }] },
+    updatedAt: { anyOf: [isoDateTimeSchema, { type: 'null' }] },
+    factLayer: {
+      type: 'object',
+      required: ['eventCount', 'evidenceCount', 'eventCoverage', 'sequenceConsistency', 'runIsolation'],
+      properties: {
+        eventCount: { type: 'integer', minimum: 0 },
+        evidenceCount: { type: 'integer', minimum: 0 },
+        eventCoverage: { type: 'number', minimum: 0, maximum: 1 },
+        sequenceConsistency: { type: 'number', minimum: 0, maximum: 1 },
+        runIsolation: { type: 'number', minimum: 0, maximum: 1 }
+      }
+    },
+    semanticLayer: {
+      type: 'object',
+      required: ['semanticSignalCount', 'evidenceLinkCorrectness', 'orphanSemanticCount'],
+      properties: {
+        semanticSignalCount: { type: 'integer', minimum: 0 },
+        evidenceLinkCorrectness: { type: 'number', minimum: 0, maximum: 1 },
+        orphanSemanticCount: { type: 'integer', minimum: 0 }
+      }
+    },
+    portraitLayer: {
+      type: 'object',
+      required: ['hypothesisCount', 'evidenceLinkedHypothesisCount', 'unsupportedClaimCount', 'contradictionRate'],
+      properties: {
+        hypothesisCount: { type: 'integer', minimum: 0 },
+        evidenceLinkedHypothesisCount: { type: 'integer', minimum: 0 },
+        unsupportedClaimCount: { type: 'integer', minimum: 0 },
+        contradictionRate: { type: 'number', minimum: 0, maximum: 1 }
+      }
+    },
+    graphLayer: {
+      type: 'object',
+      required: ['nodeCount', 'edgeCount', 'edgeEndpointIntegrity', 'orphanHypothesisCount', 'missingEvidenceReferenceCount', 'confidenceMonotonicityViolations', 'environmentOnlyCapViolations'],
+      properties: {
+        nodeCount: { type: 'integer', minimum: 0 },
+        edgeCount: { type: 'integer', minimum: 0 },
+        edgeEndpointIntegrity: { type: 'number', minimum: 0, maximum: 1 },
+        orphanHypothesisCount: { type: 'integer', minimum: 0 },
+        missingEvidenceReferenceCount: { type: 'integer', minimum: 0 },
+        confidenceMonotonicityViolations: { type: 'integer', minimum: 0 },
+        environmentOnlyCapViolations: { type: 'integer', minimum: 0 }
+      }
+    }
+  }
+};
+
+const homeMemoryLlmBatchPlanSchema: JsonSchema = {
+  type: 'object',
+  required: ['homeId', 'runId', 'realtimeDeviceEventCallsAllowed', 'maxBatchSize', 'candidateCount', 'allowedCount', 'skippedCount', 'estimatedMaxTokens', 'items'],
+  properties: {
+    homeId: { anyOf: [stringSchema, { type: 'null' }] },
+    runId: { anyOf: [stringSchema, { type: 'null' }] },
+    realtimeDeviceEventCallsAllowed: { type: 'boolean' },
+    maxBatchSize: { type: 'integer', minimum: 1 },
+    candidateCount: { type: 'integer', minimum: 0 },
+    allowedCount: { type: 'integer', minimum: 0 },
+    skippedCount: { type: 'integer', minimum: 0 },
+    estimatedMaxTokens: { type: 'integer', minimum: 0 },
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['purpose', 'trigger', 'targetId', 'evidenceIds', 'cacheKey', 'shouldCall', 'reason', 'maxTokens', 'priority', 'cached'],
+        properties: {
+          purpose: { type: 'string', enum: ['unknown_schema_mapping', 'semantic_candidate', 'hypothesis_explanation', 'reliability_review', 'query_planning', 'daily_portrait_summary'] },
+          trigger: { type: 'string', enum: ['batch'] },
+          targetId: stringSchema,
+          evidenceIds: {
+            type: 'array',
+            items: stringSchema
+          },
+          cacheKey: stringSchema,
+          shouldCall: { type: 'boolean' },
+          reason: stringSchema,
+          maxTokens: { type: 'integer', minimum: 0 },
+          priority: { type: 'string', enum: ['low', 'normal', 'high'] },
+          cached: { type: 'boolean' }
+        }
+      }
+    }
+  }
+};
+
+const homeMemoryLlmBatchExecutionSchema: JsonSchema = {
+  type: 'object',
+  required: ['homeId', 'runId', 'plan', 'results'],
+  properties: {
+    homeId: { anyOf: [stringSchema, { type: 'null' }] },
+    runId: { anyOf: [stringSchema, { type: 'null' }] },
+    plan: { $ref: '#/components/schemas/HomeMemoryLlmBatchPlan' },
+    results: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['purpose', 'targetId', 'source', 'cacheKey', 'errors'],
+        properties: {
+          purpose: { type: 'string', enum: ['unknown_schema_mapping', 'semantic_candidate', 'hypothesis_explanation', 'reliability_review', 'query_planning', 'daily_portrait_summary'] },
+          targetId: stringSchema,
+          source: { type: 'string', enum: ['cache', 'llm', 'deterministic-fallback', 'skipped'] },
+          cacheKey: stringSchema,
+          enrichment: { $ref: '#/components/schemas/HomeMemoryLlmEnrichment' },
+          errors: {
+            type: 'array',
+            items: stringSchema
+          }
+        }
+      }
+    }
+  }
+};
+
+const memoryLlmMetricsSchema: JsonSchema = {
+  type: 'object',
+  required: ['enabled', 'provider', 'model', 'cacheSize', 'unsupportedClaimRate', 'totalRequests', 'sourceCounts', 'rates', 'callsByPurpose', 'requestsByPurpose', 'estimatedTokensByPurpose', 'validationRejectionCount', 'budgets'],
+  properties: {
+    enabled: { type: 'boolean' },
+    provider: { type: 'string', enum: ['openai-compatible'] },
+    model: stringSchema,
+    cacheSize: { type: 'integer', minimum: 0 },
+    unsupportedClaimRate: { type: 'number', minimum: 0, maximum: 1 },
+    totalRequests: { type: 'integer', minimum: 0 },
+    sourceCounts: {
+      type: 'object',
+      required: ['llm', 'cache', 'deterministicFallback'],
+      properties: {
+        llm: { type: 'integer', minimum: 0 },
+        cache: { type: 'integer', minimum: 0 },
+        deterministicFallback: { type: 'integer', minimum: 0 }
+      }
+    },
+    rates: {
+      type: 'object',
+      required: ['cacheHitRate', 'fallbackRate', 'validationRejectionRate', 'userTriggeredCallRatio'],
+      properties: {
+        cacheHitRate: { type: 'number', minimum: 0, maximum: 1 },
+        fallbackRate: { type: 'number', minimum: 0, maximum: 1 },
+        validationRejectionRate: { type: 'number', minimum: 0, maximum: 1 },
+        userTriggeredCallRatio: { type: 'number', minimum: 0, maximum: 1 }
+      }
+    },
+    callsByPurpose: {
+      type: 'object',
+      additionalProperties: { type: 'integer', minimum: 0 }
+    },
+    requestsByPurpose: {
+      type: 'object',
+      additionalProperties: { type: 'integer', minimum: 0 }
+    },
+    estimatedTokensByPurpose: {
+      type: 'object',
+      additionalProperties: { type: 'integer', minimum: 0 }
+    },
+    validationRejectionCount: { type: 'integer', minimum: 0 },
+    budgets: {
+      type: 'object',
+      required: ['maxCallsPerHomePerHour', 'maxCallsPerHomePerDay', 'callsThisHour', 'callsToday'],
+      properties: {
+        maxCallsPerHomePerHour: { type: 'integer', minimum: 0 },
+        maxCallsPerHomePerDay: { type: 'integer', minimum: 0 },
+        callsThisHour: { type: 'integer', minimum: 0 },
+        callsToday: { type: 'integer', minimum: 0 }
+      }
+    }
   }
 };
 
@@ -1383,6 +1846,123 @@ export function buildOpenApiDocument(): Record<string, unknown> {
             optionalBooleanParameter('includeEvidence')
           ],
           responses: okResponse(memoryListResponseSchema({ $ref: '#/components/schemas/MemoryHypothesis' }), true)
+        }
+      },
+      '/api/memory/schema-mappings': {
+        get: {
+          summary: 'Return stable unknown device schema mapping candidates',
+          parameters: [
+            runIdParameter(),
+            optionalBooleanParameter('includeLlmEnrichment'),
+            {
+              name: 'minEvidenceCount',
+              in: 'query',
+              required: false,
+              schema: { type: 'integer', minimum: 1, maximum: 100 }
+            },
+            limitParameter(100)
+          ],
+          responses: okResponse({ $ref: '#/components/schemas/UnknownSchemaMappingResult' }, true)
+        }
+      },
+      '/api/memory/semantic-candidates': {
+        get: {
+          summary: 'Return candidate semantic interpretations for stable evidence windows',
+          parameters: [
+            runIdParameter(),
+            optionalBooleanParameter('includeLlmEnrichment'),
+            {
+              name: 'minEvidenceCount',
+              in: 'query',
+              required: false,
+              schema: { type: 'integer', minimum: 1, maximum: 100 }
+            },
+            limitParameter(100)
+          ],
+          responses: okResponse({ $ref: '#/components/schemas/SemanticCandidateResult' }, true)
+        }
+      },
+      '/api/memory/reliability': {
+        get: {
+          summary: 'Get memory reliability metrics and graph invariants',
+          parameters: [runIdParameter()],
+          responses: okResponse({ $ref: '#/components/schemas/MemoryReliabilityReport' }, true)
+        }
+      },
+      '/api/memory/portrait': {
+        get: {
+          summary: 'Get layered household portrait inferred from home memory',
+          parameters: [
+            runIdParameter(),
+            optionalBooleanParameter('includeLlmEnrichment'),
+            {
+              name: 'summaryPeriod',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', enum: ['daily', 'weekly'] }
+            }
+          ],
+          responses: okResponse({ $ref: '#/components/schemas/HouseholdPortrait' }, true)
+        }
+      },
+      '/api/memory/query-plan': {
+        get: {
+          summary: 'Plan and execute an evidence-locked natural-language memory query',
+          parameters: [
+            runIdParameter(),
+            {
+              name: 'question',
+              in: 'query',
+              required: true,
+              schema: { type: 'string', minLength: 1, maxLength: 500 }
+            }
+          ],
+          responses: okResponse({ $ref: '#/components/schemas/MemoryQueryPlan' }, true)
+        }
+      },
+      '/api/memory/llm/batch-plan': {
+        get: {
+          summary: 'Plan eligible Home Memory LLM batch work without calling the provider',
+          parameters: [
+            runIdParameter(),
+            optionalBooleanParameter('includePortraitSummary'),
+            {
+              name: 'summaryPeriod',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', enum: ['daily', 'weekly'] }
+            },
+            limitParameter(100)
+          ],
+          responses: okResponse({ $ref: '#/components/schemas/HomeMemoryLlmBatchPlan' }, true)
+        }
+      },
+      '/api/memory/llm/batch': {
+        post: {
+          summary: 'Execute eligible Home Memory LLM batch work with item-level validation',
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    runId: stringSchema,
+                    includePortraitSummary: { type: 'boolean' },
+                    summaryPeriod: { type: 'string', enum: ['daily', 'weekly'] },
+                    limit: { type: 'integer', minimum: 1, maximum: 100 }
+                  }
+                }
+              }
+            }
+          },
+          responses: okResponse({ $ref: '#/components/schemas/HomeMemoryLlmBatchExecution' }, true)
+        }
+      },
+      '/api/memory/llm/metrics': {
+        get: {
+          summary: 'Get Home Memory LLM cache, budget, fallback, and token metrics',
+          responses: okResponse({ $ref: '#/components/schemas/MemoryLlmMetrics' }, true)
         }
       },
       '/api/device-twins': {
@@ -1572,6 +2152,14 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         MemoryEvidence: memoryEvidenceSchema,
         MemoryHypothesis: memoryHypothesisSchema,
         MemorySummary: memorySummarySchema,
+        HouseholdPortrait: householdPortraitSchema,
+        MemoryQueryPlan: memoryQueryPlanSchema,
+        UnknownSchemaMappingResult: unknownSchemaMappingResultSchema,
+        SemanticCandidateResult: semanticCandidateResultSchema,
+        MemoryReliabilityReport: memoryReliabilityReportSchema,
+        HomeMemoryLlmBatchPlan: homeMemoryLlmBatchPlanSchema,
+        HomeMemoryLlmBatchExecution: homeMemoryLlmBatchExecutionSchema,
+        MemoryLlmMetrics: memoryLlmMetricsSchema,
         AccessAuditRecord: accessAuditRecordSchema,
         UpdateResponse: updateResponseSchema,
         TwinSocketUpdateMessage: twinSocketUpdateMessageSchema,

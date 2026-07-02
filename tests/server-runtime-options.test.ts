@@ -15,4 +15,25 @@ describe('server runtime options', () => {
     expect(options.serverOptions.databasePath).toBe(path.join(root, 'output/playwright/verification.db'));
     expect(options.serverOptions.telemetryRetentionEvents).toBe(250);
   });
+
+  it('resolves home memory LLM provider options without enabling network calls by default', () => {
+    const root = path.resolve('D:/Code/VirtualHome');
+    const disabled = resolveServerRuntimeOptions(root, {});
+    const enabled = resolveServerRuntimeOptions(root, {
+      HOME_MEMORY_LLM_ENABLED: 'true',
+      HOME_MEMORY_LLM_BASE_URL: 'https://llm.example.test/v1',
+      HOME_MEMORY_LLM_MODEL: 'memory-model'
+    });
+
+    expect(disabled.homeMemoryLlm.provider).toMatchObject({
+      enabled: false,
+      baseUrl: ''
+    });
+    expect(enabled.homeMemoryLlm.provider).toMatchObject({
+      enabled: true,
+      provider: 'openai-compatible',
+      baseUrl: 'https://llm.example.test/v1',
+      model: 'memory-model'
+    });
+  });
 });
