@@ -366,6 +366,7 @@ export function HomeMemoryView(): React.ReactElement {
         setLlmConfigDraft(config);
       } catch (error) {
         if (!disposed) {
+          console.warn('[home-memory-llm] config_get_failed', errorMessage(error));
           setLlmTraceError(errorMessage(error));
         }
       }
@@ -436,6 +437,7 @@ export function HomeMemoryView(): React.ReactElement {
       setLlmMetrics(metrics);
       setLlmTraceError(null);
     } catch (error) {
+      console.warn('[home-memory-llm] trace_refresh_failed', errorMessage(error));
       setLlmTraceError(errorMessage(error));
     } finally {
       setLlmTraceLoading(false);
@@ -467,6 +469,7 @@ export function HomeMemoryView(): React.ReactElement {
       setLlmMetrics(metrics);
       setLlmTraceError(null);
     } catch (error) {
+      console.warn('[home-memory-llm] config_save_failed', errorMessage(error));
       setLlmTraceError(errorMessage(error));
     } finally {
       setLlmConfigSaving(false);
@@ -482,6 +485,7 @@ export function HomeMemoryView(): React.ReactElement {
     setLlmStreamLog([]);
     setLlmStreamOutput('');
     try {
+      console.info('[home-memory-llm] stream_connect', { purpose: 'hypothesis_explanation', type: selectedHypothesis.type });
       const response = await fetch(`/api/memory/llm/stream?purpose=hypothesis_explanation&type=${encodeURIComponent(selectedHypothesis.type)}`);
       if (!response.ok) {
         throw new Error(`Stream request failed with ${response.status}`);
@@ -501,6 +505,7 @@ export function HomeMemoryView(): React.ReactElement {
       setLlmMetrics(metrics);
       setLlmTraceError(null);
     } catch (error) {
+      console.error('[home-memory-llm] stream_failed', errorMessage(error));
       setLlmTraceError(errorMessage(error));
     } finally {
       setLlmStreamLoading(false);
@@ -627,6 +632,7 @@ export function HomeMemoryView(): React.ReactElement {
             streamLoading={llmStreamLoading}
             streamLog={llmStreamLog}
             streamOutput={llmStreamOutput}
+            copy={copy}
             onConfigDraftChange={setLlmConfigDraft}
             onApiKeyDraftChange={setLlmApiKeyDraft}
             onSaveConfig={saveHomeMemoryLlmConfig}
@@ -907,6 +913,7 @@ function HomeMemoryLlmTracePanel({
   streamLoading,
   streamLog,
   streamOutput,
+  copy,
   onConfigDraftChange,
   onApiKeyDraftChange,
   onSaveConfig,
@@ -922,6 +929,7 @@ function HomeMemoryLlmTracePanel({
   streamLoading: boolean;
   streamLog: HomeMemoryLlmStreamLogEntry[];
   streamOutput: string;
+  copy: MemoryCopy;
   onConfigDraftChange: (config: HomeMemoryLlmApiConfig) => void;
   onApiKeyDraftChange: (value: string) => void;
   onSaveConfig: () => Promise<void>;
@@ -1106,6 +1114,25 @@ function HomeMemoryLlmTracePanel({
         </div>
       ) : null}
 
+      <div className="llm-purpose-panel">
+        <div className="llm-purpose-title">
+          <strong>{copy.llmTrace.purposeTitle}</strong>
+          <span>{copy.llmTrace.purposeSubtitle}</span>
+        </div>
+        <div className="llm-purpose-grid">
+          {copy.llmTrace.purposes.map((item) => (
+            <article key={item.purpose}>
+              <header>
+                <strong>{item.label}</strong>
+                <span>{item.trigger}</span>
+              </header>
+              <p>{item.output}</p>
+              <small>{item.why}</small>
+            </article>
+          ))}
+        </div>
+      </div>
+
       <div className="llm-trace-metrics">
         {trace.metrics.map((metric) => (
           <div key={metric.label}>
@@ -1158,7 +1185,7 @@ function HomeMemoryLlmTracePanel({
       <div className="llm-stream-panel">
         <div>
           <strong>Live provider output</strong>
-          <span>{streamLog.length} events</span>
+          <span>{streamLog.length} {copy.llmTrace.streamEventSuffix}</span>
         </div>
         <pre className="llm-stream-output">{streamOutput || 'No streamed provider content yet.'}</pre>
         <div className="llm-stream-log">
@@ -1881,7 +1908,11 @@ function parseMemoryLlmSseBlocks(
     if (!event || !data) {
       continue;
     }
-    onEntry({ event, data: JSON.parse(data) as Record<string, unknown> });
+    try {
+      onEntry({ event, data: JSON.parse(data) as Record<string, unknown> });
+    } catch (error) {
+      console.warn('[home-memory-llm] stream_parse_failed', errorMessage(error));
+    }
   }
   return flush ? '' : blocks[blocks.length - 1] ?? '';
 }

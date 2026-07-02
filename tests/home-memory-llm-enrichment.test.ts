@@ -369,6 +369,83 @@ describe('home memory LLM enrichment boundary', () => {
     expect(body.messages[0].content).toMatch(/evidence-locked/i);
   });
 
+  it('serializes concurrent provider requests through one global LLM lane', async () => {
+    const memory = profiledMemory();
+    const hypothesis = createHomeProfileHypotheses(memory).find((candidate) => candidate.id === 'presence:recent-activity');
+    if (!hypothesis) throw new Error('Missing expected hypothesis');
+    const config = resolveHomeMemoryLlmConfig({
+      HOME_MEMORY_LLM_ENABLED: 'true',
+      HOME_MEMORY_LLM_BASE_URL: 'https://llm.example.test/v1',
+      HOME_MEMORY_LLM_MODEL: 'memory-model'
+    });
+    const resolvers: Array<(response: Response) => void> = [];
+    const responseFor = (claim: string) => new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            purpose: 'hypothesis_explanation',
+            claim,
+            type: 'hypothesis_explanation',
+            confidence: 0.5,
+            supportingEvidenceIds: hypothesis.evidence.map((evidence) => evidence.id).slice(0, 1),
+            contradictingEvidenceIds: [],
+            missingEvidence: [],
+            alternatives: []
+          })
+        }
+      }]
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+    const fetcher = vi.fn(async () => new Promise<Response>((resolve) => {
+      resolvers.push(resolve);
+    }));
+    const waitForProviderCalls = async (count: number) => {
+      for (let index = 0; index < 20; index += 1) {
+        if (fetcher.mock.calls.length >= count) {
+          return;
+        }
+        await Promise.resolve();
+      }
+    };
+
+    const first = requestHomeMemoryLlmEnrichment({
+      config,
+      purpose: 'hypothesis_explanation',
+      trigger: 'user_request',
+      prompt: 'Explain the presence hypothesis.',
+      memory,
+      hypothesis,
+      fetcher
+    });
+    const second = requestHomeMemoryLlmEnrichment({
+      config,
+      purpose: 'hypothesis_explanation',
+      trigger: 'user_request',
+      prompt: 'Explain the presence hypothesis again.',
+      memory,
+      hypothesis,
+      fetcher
+    });
+
+    try {
+      await waitForProviderCalls(1);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+
+      resolvers[0]?.(responseFor('First provider call completes before the next one starts.'));
+      await first;
+      await waitForProviderCalls(2);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+
+      resolvers[1]?.(responseFor('Second provider call starts only after the first one finishes.'));
+      const results = await Promise.all([first, second]);
+      expect(results.map((result) => result.source)).toEqual(['llm', 'llm']);
+    } finally {
+      for (const resolve of resolvers) {
+        resolve(responseFor('Cleanup response for pending provider call.'));
+      }
+      await Promise.allSettled([first, second]);
+    }
+  });
+
   it('falls back deterministically when the provider is disabled, fails, or returns invalid evidence', async () => {
     const memory = profiledMemory();
     const hypothesis = createHomeProfileHypotheses(memory).find((candidate) => candidate.id === 'presence:recent-activity');

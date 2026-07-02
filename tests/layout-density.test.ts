@@ -123,7 +123,10 @@ describe('dashboard layout density', () => {
     expect(homeMemoryViewTsx).toContain('/api/memory/llm/batch-plan?includePortraitSummary=true');
     expect(homeMemoryViewTsx).toContain('/api/memory/llm/metrics');
     expect(homeMemoryViewTsx).toContain('className="memory-panel llm-trace-panel"');
+    expect(homeMemoryViewTsx).toContain('copy.llmTrace.purposeTitle');
+    expect(homeMemoryViewTsx).toContain('copy.llmTrace.purposes.map');
     expect(styles).toContain('.llm-trace-panel');
+    expect(styles).toContain('.llm-purpose-grid');
     expect(styles).toContain('.llm-trace-source');
   });
 

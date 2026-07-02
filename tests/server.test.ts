@@ -886,6 +886,69 @@ describe('server API', () => {
     await server.close();
   });
 
+  it('prints default debug logs for memory LLM stream diagnostics without leaking API keys', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-memory-llm-debug-log-api-'));
+    dirs.push(dir);
+    const logSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const providerJson = JSON.stringify({
+      purpose: 'hypothesis_explanation',
+      claim: 'Logged provider explanation remains evidence-locked.',
+      type: 'hypothesis_explanation',
+      confidence: 0.1,
+      supportingEvidenceIds: ['placeholder'],
+      contradictingEvidenceIds: [],
+      missingEvidence: [],
+      alternatives: []
+    });
+    const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
+      const prompt = JSON.parse(body.messages[1].content) as { evidenceIds: string[] };
+      const jsonText = providerJson.replace('placeholder', prompt.evidenceIds[0]);
+      return new Response([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: jsonText } }] })}\n\n`,
+        'data: [DONE]\n\n'
+      ].join(''), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' }
+      });
+    });
+    const server = createServer({
+      databasePath: path.join(dir, 'twin.db'),
+      autoTick: false,
+      homeMemoryLlm: resolveHomeMemoryLlmConfig({
+        HOME_MEMORY_LLM_ENABLED: 'true',
+        HOME_MEMORY_LLM_BASE_URL: 'https://llm.example.test/v1',
+        HOME_MEMORY_LLM_API_KEY: 'secret-token',
+        HOME_MEMORY_LLM_MODEL: 'memory-model'
+      }),
+      homeMemoryLlmFetch: fetcher
+    });
+
+    try {
+      await server.inject({ method: 'POST', url: '/api/scenarios/weekday_normal/start' });
+      await server.inject({ method: 'POST', url: '/api/control/advance', payload: { minutes: 30 } });
+      const response = await server.inject({
+        method: 'GET',
+        url: '/api/memory/llm/stream?purpose=hypothesis_explanation&type=presence_signal'
+      });
+
+      expect(response.statusCode).toBe(200);
+      const logs = logSpy.mock.calls.map((call) => call.join(' ')).join('\n');
+      expect(logs).toContain('[home-memory-llm]');
+      expect(logs).toContain('stream_start');
+      expect(logs).toContain('decision');
+      expect(logs).toContain('provider_request_start');
+      expect(logs).toContain('provider_response');
+      expect(logs).toContain('provider_delta');
+      expect(logs).toContain('result');
+      expect(logs).toContain('llm.example.test');
+      expect(logs).not.toContain('secret-token');
+    } finally {
+      logSpy.mockRestore();
+      await server.close();
+    }
+  });
+
   it('streams fallback events when the memory LLM provider is disabled', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-memory-llm-stream-fallback-api-'));
     dirs.push(dir);
