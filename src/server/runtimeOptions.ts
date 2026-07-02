@@ -1,18 +1,23 @@
 import path from 'node:path';
+import { resolveHomeMemoryLlmConfig, type HomeMemoryLlmConfig } from '../sim/llm/homeMemoryEnrichment';
 import type { ServerOptions } from './app';
 
 export interface ServerRuntimeOptions {
   port: number;
   serverOptions: ServerOptions;
+  homeMemoryLlm: HomeMemoryLlmConfig;
 }
 
 export function resolveServerRuntimeOptions(root: string, env: NodeJS.ProcessEnv = process.env): ServerRuntimeOptions {
   const telemetryRetentionEvents = parsePositiveInteger(env.VIRTUALHOME_TELEMETRY_RETENTION_EVENTS);
+  const homeMemoryLlm = resolveHomeMemoryLlmConfig(env);
   return {
     port: Number(env.PORT ?? 4317),
+    homeMemoryLlm,
     serverOptions: {
       databasePath: resolvePath(root, env.VIRTUALHOME_DATABASE_PATH ?? path.join('data', 'virtualhome.db')),
       homeDefinitionPath: env.VIRTUALHOME_HOME_DEFINITION,
+      homeMemoryLlm,
       telemetryRetentionEvents,
       autoTick: true,
       tickMs: 1000

@@ -116,4 +116,14 @@ describe('dashboard layout density', () => {
     expect(homeMemoryViewTsx.indexOf('className="whitebox-guided-chain"')).toBeLessThan(homeMemoryViewTsx.indexOf('className="whitebox-ledger"'));
     expect(styles).toContain('.whitebox-guided-step:not(:last-child)::after');
   });
+
+  it('surfaces Home Memory LLM participation in a dedicated trace panel', () => {
+    expect(homeMemoryViewTsx).toContain('HomeMemoryLlmTracePanel');
+    expect(homeMemoryViewTsx).toContain('/api/memory/profile/hypotheses?includeLlmEnrichment=true&includeReliability=true');
+    expect(homeMemoryViewTsx).toContain('/api/memory/llm/batch-plan?includePortraitSummary=true');
+    expect(homeMemoryViewTsx).toContain('/api/memory/llm/metrics');
+    expect(homeMemoryViewTsx).toContain('className="memory-panel llm-trace-panel"');
+    expect(styles).toContain('.llm-trace-panel');
+    expect(styles).toContain('.llm-trace-source');
+  });
 });

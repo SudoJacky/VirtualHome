@@ -44,6 +44,125 @@ export interface MemoryDemoWalkthrough {
   stages: MemoryDemoWalkthroughStage[];
 }
 
+export type HomeMemoryLlmSource = 'llm' | 'cache' | 'deterministic-fallback' | 'planned' | 'skipped' | 'none';
+
+export interface HomeMemoryLlmTraceInput {
+  hypothesis?: {
+    id?: string;
+    label?: string;
+    llmEnrichmentSource?: HomeMemoryLlmSource;
+    llmEnrichment?: HomeMemoryLlmTraceEnrichment;
+    llmEnrichmentErrors?: string[];
+    llmReliabilityReviewSource?: HomeMemoryLlmSource;
+    llmReliabilityReview?: HomeMemoryLlmTraceEnrichment;
+    llmReliabilityReviewErrors?: string[];
+  } | null;
+  portrait?: {
+    llmSummarySource?: HomeMemoryLlmSource;
+    llmSummary?: HomeMemoryLlmTraceEnrichment;
+    llmSummaryErrors?: string[];
+  } | null;
+  batchPlan?: {
+    items?: HomeMemoryLlmTraceBatchInput[];
+  } | null;
+  metrics?: {
+    enabled?: boolean;
+    cacheSize?: number;
+    rates?: {
+      cacheHitRate?: number;
+      fallbackRate?: number;
+      validationRejectionRate?: number;
+      userTriggeredCallRatio?: number;
+    };
+    budgets?: {
+      callsThisHour?: number;
+      maxCallsPerHomePerHour?: number;
+      callsToday?: number;
+      maxCallsPerHomePerDay?: number;
+    };
+  } | null;
+  error?: string | null;
+}
+
+type HomeMemoryLlmTraceBudget = NonNullable<NonNullable<HomeMemoryLlmTraceInput['metrics']>['budgets']>;
+
+export interface HomeMemoryLlmTraceEnrichment {
+  claim?: string;
+  missingEvidence?: string[];
+  contradictingEvidenceIds?: string[];
+  alternatives?: Array<{
+    claim: string;
+    confidence: number;
+    evidenceIds: string[];
+  }>;
+}
+
+export interface HomeMemoryLlmTraceBatchInput {
+  purpose: string;
+  targetId: string;
+  shouldCall: boolean;
+  reason: string;
+  cached?: boolean;
+}
+
+export interface HomeMemoryLlmTraceRow {
+  label: string;
+  source: HomeMemoryLlmSource;
+  claim: string;
+  missingEvidence: string[];
+  contradictingEvidenceIds: string[];
+  alternatives: string[];
+  errors: string[];
+}
+
+export interface HomeMemoryLlmTraceBatchItem {
+  purpose: string;
+  targetId: string;
+  source: HomeMemoryLlmSource;
+  reason: string;
+}
+
+export interface HomeMemoryLlmTraceMetric {
+  label: string;
+  value: string;
+}
+
+export interface HomeMemoryLlmTrace {
+  enabled: boolean;
+  cacheSize: number;
+  error: string | null;
+  metrics: HomeMemoryLlmTraceMetric[];
+  rows: HomeMemoryLlmTraceRow[];
+  batchItems: HomeMemoryLlmTraceBatchItem[];
+}
+
+export function createHomeMemoryLlmTrace(input: HomeMemoryLlmTraceInput): HomeMemoryLlmTrace {
+  const rows = [
+    createTraceRow('Hypothesis explanation', input.hypothesis?.llmEnrichmentSource, input.hypothesis?.llmEnrichment, input.hypothesis?.llmEnrichmentErrors),
+    createTraceRow('Reliability review', input.hypothesis?.llmReliabilityReviewSource, input.hypothesis?.llmReliabilityReview, input.hypothesis?.llmReliabilityReviewErrors),
+    createTraceRow('Portrait summary', input.portrait?.llmSummarySource, input.portrait?.llmSummary, input.portrait?.llmSummaryErrors)
+  ].filter((row): row is HomeMemoryLlmTraceRow => Boolean(row));
+
+  return {
+    enabled: Boolean(input.metrics?.enabled),
+    cacheSize: input.metrics?.cacheSize ?? 0,
+    error: input.error ?? null,
+    metrics: [
+      { label: 'Cache hit', value: formatPercent(input.metrics?.rates?.cacheHitRate) },
+      { label: 'Fallback', value: formatPercent(input.metrics?.rates?.fallbackRate) },
+      { label: 'Validation rejected', value: formatPercent(input.metrics?.rates?.validationRejectionRate) },
+      { label: 'Budget', value: formatBudget(input.metrics?.budgets) }
+    ],
+    rows,
+    batchItems: (input.batchPlan?.items ?? []).slice(0, 6).map((item) => ({
+      purpose: item.purpose,
+      targetId: item.targetId,
+      source: item.cached ? 'cache' : item.shouldCall ? 'planned' : 'skipped',
+      reason: item.reason
+    }))
+  };
+}
+
 export function createSemanticSignalRows(memory: HomeMemory, limit = 8): SemanticSignalRow[] {
   return [...memory.semanticSignals]
     .sort((left, right) => right.simTime.localeCompare(left.simTime) || right.id.localeCompare(left.id))
@@ -397,4 +516,38 @@ function formatValue(value: DeviceEventValue): string {
   if (value === null) return 'null';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   return String(value);
+}
+
+function createTraceRow(
+  label: string,
+  source: HomeMemoryLlmSource | undefined,
+  enrichment: HomeMemoryLlmTraceEnrichment | undefined,
+  errors: string[] | undefined
+): HomeMemoryLlmTraceRow | null {
+  if (!source && !enrichment && (!errors || errors.length === 0)) {
+    return null;
+  }
+  return {
+    label,
+    source: source ?? 'none',
+    claim: enrichment?.claim ?? 'No LLM enrichment returned.',
+    missingEvidence: enrichment?.missingEvidence ?? [],
+    contradictingEvidenceIds: enrichment?.contradictingEvidenceIds ?? [],
+    alternatives: (enrichment?.alternatives ?? []).map((alternative) => (
+      `${alternative.claim} (${Math.round(alternative.confidence * 100)}%)`
+    )),
+    errors: errors ?? []
+  };
+}
+
+function formatPercent(value: number | undefined): string {
+  return `${Math.round((value ?? 0) * 100)}%`;
+}
+
+function formatBudget(budget: HomeMemoryLlmTraceBudget | undefined): string {
+  const callsThisHour = budget?.callsThisHour ?? 0;
+  const maxCallsPerHomePerHour = budget?.maxCallsPerHomePerHour ?? 0;
+  const callsToday = budget?.callsToday ?? 0;
+  const maxCallsPerHomePerDay = budget?.maxCallsPerHomePerDay ?? 0;
+  return `${callsThisHour}/${maxCallsPerHomePerHour} hour, ${callsToday}/${maxCallsPerHomePerDay} day`;
 }
