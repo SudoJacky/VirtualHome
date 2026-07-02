@@ -73,6 +73,18 @@ export interface MemoryCopy {
     hypotheses: string;
     empty: string;
   };
+  llmTrace: {
+    purposeTitle: string;
+    purposeSubtitle: string;
+    streamEventSuffix: string;
+    purposes: Array<{
+      purpose: string;
+      label: string;
+      trigger: string;
+      output: string;
+      why: string;
+    }>;
+  };
   demoWalkthrough?: {
     eyebrow: string;
     title: string;
@@ -214,6 +226,55 @@ const MEMORY_COPY: Record<MemoryLocale, MemoryCopy> = {
       hypotheses: 'hypotheses',
       empty: 'Waiting for device events before a state ledger can be built.'
     },
+    llmTrace: {
+      purposeTitle: 'Why LLM is called',
+      purposeSubtitle: 'Provider calls are optional, gated, cached, and serialized through one lane.',
+      streamEventSuffix: 'events; deltas are validated before adoption',
+      purposes: [
+        {
+          purpose: 'hypothesis_explanation',
+          label: 'Hypothesis explanation',
+          trigger: 'Refresh or stream',
+          output: 'Turns an existing hypothesis and its evidence IDs into a readable explanation.',
+          why: 'Used for presentation: what we believe, which evidence supports it, and what is still missing.'
+        },
+        {
+          purpose: 'reliability_review',
+          label: 'Reliability review',
+          trigger: 'Refresh with reliability',
+          output: 'Reviews a mid-confidence hypothesis for missing evidence, contradictions, and alternatives.',
+          why: 'Used to show that LLM does not blindly approve the rule result.'
+        },
+        {
+          purpose: 'daily_portrait_summary',
+          label: 'Portrait summary',
+          trigger: 'Portrait enrichment',
+          output: 'Summarizes the current household portrait from already computed sections and evidence.',
+          why: 'Used to make the high-level home memory story easier to explain.'
+        },
+        {
+          purpose: 'semantic_candidate',
+          label: 'Semantic candidate',
+          trigger: 'Candidate batch',
+          output: 'Suggests a possible semantic meaning for a stable evidence window.',
+          why: 'Used as a candidate only; it does not write facts back into memory.'
+        },
+        {
+          purpose: 'unknown_schema_mapping',
+          label: 'Unknown schema mapping',
+          trigger: 'Unknown field threshold',
+          output: 'Suggests how an unfamiliar device field might map to a capability or semantic signal.',
+          why: 'Used to help extend rules without letting LLM mutate the rule library.'
+        },
+        {
+          purpose: 'query_planning',
+          label: 'Query planning',
+          trigger: 'Natural-language query',
+          output: 'Creates an evidence-locked query plan while deterministic code still executes the query.',
+          why: 'Used to translate user intent without giving LLM direct control over memory.'
+        }
+      ]
+    },
     demoWalkthrough: {
       eyebrow: 'Presenter walkthrough',
       title: 'Demo script',
@@ -342,6 +403,55 @@ const MEMORY_COPY: Record<MemoryLocale, MemoryCopy> = {
       changes: '状态变化',
       hypotheses: '条假设',
       empty: '还没有设备事件，暂时无法生成状态变化账本。'
+    },
+    llmTrace: {
+      purposeTitle: '为什么调用 LLM',
+      purposeSubtitle: 'Provider 调用是可选的，会经过开关、gate、缓存和全局串行队列；同一时刻最多只有一个调用。',
+      streamEventSuffix: '个事件；流式片段会在完整校验后才被采用',
+      purposes: [
+        {
+          purpose: 'hypothesis_explanation',
+          label: '画像假设解释',
+          trigger: '刷新或流式演示',
+          output: '把已有 hypothesis 和 evidence IDs 转成可读的解释文本。',
+          why: '演示时用来说明：我们相信什么、证据来自哪里、还缺什么。'
+        },
+        {
+          purpose: 'reliability_review',
+          label: '可靠性审稿',
+          trigger: '带可靠性审稿的刷新',
+          output: '审查中等置信度 hypothesis 的缺失证据、矛盾和替代解释。',
+          why: '用来证明 LLM 不是盲目确认规则结论，而是在帮我们质疑它。'
+        },
+        {
+          purpose: 'daily_portrait_summary',
+          label: '家庭画像摘要',
+          trigger: '画像摘要增强',
+          output: '基于已经计算出的家庭画像片段和证据生成高层摘要。',
+          why: '让画像结论更适合向人解释，但不改变底层画像计算。'
+        },
+        {
+          purpose: 'semantic_candidate',
+          label: '语义候选',
+          trigger: '候选批处理',
+          output: '为稳定 evidence window 提出可能的语义解释。',
+          why: '只作为候选，不直接写回 memory，用来发现规则库尚未覆盖的模式。'
+        },
+        {
+          purpose: 'unknown_schema_mapping',
+          label: '未知字段映射',
+          trigger: '未知字段达到阈值',
+          output: '建议陌生 device field 可能对应的 capability 或 semantic 类型。',
+          why: '帮助扩展规则库，但不会让 LLM 直接修改规则。'
+        },
+        {
+          purpose: 'query_planning',
+          label: '查询计划',
+          trigger: '自然语言查询',
+          output: '生成证据锁定的查询计划，实际执行仍由确定性代码完成。',
+          why: '用于翻译用户意图，避免 LLM 直接读写 memory。'
+        }
+      ]
     },
     whiteBox: {
       eyebrow: '白盒推理',

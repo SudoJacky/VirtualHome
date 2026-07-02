@@ -16,6 +16,9 @@ describe('home memory i18n copy', () => {
     expect(chinese.whiteBox.guidedTitle).toBe('讲解链路');
     expect(chinese.whiteBoxStages['Score ledger']?.title).toBe('评分账本');
     expect(chinese.graph.layers.hypotheses).toBe('结论');
+    expect(chinese.llmTrace.purposeTitle).toBe('为什么调用 LLM');
+    expect(chinese.llmTrace.purposes[0]?.label).toBe('画像假设解释');
+    expect(chinese.llmTrace.purposes[0]?.output).toContain('解释文本');
   });
 
   it('validates supported memory locales', () => {

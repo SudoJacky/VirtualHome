@@ -632,6 +632,7 @@ export function HomeMemoryView(): React.ReactElement {
             streamLoading={llmStreamLoading}
             streamLog={llmStreamLog}
             streamOutput={llmStreamOutput}
+            copy={copy}
             onConfigDraftChange={setLlmConfigDraft}
             onApiKeyDraftChange={setLlmApiKeyDraft}
             onSaveConfig={saveHomeMemoryLlmConfig}
@@ -902,45 +903,6 @@ function ReasoningFlowPanel({
   );
 }
 
-const LLM_PURPOSE_EXPLANATIONS = [
-  {
-    purpose: 'hypothesis_explanation',
-    trigger: 'Refresh or stream',
-    output: 'Turns an existing hypothesis and its evidence IDs into a readable explanation.',
-    why: 'Used for presentation: what we believe, which evidence supports it, and what is still missing.'
-  },
-  {
-    purpose: 'reliability_review',
-    trigger: 'Refresh with reliability',
-    output: 'Reviews a mid-confidence hypothesis for missing evidence, contradictions, and alternatives.',
-    why: 'Used to show that LLM does not blindly approve the rule result.'
-  },
-  {
-    purpose: 'daily_portrait_summary',
-    trigger: 'Portrait enrichment',
-    output: 'Summarizes the current household portrait from already computed sections and evidence.',
-    why: 'Used to make the high-level home memory story easier to explain.'
-  },
-  {
-    purpose: 'semantic_candidate',
-    trigger: 'Candidate batch',
-    output: 'Suggests a possible semantic meaning for a stable evidence window.',
-    why: 'Used as a candidate only; it does not write facts back into memory.'
-  },
-  {
-    purpose: 'unknown_schema_mapping',
-    trigger: 'Unknown field threshold',
-    output: 'Suggests how an unfamiliar device field might map to a capability or semantic signal.',
-    why: 'Used to help extend rules without letting LLM mutate the rule library.'
-  },
-  {
-    purpose: 'query_planning',
-    trigger: 'Natural-language query',
-    output: 'Creates an evidence-locked query plan while deterministic code still executes the query.',
-    why: 'Used to translate user intent without giving LLM direct control over memory.'
-  }
-] as const;
-
 function HomeMemoryLlmTracePanel({
   trace,
   loading,
@@ -951,6 +913,7 @@ function HomeMemoryLlmTracePanel({
   streamLoading,
   streamLog,
   streamOutput,
+  copy,
   onConfigDraftChange,
   onApiKeyDraftChange,
   onSaveConfig,
@@ -966,6 +929,7 @@ function HomeMemoryLlmTracePanel({
   streamLoading: boolean;
   streamLog: HomeMemoryLlmStreamLogEntry[];
   streamOutput: string;
+  copy: MemoryCopy;
   onConfigDraftChange: (config: HomeMemoryLlmApiConfig) => void;
   onApiKeyDraftChange: (value: string) => void;
   onSaveConfig: () => Promise<void>;
@@ -1152,14 +1116,14 @@ function HomeMemoryLlmTracePanel({
 
       <div className="llm-purpose-panel">
         <div className="llm-purpose-title">
-          <strong>Why LLM is called</strong>
-          <span>Provider calls are optional, gated, cached, and serialized through one lane.</span>
+          <strong>{copy.llmTrace.purposeTitle}</strong>
+          <span>{copy.llmTrace.purposeSubtitle}</span>
         </div>
         <div className="llm-purpose-grid">
-          {LLM_PURPOSE_EXPLANATIONS.map((item) => (
+          {copy.llmTrace.purposes.map((item) => (
             <article key={item.purpose}>
               <header>
-                <strong>{item.purpose.replaceAll('_', ' ')}</strong>
+                <strong>{item.label}</strong>
                 <span>{item.trigger}</span>
               </header>
               <p>{item.output}</p>
@@ -1221,7 +1185,7 @@ function HomeMemoryLlmTracePanel({
       <div className="llm-stream-panel">
         <div>
           <strong>Live provider output</strong>
-          <span>{streamLog.length} events; deltas are validated before adoption</span>
+          <span>{streamLog.length} {copy.llmTrace.streamEventSuffix}</span>
         </div>
         <pre className="llm-stream-output">{streamOutput || 'No streamed provider content yet.'}</pre>
         <div className="llm-stream-log">
