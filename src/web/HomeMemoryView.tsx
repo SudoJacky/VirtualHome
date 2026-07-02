@@ -28,6 +28,7 @@ import {
   type HypothesisReasoning,
   type HypothesisWhiteBoxTrace
 } from './homeMemoryReasoning';
+import { createEventStateLedger, type EventStateLedger } from './homeMemoryEventStateLedger';
 import {
   createEvidenceExplanationSummary,
   createHomeMemoryLlmTrace,
@@ -101,6 +102,7 @@ export function HomeMemoryView(): React.ReactElement {
   const [memoryWarning, setMemoryWarning] = React.useState<string | null>(null);
   const [cursor, setCursor] = React.useState<DeviceEventCursor | null>(null);
   const [activeEvidenceEvent, setActiveEvidenceEvent] = React.useState<DeviceValueEvent | null>(null);
+  const [selectedLedgerEventId, setSelectedLedgerEventId] = React.useState<string | null>(null);
   const [memoryGraphMode, setMemoryGraphMode] = React.useState<HomeMemoryGraphLayoutMode>('spatial');
   const [locale, setLocale] = React.useState<MemoryLocale>(() => initialMemoryLocale());
   const [llmHypotheses, setLlmHypotheses] = React.useState<HomeMemoryLlmApiHypothesis[]>([]);
@@ -136,6 +138,7 @@ export function HomeMemoryView(): React.ReactElement {
       setSelectedNodeId(null);
       setMemoryWarning(null);
       setActiveEvidenceEvent(null);
+      setSelectedLedgerEventId(null);
     }
 
     function connect(): void {
@@ -261,6 +264,14 @@ export function HomeMemoryView(): React.ReactElement {
     () => createEventEvidenceFlow(memory, hypotheses, memory.recentEvents[0] ?? null),
     [hypotheses, memory]
   );
+  const selectedLedgerEvent = React.useMemo(
+    () => recentEvents.find((event) => event.id === selectedLedgerEventId) ?? recentEvents[0] ?? null,
+    [recentEvents, selectedLedgerEventId]
+  );
+  const eventStateLedger = React.useMemo(
+    () => (selectedLedgerEvent ? createEventStateLedger(recentEvents, selectedLedgerEvent.id) : null),
+    [recentEvents, selectedLedgerEvent?.id]
+  );
   const hypothesisReasoning = React.useMemo(
     () => (selectedHypothesis ? createHypothesisReasoning(memory, selectedHypothesis) : null),
     [memory, selectedHypothesis]
@@ -345,6 +356,7 @@ export function HomeMemoryView(): React.ReactElement {
     setSelectedNodeId(null);
     setMemoryWarning(null);
     setActiveEvidenceEvent(null);
+    setSelectedLedgerEventId(null);
     setLlmHypotheses([]);
     setLlmPortrait(null);
     setLlmBatchPlan(null);
@@ -477,6 +489,13 @@ export function HomeMemoryView(): React.ReactElement {
             selectedHypothesis={selectedHypothesis}
             copy={copy}
             onSelectHypothesis={(nodeId) => setSelectedNodeId(nodeId)}
+          />
+          <StateLedgerPanel
+            ledger={eventStateLedger}
+            events={recentEvents}
+            selectedEventId={selectedLedgerEvent?.id ?? null}
+            copy={copy}
+            onSelectEvent={setSelectedLedgerEventId}
           />
           <HomeMemoryLlmTracePanel
             trace={llmTrace}
@@ -837,6 +856,95 @@ function ReasoningSteps({ steps, copy }: { steps: Array<{ label: string; detail:
         </li>
       ))}
     </ol>
+  );
+}
+
+function StateLedgerPanel({
+  ledger,
+  events,
+  selectedEventId,
+  copy,
+  onSelectEvent
+}: {
+  ledger: EventStateLedger | null;
+  events: DeviceValueEvent[];
+  selectedEventId: string | null;
+  copy: MemoryCopy;
+  onSelectEvent: (eventId: string) => void;
+}): React.ReactElement {
+  return (
+    <section className="memory-panel state-ledger-panel">
+      <div className="panel-heading">
+        <div>
+          <span className="eyebrow">{copy.stateLedger.eyebrow}</span>
+          <h2>{copy.stateLedger.title}</h2>
+          <p>{copy.stateLedger.subtitle}</p>
+        </div>
+      </div>
+      {events.length > 0 ? (
+        <div className="state-ledger-event-selector" aria-label={copy.stateLedger.eventSelector}>
+          {events.slice(0, 8).map((event) => (
+            <button
+              key={event.id}
+              className={event.id === selectedEventId ? 'active' : ''}
+              onClick={() => onSelectEvent(event.id)}
+              aria-pressed={event.id === selectedEventId}
+            >
+              <span>{event.deviceId}.{event.field}</span>
+              <small>{formatValue(event.value)} / {formatTime(event.simTime)}</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {ledger ? (
+        <div className="state-ledger-steps">
+          {ledger.steps.map((step) => (
+            <article key={step.id} className="state-ledger-step">
+              <header>
+                <strong>{step.title}</strong>
+                {step.relatedHypothesisIds?.length ? <span>{step.relatedHypothesisIds.length} {copy.stateLedger.hypotheses}</span> : null}
+              </header>
+              <section className="state-ledger-narration">
+                <span>{copy.stateLedger.narration}</span>
+                <p>{step.narration}</p>
+              </section>
+              <section className="state-ledger-formula">
+                <span>{copy.stateLedger.formula}</span>
+                <code>{step.formula}</code>
+                <p>{step.why}</p>
+              </section>
+              {step.metrics.length > 0 ? (
+                <div className="state-ledger-metrics">
+                  {step.metrics.map((metric) => (
+                    <div key={`${step.id}:${metric.label}`}>
+                      <span>{translateRowLabel(metric.label, copy)}</span>
+                      <strong>{metric.value}</strong>
+                      {metric.note ? <small>{metric.note}</small> : null}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {step.changes.length > 0 ? (
+                <div className="state-ledger-changes">
+                  <span>{copy.stateLedger.changes}</span>
+                  {step.changes.map((changeItem) => (
+                    <div key={`${step.id}:${changeItem.path}`} className="state-ledger-change-row">
+                      <strong>{changeItem.path}</strong>
+                      <code>{changeItem.before}</code>
+                      <i>-&gt;</i>
+                      <code>{changeItem.after}</code>
+                      <small>{changeItem.formula} / {changeItem.why}</small>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="muted">{copy.stateLedger.empty}</p>
+      )}
+    </section>
   );
 }
 
