@@ -1,6 +1,6 @@
 # 家庭 Memory 处理流程
 
-本文面向第一次阅读 VirtualHome 的人，说明家庭 memory 如何从 device-events 中的设备值事件，逐步形成事实记忆、语义信号、行为片段、家庭画像结论、3D 图谱和查询接口响应。
+本文面向第一次阅读 VirtualHome 的人，说明家庭 memory 如何从 device-events 中的设备值事件，逐步形成事实记忆、语义信号、行为片段、家庭画像结论、3D 图谱和查询接口响应。每一步的公式、参数和设计原因见 [Home Memory 计算细节](./home-memory-calculation-details.md)。
 
 ![家庭 Memory 架构](./assets/home-memory-architecture.png)
 
