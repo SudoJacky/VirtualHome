@@ -62,6 +62,17 @@ export interface MemoryCopy {
     waiting: string;
     ruleMatched: string;
   };
+  stateLedger: {
+    eyebrow: string;
+    title: string;
+    subtitle: string;
+    eventSelector: string;
+    narration: string;
+    formula: string;
+    changes: string;
+    hypotheses: string;
+    empty: string;
+  };
   demoWalkthrough?: {
     eyebrow: string;
     title: string;
@@ -192,6 +203,17 @@ const MEMORY_COPY: Record<MemoryLocale, MemoryCopy> = {
       waiting: 'Waiting for a device event to explain the flow.',
       ruleMatched: 'Rule matched'
     },
+    stateLedger: {
+      eyebrow: 'Event state ledger',
+      title: 'State transitions',
+      subtitle: 'Select one event to see the exact memory changes, formulas, and presenter narration.',
+      eventSelector: 'Select a memory event',
+      narration: 'Presenter narration',
+      formula: 'Calculation detail',
+      changes: 'State changes',
+      hypotheses: 'hypotheses',
+      empty: 'Waiting for device events before a state ledger can be built.'
+    },
     demoWalkthrough: {
       eyebrow: 'Presenter walkthrough',
       title: 'Demo script',
@@ -309,6 +331,17 @@ const MEMORY_COPY: Record<MemoryLocale, MemoryCopy> = {
       title: '从事件到画像',
       waiting: '等待设备事件进入后展示推理流程。',
       ruleMatched: '命中的规则'
+    },
+    stateLedger: {
+      eyebrow: '事件状态账本',
+      title: '状态变化链路',
+      subtitle: '选择一条事件，查看它造成的 memory 状态变化、公式和演示讲解词。',
+      eventSelector: '选择一条 memory 事件',
+      narration: '演示讲解',
+      formula: '计算细节',
+      changes: '状态变化',
+      hypotheses: '条假设',
+      empty: '还没有设备事件，暂时无法生成状态变化账本。'
     },
     whiteBox: {
       eyebrow: '白盒推理',

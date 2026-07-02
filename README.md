@@ -90,6 +90,7 @@ This repository is still a single-home simulation sandbox. It now exposes protoc
 - [事件生成流程](./docs/event-generation-flow.md)
 - [家庭 Memory 处理流程](./docs/home-memory-processing-flow.md)
 - [Home Memory 计算细节](./docs/home-memory-calculation-details.md)
+- [Home Memory 演示讲稿](./docs/home-memory-demo-script.md)
 
 ## Verification
 

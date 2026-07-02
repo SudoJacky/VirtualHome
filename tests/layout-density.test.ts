@@ -126,4 +126,15 @@ describe('dashboard layout density', () => {
     expect(styles).toContain('.llm-trace-panel');
     expect(styles).toContain('.llm-trace-source');
   });
+
+  it('renders event state ledger with presenter narration and state changes', () => {
+    expect(homeMemoryViewTsx).toContain('StateLedgerPanel');
+    expect(homeMemoryViewTsx).toContain('className="memory-panel state-ledger-panel"');
+    expect(homeMemoryViewTsx).toContain('copy.stateLedger.narration');
+    expect(homeMemoryViewTsx).toContain('copy.stateLedger.formula');
+    expect(homeMemoryViewTsx).toContain('copy.stateLedger.changes');
+    expect(styles).toContain('.state-ledger-panel');
+    expect(styles).toContain('.state-ledger-narration');
+    expect(styles).toContain('.state-ledger-change-row');
+  });
 });

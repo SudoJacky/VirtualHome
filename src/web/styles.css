@@ -918,6 +918,165 @@ button:hover {
   min-height: 0;
 }
 
+.state-ledger-panel {
+  gap: 14px;
+}
+
+.state-ledger-panel .panel-heading p {
+  color: #60757b;
+  font-size: 13px;
+  line-height: 1.42;
+  margin: 4px 0 0;
+}
+
+.state-ledger-event-selector {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.state-ledger-event-selector button {
+  background: #f8faf9;
+  border: 1px solid #dce6e5;
+  border-radius: 8px;
+  color: inherit;
+  display: grid;
+  gap: 4px;
+  min-height: 58px;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.state-ledger-event-selector button.active {
+  background: #eaf7f4;
+  border-color: #5db5a8;
+}
+
+.state-ledger-event-selector span,
+.state-ledger-step header strong,
+.state-ledger-change-row strong {
+  color: #20343b;
+  display: block;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.state-ledger-event-selector small,
+.state-ledger-step header span,
+.state-ledger-formula p,
+.state-ledger-change-row small {
+  color: #60757b;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.state-ledger-steps {
+  display: grid;
+  gap: 12px;
+  max-height: min(720px, 78vh);
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.state-ledger-step {
+  background: #ffffff;
+  border: 1px solid #dce6e5;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.state-ledger-step header {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.state-ledger-narration,
+.state-ledger-formula,
+.state-ledger-changes {
+  display: grid;
+  gap: 6px;
+}
+
+.state-ledger-narration > span,
+.state-ledger-formula > span,
+.state-ledger-changes > span,
+.state-ledger-metrics span {
+  color: #60757b;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.state-ledger-narration p {
+  color: #20343b;
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.state-ledger-formula code,
+.state-ledger-change-row code {
+  background: #edf3f2;
+  border-radius: 6px;
+  color: #20343b;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  padding: 3px 6px;
+  white-space: normal;
+}
+
+.state-ledger-formula p {
+  margin: 0;
+}
+
+.state-ledger-metrics {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.state-ledger-metrics div {
+  background: #f7faf9;
+  border: 1px solid #e1e8ea;
+  border-radius: 7px;
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+}
+
+.state-ledger-metrics strong {
+  color: #20343b;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.state-ledger-metrics small {
+  color: #60757b;
+  font-size: 11px;
+}
+
+.state-ledger-change-row {
+  align-items: center;
+  border-top: 1px solid #edf1f2;
+  display: grid;
+  gap: 7px;
+  grid-template-columns: minmax(100px, 1.1fr) minmax(72px, 0.8fr) auto minmax(72px, 0.8fr);
+  padding-top: 8px;
+}
+
+.state-ledger-change-row i {
+  color: #267e71;
+  font-style: normal;
+  text-align: center;
+}
+
+.state-ledger-change-row small {
+  grid-column: 1 / -1;
+}
+
 .memory-demo-panel {
   gap: 16px;
 }
