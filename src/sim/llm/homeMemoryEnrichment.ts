@@ -526,6 +526,7 @@ export async function requestHomeMemoryLlmEnrichment(input: RequestHomeMemoryLlm
     try {
       const jsonText = await requestOpenAiCompatibleJson({
         config: input.config,
+        purpose: input.purpose,
         prompt: input.prompt,
         fetcher
       });
@@ -646,6 +647,7 @@ export async function requestHomeMemoryLlmEnrichmentStream(input: RequestHomeMem
     try {
       const jsonText = await requestOpenAiCompatibleJsonStream({
         config: input.config,
+        purpose: input.purpose,
         prompt: input.prompt,
         fetcher,
         onDelta: (content) => input.onEvent?.({ event: 'provider_delta', data: { content } })
@@ -772,6 +774,7 @@ export async function requestUnknownSchemaMapping(input: RequestUnknownSchemaMap
     try {
       const jsonText = await requestOpenAiCompatibleJson({
         config: input.config,
+        purpose: 'unknown_schema_mapping',
         prompt,
         fetcher
       });
@@ -832,14 +835,83 @@ export function createDeterministicHomeMemoryLlmEnrichment(input: DeterministicH
   };
 }
 
+let homeMemoryLlmProviderLaneTail: Promise<void> = Promise.resolve();
+let homeMemoryLlmProviderLaneQueued = 0;
+let homeMemoryLlmProviderLaneSequence = 0;
+
+async function runHomeMemoryLlmProviderLane<T>(
+  input: { mode: 'json' | 'stream'; purpose: HomeMemoryLlmPurpose; config: HomeMemoryLlmConfig },
+  operation: () => Promise<T>
+): Promise<T> {
+  const requestId = ++homeMemoryLlmProviderLaneSequence;
+  const queuedAt = Date.now();
+  const queuedAhead = homeMemoryLlmProviderLaneQueued;
+  homeMemoryLlmProviderLaneQueued += 1;
+
+  let release!: () => void;
+  const currentTurn = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const previousTurn = homeMemoryLlmProviderLaneTail.catch(() => undefined);
+  homeMemoryLlmProviderLaneTail = previousTurn.then(() => currentTurn);
+
+  logHomeMemoryLlm('debug', 'provider_lane_queued', {
+    requestId,
+    mode: input.mode,
+    purpose: input.purpose,
+    queuedAhead,
+    host: providerHost(input.config.provider.baseUrl),
+    model: input.config.provider.model
+  });
+
+  await previousTurn;
+  homeMemoryLlmProviderLaneQueued -= 1;
+  const startedAt = Date.now();
+  logHomeMemoryLlm('debug', 'provider_lane_start', {
+    requestId,
+    mode: input.mode,
+    purpose: input.purpose,
+    waitMs: startedAt - queuedAt,
+    host: providerHost(input.config.provider.baseUrl),
+    model: input.config.provider.model
+  });
+
+  try {
+    return await operation();
+  } finally {
+    logHomeMemoryLlm('debug', 'provider_lane_finish', {
+      requestId,
+      mode: input.mode,
+      purpose: input.purpose,
+      durationMs: Date.now() - startedAt
+    });
+    release();
+  }
+}
+
 async function requestOpenAiCompatibleJson(input: {
   config: HomeMemoryLlmConfig;
+  purpose: HomeMemoryLlmPurpose;
+  prompt: string;
+  fetcher: HomeMemoryLlmFetch;
+}): Promise<string> {
+  return runHomeMemoryLlmProviderLane({
+    mode: 'json',
+    purpose: input.purpose,
+    config: input.config
+  }, () => requestOpenAiCompatibleJsonUnqueued(input));
+}
+
+async function requestOpenAiCompatibleJsonUnqueued(input: {
+  config: HomeMemoryLlmConfig;
+  purpose: HomeMemoryLlmPurpose;
   prompt: string;
   fetcher: HomeMemoryLlmFetch;
 }): Promise<string> {
   const url = `${input.config.provider.baseUrl.replace(/\/+$/, '')}/chat/completions`;
   logHomeMemoryLlm('debug', 'provider_request_start', {
     mode: 'json',
+    purpose: input.purpose,
     host: providerHost(input.config.provider.baseUrl),
     model: input.config.provider.model,
     timeoutMs: input.config.provider.timeoutMs,
@@ -870,6 +942,7 @@ async function requestOpenAiCompatibleJson(input: {
   });
   logHomeMemoryLlm('debug', 'provider_response', {
     mode: 'json',
+    purpose: input.purpose,
     status: response.status,
     contentType: response.headers.get('content-type') ?? 'unknown'
   });
@@ -894,6 +967,21 @@ async function requestOpenAiCompatibleJson(input: {
 
 async function requestOpenAiCompatibleJsonStream(input: {
   config: HomeMemoryLlmConfig;
+  purpose: HomeMemoryLlmPurpose;
+  prompt: string;
+  fetcher: HomeMemoryLlmFetch;
+  onDelta: (content: string) => void;
+}): Promise<string> {
+  return runHomeMemoryLlmProviderLane({
+    mode: 'stream',
+    purpose: input.purpose,
+    config: input.config
+  }, () => requestOpenAiCompatibleJsonStreamUnqueued(input));
+}
+
+async function requestOpenAiCompatibleJsonStreamUnqueued(input: {
+  config: HomeMemoryLlmConfig;
+  purpose: HomeMemoryLlmPurpose;
   prompt: string;
   fetcher: HomeMemoryLlmFetch;
   onDelta: (content: string) => void;
@@ -901,6 +989,7 @@ async function requestOpenAiCompatibleJsonStream(input: {
   const url = `${input.config.provider.baseUrl.replace(/\/+$/, '')}/chat/completions`;
   logHomeMemoryLlm('debug', 'provider_request_start', {
     mode: 'stream',
+    purpose: input.purpose,
     host: providerHost(input.config.provider.baseUrl),
     model: input.config.provider.model,
     timeoutMs: input.config.provider.timeoutMs,
@@ -931,6 +1020,7 @@ async function requestOpenAiCompatibleJsonStream(input: {
   });
   logHomeMemoryLlm('debug', 'provider_response', {
     mode: 'stream',
+    purpose: input.purpose,
     status: response.status,
     contentType: response.headers.get('content-type') ?? 'unknown'
   });

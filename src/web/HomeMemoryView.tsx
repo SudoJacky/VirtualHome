@@ -902,6 +902,45 @@ function ReasoningFlowPanel({
   );
 }
 
+const LLM_PURPOSE_EXPLANATIONS = [
+  {
+    purpose: 'hypothesis_explanation',
+    trigger: 'Refresh or stream',
+    output: 'Turns an existing hypothesis and its evidence IDs into a readable explanation.',
+    why: 'Used for presentation: what we believe, which evidence supports it, and what is still missing.'
+  },
+  {
+    purpose: 'reliability_review',
+    trigger: 'Refresh with reliability',
+    output: 'Reviews a mid-confidence hypothesis for missing evidence, contradictions, and alternatives.',
+    why: 'Used to show that LLM does not blindly approve the rule result.'
+  },
+  {
+    purpose: 'daily_portrait_summary',
+    trigger: 'Portrait enrichment',
+    output: 'Summarizes the current household portrait from already computed sections and evidence.',
+    why: 'Used to make the high-level home memory story easier to explain.'
+  },
+  {
+    purpose: 'semantic_candidate',
+    trigger: 'Candidate batch',
+    output: 'Suggests a possible semantic meaning for a stable evidence window.',
+    why: 'Used as a candidate only; it does not write facts back into memory.'
+  },
+  {
+    purpose: 'unknown_schema_mapping',
+    trigger: 'Unknown field threshold',
+    output: 'Suggests how an unfamiliar device field might map to a capability or semantic signal.',
+    why: 'Used to help extend rules without letting LLM mutate the rule library.'
+  },
+  {
+    purpose: 'query_planning',
+    trigger: 'Natural-language query',
+    output: 'Creates an evidence-locked query plan while deterministic code still executes the query.',
+    why: 'Used to translate user intent without giving LLM direct control over memory.'
+  }
+] as const;
+
 function HomeMemoryLlmTracePanel({
   trace,
   loading,
@@ -1111,6 +1150,25 @@ function HomeMemoryLlmTracePanel({
         </div>
       ) : null}
 
+      <div className="llm-purpose-panel">
+        <div className="llm-purpose-title">
+          <strong>Why LLM is called</strong>
+          <span>Provider calls are optional, gated, cached, and serialized through one lane.</span>
+        </div>
+        <div className="llm-purpose-grid">
+          {LLM_PURPOSE_EXPLANATIONS.map((item) => (
+            <article key={item.purpose}>
+              <header>
+                <strong>{item.purpose.replaceAll('_', ' ')}</strong>
+                <span>{item.trigger}</span>
+              </header>
+              <p>{item.output}</p>
+              <small>{item.why}</small>
+            </article>
+          ))}
+        </div>
+      </div>
+
       <div className="llm-trace-metrics">
         {trace.metrics.map((metric) => (
           <div key={metric.label}>
@@ -1163,7 +1221,7 @@ function HomeMemoryLlmTracePanel({
       <div className="llm-stream-panel">
         <div>
           <strong>Live provider output</strong>
-          <span>{streamLog.length} events</span>
+          <span>{streamLog.length} events; deltas are validated before adoption</span>
         </div>
         <pre className="llm-stream-output">{streamOutput || 'No streamed provider content yet.'}</pre>
         <div className="llm-stream-log">

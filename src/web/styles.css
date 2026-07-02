@@ -484,6 +484,7 @@ button:hover {
 }
 
 .llm-config-panel,
+.llm-purpose-panel,
 .llm-stream-panel {
   background: #f7faf9;
   border: 1px solid #dce6e4;
@@ -495,6 +496,7 @@ button:hover {
 
 .llm-config-title,
 .llm-config-actions,
+.llm-purpose-title,
 .llm-stream-panel > div:first-child {
   align-items: center;
   display: flex;
@@ -503,15 +505,53 @@ button:hover {
 }
 
 .llm-config-title strong,
+.llm-purpose-title strong,
+.llm-purpose-grid strong,
 .llm-stream-panel strong {
   color: #17202a;
   font-size: 13px;
 }
 
 .llm-config-title span,
+.llm-purpose-title span,
+.llm-purpose-grid header span,
+.llm-purpose-grid small,
 .llm-stream-panel > div:first-child span {
   color: #64767b;
   font-size: 11px;
+}
+
+.llm-purpose-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.llm-purpose-grid article {
+  background: #ffffff;
+  border: 1px solid #dce6e4;
+  border-radius: 7px;
+  display: grid;
+  gap: 5px;
+  padding: 8px;
+}
+
+.llm-purpose-grid header {
+  align-items: start;
+  display: grid;
+  gap: 4px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.llm-purpose-grid header span {
+  text-align: right;
+}
+
+.llm-purpose-grid p {
+  color: #32464c;
+  font-size: 12px;
+  line-height: 1.35;
+  margin: 0;
 }
 
 .llm-config-grid {
@@ -3552,6 +3592,11 @@ button:hover {
   .memory-sidebar {
     grid-template-columns: 1fr;
     width: 100%;
+  }
+
+  .llm-purpose-grid,
+  .llm-config-grid {
+    grid-template-columns: 1fr;
   }
 
   .memory-graph-canvas-shell {
