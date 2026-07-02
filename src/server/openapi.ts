@@ -1613,6 +1613,44 @@ const homeMemoryLlmBatchExecutionSchema: JsonSchema = {
   }
 };
 
+const homeMemoryLlmConfigSchema: JsonSchema = {
+  type: 'object',
+  required: ['provider', 'budget', 'gates'],
+  properties: {
+    provider: {
+      type: 'object',
+      required: ['enabled', 'provider', 'baseUrl', 'model', 'timeoutMs', 'maxRetries', 'apiKeyConfigured'],
+      properties: {
+        enabled: { type: 'boolean' },
+        provider: { type: 'string', enum: ['openai-compatible'] },
+        baseUrl: stringSchema,
+        model: stringSchema,
+        timeoutMs: { type: 'integer', minimum: 1000 },
+        maxRetries: { type: 'integer', minimum: 0 },
+        apiKeyConfigured: { type: 'boolean' }
+      }
+    },
+    budget: {
+      type: 'object',
+      required: ['maxCallsPerHomePerHour', 'maxCallsPerHomePerDay', 'maxBatchSize'],
+      properties: {
+        maxCallsPerHomePerHour: { type: 'integer', minimum: 1 },
+        maxCallsPerHomePerDay: { type: 'integer', minimum: 1 },
+        maxBatchSize: { type: 'integer', minimum: 1 }
+      }
+    },
+    gates: {
+      type: 'object',
+      required: ['minEvidenceCountForUnknownSchema', 'minConfidenceForReview', 'maxConfidenceForReview'],
+      properties: {
+        minEvidenceCountForUnknownSchema: { type: 'integer', minimum: 1 },
+        minConfidenceForReview: { type: 'number', minimum: 0, maximum: 1 },
+        maxConfidenceForReview: { type: 'number', minimum: 0, maximum: 1 }
+      }
+    }
+  }
+};
+
 const memoryLlmMetricsSchema: JsonSchema = {
   type: 'object',
   required: ['enabled', 'provider', 'model', 'cacheSize', 'unsupportedClaimRate', 'totalRequests', 'sourceCounts', 'rates', 'callsByPurpose', 'requestsByPurpose', 'estimatedTokensByPurpose', 'validationRejectionCount', 'budgets'],
@@ -1959,6 +1997,87 @@ export function buildOpenApiDocument(): Record<string, unknown> {
           responses: okResponse({ $ref: '#/components/schemas/HomeMemoryLlmBatchExecution' }, true)
         }
       },
+      '/api/memory/llm/config': {
+        get: {
+          summary: 'Get masked Home Memory LLM runtime provider configuration',
+          responses: okResponse({ $ref: '#/components/schemas/HomeMemoryLlmConfig' }, true)
+        },
+        put: {
+          summary: 'Update Home Memory LLM runtime provider configuration',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    provider: {
+                      type: 'object',
+                      properties: {
+                        enabled: { type: 'boolean' },
+                        baseUrl: stringSchema,
+                        model: stringSchema,
+                        apiKey: stringSchema,
+                        clearApiKey: { type: 'boolean' },
+                        timeoutMs: { type: 'integer', minimum: 1000, maximum: 120000 },
+                        maxRetries: { type: 'integer', minimum: 0, maximum: 5 }
+                      }
+                    },
+                    budget: {
+                      type: 'object',
+                      properties: {
+                        maxCallsPerHomePerHour: { type: 'integer', minimum: 1, maximum: 1000 },
+                        maxCallsPerHomePerDay: { type: 'integer', minimum: 1, maximum: 10000 },
+                        maxBatchSize: { type: 'integer', minimum: 1, maximum: 100 }
+                      }
+                    },
+                    gates: {
+                      type: 'object',
+                      properties: {
+                        minEvidenceCountForUnknownSchema: { type: 'integer', minimum: 1, maximum: 100 },
+                        minConfidenceForReview: { type: 'number', minimum: 0, maximum: 1 },
+                        maxConfidenceForReview: { type: 'number', minimum: 0, maximum: 1 }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          responses: okResponse({ $ref: '#/components/schemas/HomeMemoryLlmConfig' }, true)
+        }
+      },
+      '/api/memory/llm/stream': {
+        get: {
+          summary: 'Stream a user-triggered Home Memory LLM enrichment attempt',
+          parameters: [
+            runIdParameter(),
+            {
+              name: 'purpose',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', enum: ['hypothesis_explanation', 'reliability_review'] }
+            },
+            {
+              name: 'type',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', enum: ['household_size', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster', 'routine_window', 'behavior_flow', 'resident_slot', 'room_function', 'device_contribution', 'state_anomaly'] }
+            }
+          ],
+          responses: {
+            '200': {
+              description: 'Server-sent events for gatekeeper, provider deltas, validator, and final result',
+              content: {
+                'text/event-stream': {
+                  schema: { type: 'string' }
+                }
+              }
+            },
+            '400': validationErrorResponse()
+          }
+        }
+      },
       '/api/memory/llm/metrics': {
         get: {
           summary: 'Get Home Memory LLM cache, budget, fallback, and token metrics',
@@ -2159,6 +2278,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         MemoryReliabilityReport: memoryReliabilityReportSchema,
         HomeMemoryLlmBatchPlan: homeMemoryLlmBatchPlanSchema,
         HomeMemoryLlmBatchExecution: homeMemoryLlmBatchExecutionSchema,
+        HomeMemoryLlmConfig: homeMemoryLlmConfigSchema,
         MemoryLlmMetrics: memoryLlmMetricsSchema,
         AccessAuditRecord: accessAuditRecordSchema,
         UpdateResponse: updateResponseSchema,

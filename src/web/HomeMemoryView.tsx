@@ -1,6 +1,6 @@
 import React from 'react';
 import { Map, Network, Pause, Play, Radio, RotateCcw } from 'lucide-react';
-import { getJson } from './apiClient';
+import { getJson, putJson } from './apiClient';
 import {
   buildDeviceEventSocketUrl,
   cursorFromDeviceRunChanged,
@@ -91,6 +91,33 @@ interface HomeMemoryLlmApiMetrics {
   };
 }
 
+interface HomeMemoryLlmApiConfig {
+  provider: {
+    enabled: boolean;
+    provider: 'openai-compatible';
+    baseUrl: string;
+    model: string;
+    timeoutMs: number;
+    maxRetries: number;
+    apiKeyConfigured: boolean;
+  };
+  budget: {
+    maxCallsPerHomePerHour: number;
+    maxCallsPerHomePerDay: number;
+    maxBatchSize: number;
+  };
+  gates: {
+    minEvidenceCountForUnknownSchema: number;
+    minConfidenceForReview: number;
+    maxConfidenceForReview: number;
+  };
+}
+
+interface HomeMemoryLlmStreamLogEntry {
+  event: string;
+  data: Record<string, unknown>;
+}
+
 export function HomeMemoryView(): React.ReactElement {
   const [memory, setMemory] = React.useState<HomeMemory>(() => createHomeMemory());
   const [recentEvents, setRecentEvents] = React.useState<DeviceValueEvent[]>([]);
@@ -109,6 +136,13 @@ export function HomeMemoryView(): React.ReactElement {
   const [llmPortrait, setLlmPortrait] = React.useState<HomeMemoryLlmApiPortrait | null>(null);
   const [llmBatchPlan, setLlmBatchPlan] = React.useState<HomeMemoryLlmApiBatchPlan | null>(null);
   const [llmMetrics, setLlmMetrics] = React.useState<HomeMemoryLlmApiMetrics | null>(null);
+  const [llmConfig, setLlmConfig] = React.useState<HomeMemoryLlmApiConfig | null>(null);
+  const [llmConfigDraft, setLlmConfigDraft] = React.useState<HomeMemoryLlmApiConfig | null>(null);
+  const [llmApiKeyDraft, setLlmApiKeyDraft] = React.useState('');
+  const [llmConfigSaving, setLlmConfigSaving] = React.useState(false);
+  const [llmStreamLoading, setLlmStreamLoading] = React.useState(false);
+  const [llmStreamLog, setLlmStreamLog] = React.useState<HomeMemoryLlmStreamLogEntry[]>([]);
+  const [llmStreamOutput, setLlmStreamOutput] = React.useState('');
   const [llmTraceError, setLlmTraceError] = React.useState<string | null>(null);
   const [llmTraceLoading, setLlmTraceLoading] = React.useState(false);
   const cursorRef = React.useRef<DeviceEventCursor | null>(null);
@@ -323,6 +357,25 @@ export function HomeMemoryView(): React.ReactElement {
   }, [locale]);
 
   React.useEffect(() => {
+    let disposed = false;
+    void (async () => {
+      try {
+        const config = await getJson<HomeMemoryLlmApiConfig>('/api/memory/llm/config');
+        if (disposed) return;
+        setLlmConfig(config);
+        setLlmConfigDraft(config);
+      } catch (error) {
+        if (!disposed) {
+          setLlmTraceError(errorMessage(error));
+        }
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  React.useEffect(() => {
     if (!memory.runId) {
       return undefined;
     }
@@ -361,6 +414,8 @@ export function HomeMemoryView(): React.ReactElement {
     setLlmPortrait(null);
     setLlmBatchPlan(null);
     setLlmMetrics(null);
+    setLlmStreamLog([]);
+    setLlmStreamOutput('');
     setLlmTraceError(null);
   }
 
@@ -384,6 +439,71 @@ export function HomeMemoryView(): React.ReactElement {
       setLlmTraceError(errorMessage(error));
     } finally {
       setLlmTraceLoading(false);
+    }
+  }
+
+  async function saveHomeMemoryLlmConfig(): Promise<void> {
+    if (!llmConfigDraft) {
+      return;
+    }
+    setLlmConfigSaving(true);
+    try {
+      const saved = await putJson<HomeMemoryLlmApiConfig>('/api/memory/llm/config', {
+        provider: {
+          enabled: llmConfigDraft.provider.enabled,
+          baseUrl: llmConfigDraft.provider.baseUrl,
+          model: llmConfigDraft.provider.model,
+          timeoutMs: llmConfigDraft.provider.timeoutMs,
+          maxRetries: llmConfigDraft.provider.maxRetries,
+          ...(llmApiKeyDraft.trim() ? { apiKey: llmApiKeyDraft.trim() } : {})
+        },
+        budget: llmConfigDraft.budget,
+        gates: llmConfigDraft.gates
+      });
+      setLlmConfig(saved);
+      setLlmConfigDraft(saved);
+      setLlmApiKeyDraft('');
+      const metrics = await getJson<HomeMemoryLlmApiMetrics>('/api/memory/llm/metrics');
+      setLlmMetrics(metrics);
+      setLlmTraceError(null);
+    } catch (error) {
+      setLlmTraceError(errorMessage(error));
+    } finally {
+      setLlmConfigSaving(false);
+    }
+  }
+
+  async function startHomeMemoryLlmStream(): Promise<void> {
+    if (!selectedHypothesis) {
+      setLlmTraceError('No selected hypothesis is available for streaming.');
+      return;
+    }
+    setLlmStreamLoading(true);
+    setLlmStreamLog([]);
+    setLlmStreamOutput('');
+    try {
+      const response = await fetch(`/api/memory/llm/stream?purpose=hypothesis_explanation&type=${encodeURIComponent(selectedHypothesis.type)}`);
+      if (!response.ok) {
+        throw new Error(`Stream request failed with ${response.status}`);
+      }
+      await readMemoryLlmStream(response, (entry) => {
+        setLlmStreamLog((current) => [...current.slice(-19), entry]);
+        const content = typeof entry.data.content === 'string' ? entry.data.content : '';
+        if (entry.event === 'provider_delta' && content) {
+          setLlmStreamOutput((current) => `${current}${content}`);
+        }
+      });
+      const [batchPlan, metrics] = await Promise.all([
+        getJson<HomeMemoryLlmApiBatchPlan>('/api/memory/llm/batch-plan?includePortraitSummary=true'),
+        getJson<HomeMemoryLlmApiMetrics>('/api/memory/llm/metrics')
+      ]);
+      setLlmBatchPlan(batchPlan);
+      setLlmMetrics(metrics);
+      setLlmTraceError(null);
+    } catch (error) {
+      setLlmTraceError(errorMessage(error));
+    } finally {
+      setLlmStreamLoading(false);
     }
   }
 
@@ -500,6 +620,17 @@ export function HomeMemoryView(): React.ReactElement {
           <HomeMemoryLlmTracePanel
             trace={llmTrace}
             loading={llmTraceLoading}
+            config={llmConfig}
+            configDraft={llmConfigDraft}
+            apiKeyDraft={llmApiKeyDraft}
+            configSaving={llmConfigSaving}
+            streamLoading={llmStreamLoading}
+            streamLog={llmStreamLog}
+            streamOutput={llmStreamOutput}
+            onConfigDraftChange={setLlmConfigDraft}
+            onApiKeyDraftChange={setLlmApiKeyDraft}
+            onSaveConfig={saveHomeMemoryLlmConfig}
+            onStartStream={startHomeMemoryLlmStream}
             onRefresh={refreshHomeMemoryLlmTrace}
           />
           <SelectedMemoryPanel
@@ -769,12 +900,40 @@ function ReasoningFlowPanel({
 function HomeMemoryLlmTracePanel({
   trace,
   loading,
+  config,
+  configDraft,
+  apiKeyDraft,
+  configSaving,
+  streamLoading,
+  streamLog,
+  streamOutput,
+  onConfigDraftChange,
+  onApiKeyDraftChange,
+  onSaveConfig,
+  onStartStream,
   onRefresh
 }: {
   trace: HomeMemoryLlmTrace;
   loading: boolean;
+  config: HomeMemoryLlmApiConfig | null;
+  configDraft: HomeMemoryLlmApiConfig | null;
+  apiKeyDraft: string;
+  configSaving: boolean;
+  streamLoading: boolean;
+  streamLog: HomeMemoryLlmStreamLogEntry[];
+  streamOutput: string;
+  onConfigDraftChange: (config: HomeMemoryLlmApiConfig) => void;
+  onApiKeyDraftChange: (value: string) => void;
+  onSaveConfig: () => Promise<void>;
+  onStartStream: () => Promise<void>;
   onRefresh: () => Promise<void>;
 }): React.ReactElement {
+  function updateDraft(update: (config: HomeMemoryLlmApiConfig) => HomeMemoryLlmApiConfig): void {
+    if (configDraft) {
+      onConfigDraftChange(update(configDraft));
+    }
+  }
+
   return (
     <section className="memory-panel llm-trace-panel">
       <div className="panel-heading">
@@ -786,6 +945,166 @@ function HomeMemoryLlmTracePanel({
           {loading ? 'Refreshing' : 'Refresh'}
         </button>
       </div>
+
+      {configDraft ? (
+        <div className="llm-config-panel">
+          <div className="llm-config-title">
+            <strong>Runtime provider config</strong>
+            <span>{config?.provider.apiKeyConfigured ? 'API key configured' : 'No API key configured'}</span>
+          </div>
+          <div className="llm-config-grid">
+            <label>
+              <span>Enabled</span>
+              <input
+                type="checkbox"
+                checked={configDraft.provider.enabled}
+                onChange={(event) => updateDraft((current) => ({
+                  ...current,
+                  provider: { ...current.provider, enabled: event.currentTarget.checked }
+                }))}
+              />
+            </label>
+            <label>
+              <span>Base URL</span>
+              <input
+                value={configDraft.provider.baseUrl}
+                onChange={(event) => updateDraft((current) => ({
+                  ...current,
+                  provider: { ...current.provider, baseUrl: event.currentTarget.value }
+                }))}
+                placeholder="https://provider.example/v1"
+              />
+            </label>
+            <label>
+              <span>Model</span>
+              <input
+                value={configDraft.provider.model}
+                onChange={(event) => updateDraft((current) => ({
+                  ...current,
+                  provider: { ...current.provider, model: event.currentTarget.value }
+                }))}
+              />
+            </label>
+            <label>
+              <span>API key</span>
+              <input
+                type="password"
+                value={apiKeyDraft}
+                onChange={(event) => onApiKeyDraftChange(event.currentTarget.value)}
+                placeholder={config?.provider.apiKeyConfigured ? 'Leave blank to keep current key' : 'Optional bearer token'}
+              />
+            </label>
+            <label>
+              <span>Timeout ms</span>
+              <input
+                type="number"
+                min={1000}
+                value={configDraft.provider.timeoutMs}
+                onChange={(event) => updateDraft((current) => ({
+                  ...current,
+                  provider: { ...current.provider, timeoutMs: Number(event.currentTarget.value) }
+                }))}
+              />
+            </label>
+            <label>
+              <span>Retries</span>
+              <input
+                type="number"
+                min={0}
+                value={configDraft.provider.maxRetries}
+                onChange={(event) => updateDraft((current) => ({
+                  ...current,
+                  provider: { ...current.provider, maxRetries: Number(event.currentTarget.value) }
+                }))}
+              />
+            </label>
+            <label>
+              <span>Calls / hour</span>
+              <input
+                type="number"
+                min={1}
+                value={configDraft.budget.maxCallsPerHomePerHour}
+                onChange={(event) => updateDraft((current) => ({
+                  ...current,
+                  budget: { ...current.budget, maxCallsPerHomePerHour: Number(event.currentTarget.value) }
+                }))}
+              />
+            </label>
+            <label>
+              <span>Calls / day</span>
+              <input
+                type="number"
+                min={1}
+                value={configDraft.budget.maxCallsPerHomePerDay}
+                onChange={(event) => updateDraft((current) => ({
+                  ...current,
+                  budget: { ...current.budget, maxCallsPerHomePerDay: Number(event.currentTarget.value) }
+                }))}
+              />
+            </label>
+            <label>
+              <span>Batch size</span>
+              <input
+                type="number"
+                min={1}
+                value={configDraft.budget.maxBatchSize}
+                onChange={(event) => updateDraft((current) => ({
+                  ...current,
+                  budget: { ...current.budget, maxBatchSize: Number(event.currentTarget.value) }
+                }))}
+              />
+            </label>
+            <label>
+              <span>Unknown evidence</span>
+              <input
+                type="number"
+                min={1}
+                value={configDraft.gates.minEvidenceCountForUnknownSchema}
+                onChange={(event) => updateDraft((current) => ({
+                  ...current,
+                  gates: { ...current.gates, minEvidenceCountForUnknownSchema: Number(event.currentTarget.value) }
+                }))}
+              />
+            </label>
+            <label>
+              <span>Review min</span>
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                value={configDraft.gates.minConfidenceForReview}
+                onChange={(event) => updateDraft((current) => ({
+                  ...current,
+                  gates: { ...current.gates, minConfidenceForReview: Number(event.currentTarget.value) }
+                }))}
+              />
+            </label>
+            <label>
+              <span>Review max</span>
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                value={configDraft.gates.maxConfidenceForReview}
+                onChange={(event) => updateDraft((current) => ({
+                  ...current,
+                  gates: { ...current.gates, maxConfidenceForReview: Number(event.currentTarget.value) }
+                }))}
+              />
+            </label>
+          </div>
+          <div className="llm-config-actions">
+            <button onClick={() => void onSaveConfig()} disabled={configSaving}>
+              {configSaving ? 'Saving' : 'Save config'}
+            </button>
+            <button onClick={() => void onStartStream()} disabled={streamLoading}>
+              {streamLoading ? 'Streaming' : 'Stream selected hypothesis'}
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <div className="llm-trace-metrics">
         {trace.metrics.map((metric) => (
@@ -834,6 +1153,23 @@ function HomeMemoryLlmTracePanel({
           </div>
         ))}
         {trace.batchItems.length === 0 ? <p className="muted">No eligible batch work is currently planned.</p> : null}
+      </div>
+
+      <div className="llm-stream-panel">
+        <div>
+          <strong>Live provider output</strong>
+          <span>{streamLog.length} events</span>
+        </div>
+        <pre className="llm-stream-output">{streamOutput || 'No streamed provider content yet.'}</pre>
+        <div className="llm-stream-log">
+          {streamLog.map((entry, index) => (
+            <div key={`${entry.event}:${index}`}>
+              <span className={`llm-trace-source ${entry.event === 'provider_delta' ? 'llm' : 'planned'}`}>{entry.event}</span>
+              <code>{formatStreamData(entry.data)}</code>
+            </div>
+          ))}
+          {streamLog.length === 0 ? <p className="muted">Run a stream to see gatekeeper, provider, validator, and result events.</p> : null}
+        </div>
       </div>
     </section>
   );
@@ -1506,6 +1842,61 @@ function formatValue(value: DeviceValueEvent['value']): string {
   if (value === null) return 'null';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   return String(value);
+}
+
+async function readMemoryLlmStream(
+  response: Response,
+  onEntry: (entry: HomeMemoryLlmStreamLogEntry) => void
+): Promise<void> {
+  if (!response.body) {
+    parseMemoryLlmSseBlocks(await response.text(), onEntry);
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    buffer = parseMemoryLlmSseBlocks(buffer, onEntry);
+  }
+  buffer += decoder.decode();
+  parseMemoryLlmSseBlocks(buffer, onEntry, true);
+}
+
+function parseMemoryLlmSseBlocks(
+  text: string,
+  onEntry: (entry: HomeMemoryLlmStreamLogEntry) => void,
+  flush = false
+): string {
+  const blocks = text.split(/\n\n+/);
+  const completeBlocks = flush ? blocks : blocks.slice(0, -1);
+  for (const block of completeBlocks) {
+    const event = block.match(/^event: (.+)$/m)?.[1];
+    const data = block.match(/^data: (.+)$/m)?.[1];
+    if (!event || !data) {
+      continue;
+    }
+    onEntry({ event, data: JSON.parse(data) as Record<string, unknown> });
+  }
+  return flush ? '' : blocks[blocks.length - 1] ?? '';
+}
+
+function formatStreamData(data: Record<string, unknown>): string {
+  if (typeof data.content === 'string') {
+    return data.content.length > 80 ? `${data.content.slice(0, 80)}...` : data.content;
+  }
+  if (typeof data.reason === 'string') {
+    return data.reason;
+  }
+  if (typeof data.source === 'string') {
+    return data.source;
+  }
+  return JSON.stringify(data);
 }
 
 function errorMessage(error: unknown): string {
