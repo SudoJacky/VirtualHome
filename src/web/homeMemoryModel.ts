@@ -309,7 +309,7 @@ export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): 
   const semanticSignals = semanticSignalsForEvidence(event, evidence);
   const activityEpisodes = updateActivityEpisodes(baseMemory, semanticSignals);
 
-  return {
+  const nextMemory: HomeMemory = {
     ...baseMemory,
     homeId: event.homeId,
     runId: event.runId,
@@ -342,6 +342,10 @@ export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): 
     profileEventCount: incrementProfileEventCount(baseMemory.profileEventCount, evidence),
     profileEvidenceWeight: roundWeight(baseMemory.profileEvidenceWeight + evidence.profileWeight),
     profileEvidenceByCategory: incrementProfileEvidenceCategory(baseMemory.profileEvidenceByCategory, evidence)
+  };
+  return {
+    ...nextMemory,
+    semanticSignals: pruneSemanticSignalsForIndexedEvidence(nextMemory.semanticSignals, nextMemory)
   };
 }
 
@@ -1393,6 +1397,22 @@ function appendManyBounded<T>(items: T[], nextItems: T[], limit: number): T[] {
     return items;
   }
   return [[...nextItems].reverse(), items].flat().slice(0, limit);
+}
+
+function pruneSemanticSignalsForIndexedEvidence(signals: SemanticSignal[], memory: HomeMemory): SemanticSignal[] {
+  const evidenceIds = new Set([
+    ...memory.recentEvents,
+    ...Object.values(memory.rooms).flatMap((room) => room.recentEvents),
+    ...Object.values(memory.devices).flatMap((device) => device.recentEvents),
+    ...Object.values(memory.fields).flatMap((field) => field.recentEvents)
+  ].map((evidence) => evidence.id));
+
+  return signals
+    .map((signal) => ({
+      ...signal,
+      sourceEvidenceIds: signal.sourceEvidenceIds.filter((evidenceId) => evidenceIds.has(evidenceId))
+    }))
+    .filter((signal) => signal.sourceEvidenceIds.length > 0);
 }
 
 function incrementProfileEventCount(current: number, evidence: MemoryEvidence): number {

@@ -2064,7 +2064,9 @@ function createControlRecords(events: TwinEvent[]): ControlRecord[] {
     if (
       event.type !== 'DeviceStateChanged' ||
       event.reason?.startsWith('ambient:') ||
-      event.reason?.startsWith('sensor:camera:')
+      event.reason?.startsWith('device_lifecycle:') ||
+      event.reason?.startsWith('sensor:camera:') ||
+      event.reason?.endsWith(':flow_stopped')
     ) {
       continue;
     }

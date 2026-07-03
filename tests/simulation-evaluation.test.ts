@@ -1,9 +1,12 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { getHomeDefinition } from '../src/sim/catalog';
 import { createSimulator } from '../src/sim/engine';
 import { buildEvaluationReport, compareDownstreamUtilityGaps } from '../src/sim/evaluation/metrics';
 import { createEvaluationCliOutput, createEvaluationCliReport, createTrainingDataset, parseEvaluationCliArgs, runSimulationEvaluation } from '../src/sim/evaluation/runEvaluation';
-import { createHomeMemoryDeviceEventDataset, createHomeMemoryDeviceEventDatasetCliReport } from '../src/sim/evaluation/homeMemoryDataset';
+import { createHomeMemoryDeviceEventDataset, createHomeMemoryDeviceEventDatasetCliReport, writeHomeMemoryDeviceEventDatasetCliReport } from '../src/sim/evaluation/homeMemoryDataset';
 import type { ActivityStartedEvent, ConversationOccurredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent } from '../src/shared/types';
 
 describe('long horizon simulation evaluation', () => {
@@ -133,6 +136,8 @@ describe('long horizon simulation evaluation', () => {
       sourceEventType: expect.stringMatching(/DeviceTelemetry|DeviceStateChanged/),
       runId: first.metadata.runId,
       sequence: expect.any(Number),
+      simulationDayIndex: 0,
+      simulationDate: '2026-07-14',
       homeId: expect.any(String),
       roomId: expect.any(String),
       deviceId: expect.any(String),
@@ -140,7 +145,13 @@ describe('long horizon simulation evaluation', () => {
       field: expect.any(String)
     });
     expect(first.events.every((event) => event.runId === first.metadata.runId)).toBe(true);
+    expect(first.events.every((event) => event.simulationDayIndex === 0 && event.simulationDate === '2026-07-14')).toBe(true);
     expect(first.events.every((event) => Object.prototype.hasOwnProperty.call(event, 'value'))).toBe(true);
+    expect(first.metadata.simulationDays).toEqual([expect.objectContaining({
+      index: 0,
+      date: '2026-07-14',
+      eventCount: first.events.length
+    })]);
   });
 
   it('formats a JSON Home Memory device-event dataset from CLI arguments', () => {
@@ -161,6 +172,65 @@ describe('long horizon simulation evaluation', () => {
       minutesPerDay: 60
     });
     expect(dataset.events.length).toBeGreaterThan(0);
+  });
+
+  it('writes clean UTF-8 Home Memory dataset JSON directly to an output file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'virtualhome-memory-dataset-'));
+
+    try {
+      const outputPath = join(dir, 'home-memory.json');
+      const cliOutput = writeHomeMemoryDeviceEventDatasetCliReport([
+        '--start-date', '2026-07-14',
+        '--days', '1',
+        '--seed', '42',
+        '--minutes-per-day', '60',
+        '--output', outputPath
+      ]);
+      const text = readFileSync(outputPath, 'utf8');
+      const dataset = JSON.parse(text);
+
+      expect(cliOutput).toContain(outputPath);
+      expect(text.trimStart().startsWith('{')).toBe(true);
+      expect(text).not.toContain('> virtualhome-twin-demo');
+      expect(dataset.metadata).toMatchObject({
+        schemaVersion: 1,
+        source: '/ws/device-events',
+        startDate: '2026-07-14',
+        days: 1,
+        seed: 42,
+        minutesPerDay: 60
+      });
+      expect(dataset.events.length).toBeGreaterThan(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not generate closed-fridge contact-open false positives in a two-day Home Memory dataset', () => {
+    const dataset = createHomeMemoryDeviceEventDataset({
+      startDate: '2026-07-01',
+      days: 2,
+      seed: 42,
+      minutesPerDay: 24 * 60
+    });
+    let fridgeOpen = false;
+    let contactOpenEvents = 0;
+    let closedContactOpenEvents = 0;
+
+    for (const event of dataset.events.filter((item) => item.deviceId === 'fridge_01')) {
+      if (event.field === 'doorOpen') {
+        fridgeOpen = event.value === true;
+      }
+      if (event.field === 'contact_open' && event.value === true) {
+        contactOpenEvents += 1;
+        if (!fridgeOpen) {
+          closedContactOpenEvents += 1;
+        }
+      }
+    }
+
+    expect(contactOpenEvents).toBeGreaterThan(0);
+    expect(closedContactOpenEvents).toBe(0);
   });
 
   it('generates deterministic multi-day quality metrics for a fixed seed', () => {

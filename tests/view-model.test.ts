@@ -104,7 +104,7 @@ describe('dashboard view model', () => {
   it('marks recently moved people for restrained floorplan animation', () => {
     const simulator = createSimulator({ seed: 314 });
     simulator.startScenario('weekday_normal');
-    simulator.advanceMinutes(14);
+    simulator.advanceMinutes(60);
 
     const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
     const activePeople = Object.values(model.floorplanRooms).flatMap((room) => room.people);
@@ -520,15 +520,15 @@ describe('dashboard view model', () => {
 
     expect(powerPoint?.ignored).toEqual([176, 188, 198, 206]);
     expect(powerPoint?.handledNow).toEqual([176, 134, 102, 90]);
-    expect(temperaturePoint?.ignored).toEqual([30.4, 30.9, 31.4, 31.8]);
-    expect(temperaturePoint?.handledNow).toEqual([30.4, 29.9, 29.2, 28.6]);
+    expect(temperaturePoint?.ignored).toEqual([30.8, 31.3, 31.8, 32.2]);
+    expect(temperaturePoint?.handledNow).toEqual([30.8, 30.3, 29.6, 29]);
     expect(fridge?.forecastModel).toMatchObject({
       kind: 'fridge_thermal_load',
       season: 'summer',
       roomVolumeM3: 42,
       currentPowerW: 176,
       openMinutes: 12,
-      currentTemperatureC: 30.4
+      currentTemperatureC: 30.8
     });
   });
 
@@ -1019,7 +1019,8 @@ describe('dashboard view model', () => {
     expect(packageSensor?.label).toBe('Package');
     expect(packageSensor?.active).toBe(true);
     expect(robotVacuum?.label).toBe('Vacuum');
-    expect(robotVacuum?.active).toBe(true);
+    expect(robotVacuum?.active).toBe(false);
+    expect(robotVacuum?.summary).toBe('docked');
     expect(washer?.label).toBe('Washer');
     expect(washer?.active).toBe(true);
   });

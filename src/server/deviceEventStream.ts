@@ -14,6 +14,8 @@ export interface DeviceValueEvent {
   deviceType: string;
   field: string;
   value: string | number | boolean | null;
+  simulationDayIndex?: number;
+  simulationDate?: string;
 }
 
 export interface DeviceReplayPage {

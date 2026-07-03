@@ -65,6 +65,12 @@ export const scenarios: Record<StaticScenarioId, ScenarioDefinition> = {
         ]
       },
       {
+        minute: 8,
+        actions: [
+          { kind: 'setDevice', deviceId: 'bathroom_water_01', state: { flowLMin: 0 }, reason: 'activity:bathroom_done' }
+        ]
+      },
+      {
         minute: 10,
         actions: [
           { kind: 'movePerson', personId: 'adult_1', to: 'kitchen', activity: 'breakfast' },
@@ -82,10 +88,15 @@ export const scenarios: Record<StaticScenarioId, ScenarioDefinition> = {
         ]
       },
       {
+        minute: 13,
+        actions: [
+          { kind: 'setDevice', deviceId: 'fridge_01', state: { doorOpen: false, powerW: 95 }, reason: 'activity:breakfast_done' }
+        ]
+      },
+      {
         minute: 40,
         actions: [
-          { kind: 'movePerson', personId: 'adult_2', to: 'kitchen', activity: 'coffee' },
-          { kind: 'setDevice', deviceId: 'fridge_01', state: { doorOpen: false, powerW: 95 }, reason: 'activity:breakfast_done' }
+          { kind: 'movePerson', personId: 'adult_2', to: 'kitchen', activity: 'coffee' }
         ]
       },
       {
@@ -94,6 +105,7 @@ export const scenarios: Record<StaticScenarioId, ScenarioDefinition> = {
           { kind: 'movePerson', personId: 'adult_1', to: 'away', activity: 'commuting' },
           { kind: 'movePerson', personId: 'child_1', to: 'away', activity: 'school' },
           { kind: 'movePerson', personId: 'adult_2', to: 'study', activity: 'remote_work' },
+          { kind: 'setDevice', deviceId: 'door_lock_01', state: { locked: false }, reason: 'activity:morning_departure_unlock' },
           { kind: 'setDevice', deviceId: 'door_lock_01', state: { locked: true }, reason: 'activity:morning_departure' },
           { kind: 'setDevice', deviceId: 'kitchen_light_01', state: { power: 'off', brightness: 0 }, reason: 'activity:breakfast_done' },
           { kind: 'setDevice', deviceId: 'dining_light_01', state: { power: 'off', brightness: 0 }, reason: 'activity:breakfast_done' },
@@ -107,7 +119,14 @@ export const scenarios: Record<StaticScenarioId, ScenarioDefinition> = {
           { kind: 'setHomeMode', mode: 'evening_home' },
           { kind: 'movePerson', personId: 'child_1', to: 'living_room', activity: 'homework' },
           { kind: 'movePerson', personId: 'adult_1', to: 'living_room', activity: 'arrived_home' },
+          { kind: 'setDevice', deviceId: 'door_lock_01', state: { locked: false }, reason: 'activity:arrival_home_unlock' },
           { kind: 'setDevice', deviceId: 'child_sleep_01', state: { inBed: false, heartRateSimulated: 76 }, reason: 'activity:homework' }
+        ]
+      },
+      {
+        minute: 601,
+        actions: [
+          { kind: 'setDevice', deviceId: 'door_lock_01', state: { locked: true }, reason: 'activity:arrival_home_lock' }
         ]
       },
       {
@@ -115,7 +134,14 @@ export const scenarios: Record<StaticScenarioId, ScenarioDefinition> = {
         actions: [
           { kind: 'movePerson', personId: 'adult_2', to: 'kitchen', activity: 'cooking_dinner' },
           { kind: 'startActivity', activityId: 'cooking_dinner', participants: ['adult_2'], roomId: 'kitchen', reason: 'schedule:weekday_evening' },
+          { kind: 'setDevice', deviceId: 'fridge_01', state: { doorOpen: true, powerW: 142 }, reason: 'activity:dinner_prep' },
           { kind: 'setDevice', deviceId: 'stove_01', state: { powerW: 850, level: 6 }, reason: 'activity:cooking_dinner' }
+        ]
+      },
+      {
+        minute: 723,
+        actions: [
+          { kind: 'setDevice', deviceId: 'fridge_01', state: { doorOpen: false, powerW: 94 }, reason: 'activity:dinner_prep_done' }
         ]
       },
       {
@@ -156,6 +182,7 @@ export const scenarios: Record<StaticScenarioId, ScenarioDefinition> = {
           { kind: 'setHomeMode', mode: 'sleeping' },
           { kind: 'movePerson', personId: 'adult_1', to: 'master_bedroom', activity: 'sleeping' },
           { kind: 'movePerson', personId: 'adult_2', to: 'master_bedroom', activity: 'sleeping' },
+          { kind: 'movePerson', personId: 'pet_1', to: 'living_room', activity: 'sleeping' },
           { kind: 'setDevice', deviceId: 'master_sleep_01', state: { inBed: true, heartRateSimulated: 61 }, reason: 'activity:sleeping' },
           { kind: 'setDevice', deviceId: 'dining_light_01', state: { power: 'off', brightness: 0 }, reason: 'activity:sleeping' },
           { kind: 'endActivity', activityId: 'watching_tv', reason: 'schedule:sleeping' }

@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createSimulator } from '../engine';
@@ -20,6 +21,17 @@ export interface HomeMemoryDeviceEventDataset {
       from: number;
       to: number;
     };
+    simulationDays: Array<{
+      index: number;
+      date: string;
+      startTime: string | null;
+      endTime: string | null;
+      eventCount: number;
+      sequenceRange: {
+        from: number;
+        to: number;
+      };
+    }>;
   };
   events: DeviceValueEvent[];
 }
@@ -35,6 +47,7 @@ export function createHomeMemoryDeviceEventDataset(options: SimulationEvaluation
   const resolved = resolveHomeMemoryDatasetOptions(options);
   const runId = `home_memory_dataset_${resolved.startDate.replaceAll('-', '_')}_${resolved.days}d_seed_${resolved.seed}`;
   const events: DeviceValueEvent[] = [];
+  const simulationDays: HomeMemoryDeviceEventDataset['metadata']['simulationDays'] = [];
   let carriedInventory: TwinSnapshot['worldState']['inventory'] | null = null;
   let nextSequence = 1;
 
@@ -68,11 +81,25 @@ export function createHomeMemoryDeviceEventDataset(options: SimulationEvaluation
       };
     });
 
-    events.push(...projectDeviceValueEvents(normalizedDayEvents).map((event) => ({
+    const dayValueEvents = projectDeviceValueEvents(normalizedDayEvents).map((event) => ({
       ...event,
       id: `${runId}_value_${event.sequence.toString().padStart(6, '0')}_${event.deviceId}_${event.field}`,
-      runId
-    })));
+      runId,
+      simulationDayIndex: dayOffset,
+      simulationDate: date
+    }));
+    events.push(...dayValueEvents);
+    simulationDays.push({
+      index: dayOffset,
+      date,
+      startTime: normalizedDayEvents[0]?.simTime ?? null,
+      endTime: normalizedDayEvents[normalizedDayEvents.length - 1]?.simTime ?? null,
+      eventCount: dayValueEvents.length,
+      sequenceRange: {
+        from: dayValueEvents[0]?.sequence ?? 0,
+        to: dayValueEvents[dayValueEvents.length - 1]?.sequence ?? 0
+      }
+    });
 
     const finalSnapshot = withDayRolloverInventory(simulator.getSnapshot(), dayEvents);
     carriedInventory = structuredClone(finalSnapshot.worldState.inventory);
@@ -92,14 +119,45 @@ export function createHomeMemoryDeviceEventDataset(options: SimulationEvaluation
       sequenceRange: {
         from: sortedEvents[0]?.sequence ?? 0,
         to: sortedEvents[sortedEvents.length - 1]?.sequence ?? 0
-      }
+      },
+      simulationDays
     },
     events: sortedEvents
   };
 }
 
 export function createHomeMemoryDeviceEventDatasetCliReport(args: string[]): string {
-  return `${JSON.stringify(createHomeMemoryDeviceEventDataset(parseEvaluationCliArgs(args)), null, 2)}\n`;
+  const { evaluationArgs } = parseHomeMemoryDatasetCliArgs(args);
+  return `${JSON.stringify(createHomeMemoryDeviceEventDataset(parseEvaluationCliArgs(evaluationArgs)), null, 2)}\n`;
+}
+
+export function writeHomeMemoryDeviceEventDatasetCliReport(args: string[]): string {
+  const { evaluationArgs, outputPath } = parseHomeMemoryDatasetCliArgs(args);
+  const report = `${JSON.stringify(createHomeMemoryDeviceEventDataset(parseEvaluationCliArgs(evaluationArgs)), null, 2)}\n`;
+  if (!outputPath) {
+    return report;
+  }
+  writeFileSync(outputPath, report, 'utf8');
+  return `Wrote Home Memory device-event dataset to ${outputPath}\n`;
+}
+
+function parseHomeMemoryDatasetCliArgs(args: string[]): { evaluationArgs: string[]; outputPath?: string } {
+  const evaluationArgs: string[] = [];
+  let outputPath: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--output') {
+      outputPath = args[index + 1];
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--output=')) {
+      outputPath = arg.slice('--output='.length);
+      continue;
+    }
+    evaluationArgs.push(arg);
+  }
+  return { evaluationArgs, outputPath };
 }
 
 function resolveHomeMemoryDatasetOptions(options: SimulationEvaluationOptions): ResolvedHomeMemoryDeviceEventDatasetOptions {
@@ -132,5 +190,5 @@ function isCliEntry(): boolean {
 }
 
 if (isCliEntry()) {
-  process.stdout.write(createHomeMemoryDeviceEventDatasetCliReport(process.argv.slice(2)));
+  process.stdout.write(writeHomeMemoryDeviceEventDatasetCliReport(process.argv.slice(2)));
 }

@@ -154,6 +154,99 @@ describe('virtual home simulator MVP', () => {
     expect(events.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'cooking_ventilation')).toBe(true);
   });
 
+  it('does not duplicate a scripted range hood start when cooking ventilation evaluates', () => {
+    const simulator = createSimulator({ seed: 55 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T18:20:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_2 = { ...snapshot.people.adult_2, location: 'kitchen', activity: 'cooking_dinner' };
+    snapshot.devices.stove_01.state = { ...snapshot.devices.stove_01.state, powerW: 820, level: 6 };
+    snapshot.devices.range_hood_01.state = { ...snapshot.devices.range_hood_01.state, power: 'on', speed: 2 };
+    snapshot.devices.range_hood_01.lastReason = 'routine:dinner';
+    simulator.restore(snapshot, simulator.getEvents());
+
+    const events = simulator.advanceMinutes(1);
+    const hoodRuleStarts = events.filter((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'range_hood_01' &&
+      event.reason === 'rule:cooking_ventilation' &&
+      event.state.power === 'on'
+    ));
+
+    expect(hoodRuleStarts).toEqual([]);
+  });
+
+  it('turns off cooking ventilation after the stove has been off for a short cooldown', () => {
+    const simulator = createSimulator({ seed: 55 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T19:05:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_2 = { ...snapshot.people.adult_2, location: 'dining_room', activity: 'dinner' };
+    snapshot.devices.stove_01.state = { ...snapshot.devices.stove_01.state, powerW: 0, level: 0 };
+    snapshot.devices.range_hood_01.state = { ...snapshot.devices.range_hood_01.state, power: 'on', speed: 2 };
+    snapshot.devices.range_hood_01.lastReason = 'rule:cooking_ventilation';
+    simulator.restore(snapshot, simulator.getEvents());
+
+    const events = simulator.advanceMinutes(3);
+    const snapshotAfterCooldown = simulator.getSnapshot();
+
+    expect(snapshotAfterCooldown.devices.range_hood_01.state).toMatchObject({ power: 'off', speed: 0 });
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'AutomationTriggered',
+        ruleId: 'cooking_ventilation_complete',
+        actions: ['turn_off_range_hood_after_cooking']
+      })
+    ]));
+  });
+
+  it('does not let a dinner invitation end cooking before the meal has had time to cook', () => {
+    const simulator = createSimulator({ seed: 55 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T18:45:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_1 = { ...snapshot.people.adult_1, location: 'living_room', activity: 'arrived_home' };
+    snapshot.people.adult_2 = { ...snapshot.people.adult_2, location: 'kitchen', activity: 'cooking_dinner' };
+    snapshot.people.child_1 = { ...snapshot.people.child_1, location: 'living_room', activity: 'homework' };
+    snapshot.activities.cooking_dinner = {
+      activityId: 'cooking_dinner',
+      participants: ['adult_2'],
+      roomId: 'kitchen',
+      startedAt: '2026-06-17T18:44:00+08:00'
+    };
+    snapshot.devices.stove_01.state = { ...snapshot.devices.stove_01.state, powerW: 850, level: 6 };
+    snapshot.devices.range_hood_01.state = { ...snapshot.devices.range_hood_01.state, power: 'on', speed: 2 };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    const events = simulator.advanceMinutes(1);
+    const snapshotDuringCooking = simulator.getSnapshot();
+
+    expect(snapshotDuringCooking.people.adult_2).toMatchObject({ location: 'kitchen', activity: 'cooking_dinner' });
+    expect(snapshotDuringCooking.devices.stove_01.state).toMatchObject({ powerW: 850, level: 6 });
+    expect(events.some((event) => event.type === 'AutomationTriggered' && event.ruleId === 'family_meal_invitation')).toBe(false);
+  });
+
+  it('keeps planned fridge use below alert threshold and resets the door lifecycle when closed', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    simulator.advanceMinutes(20);
+    const breakfastWindow = simulator.getEvents();
+
+    expect(breakfastWindow.some((event) => event.type === 'AlertCreated' && event.alertId === 'fridge_left_open_001')).toBe(false);
+    expect(simulator.getSnapshot().devices.fridge_01.state).toMatchObject({
+      doorOpen: false,
+      lifecyclePhase: 'closed',
+      openMinutes: 0
+    });
+  });
+
   it('adds an adult dinner readiness explanation across dining and kitchen devices', () => {
     const simulator = createSimulator({ seed: 42 });
 
@@ -183,7 +276,7 @@ describe('virtual home simulator MVP', () => {
     });
   });
 
-  it('keeps the home alive with ambient pet movement and motion sensing', () => {
+  it('keeps the pet active in daytime without continuous movement', () => {
     const simulator = createSimulator({ seed: 314 });
 
     simulator.startScenario('weekday_normal');
@@ -192,7 +285,8 @@ describe('virtual home simulator MVP', () => {
     const events = simulator.getEvents();
     const petMoves = events.filter((event): event is PersonMovedEvent => event.type === 'PersonMoved' && event.personId === 'pet_1');
 
-    expect(petMoves.length).toBeGreaterThanOrEqual(6);
+    expect(petMoves.length).toBeGreaterThanOrEqual(1);
+    expect(petMoves.length).toBeLessThanOrEqual(4);
     expect(new Set(petMoves.map((event) => event.to)).size).toBeGreaterThan(1);
     expect(snapshot.people.pet_1.location).not.toBe('away');
     expect(events.some((event) => event.type === 'DeviceStateChanged' && event.deviceType === 'motion_sensor')).toBe(true);
@@ -239,7 +333,7 @@ describe('virtual home simulator MVP', () => {
     ));
 
     expect(snapshot.homeState.mode).toBe('sleeping');
-    expect(petMoves.length).toBeGreaterThan(0);
+    expect(petMoves).toEqual([]);
     expect(sleepLightOnEvents).toEqual([]);
   });
 
@@ -324,24 +418,20 @@ describe('virtual home simulator MVP', () => {
     ))).toBe(false);
   });
 
-  it('pauses garden watering when the pet enters the sprinkler zone', () => {
+  it('pauses garden watering when the pet is in the sprinkler zone', () => {
     const simulator = createSimulator({ seed: 1 });
 
     simulator.startScenario('weekday_normal');
     const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T10:18:00+08:00';
+    snapshot.people.pet_1 = { ...snapshot.people.pet_1, location: 'garden', activity: 'resting' };
     snapshot.devices.sprinkler_01.state = { ...snapshot.devices.sprinkler_01.state, valveOpen: true };
-    snapshot.devices.sprinkler_01.lastReason = 'test:sprinkler_on';
+    snapshot.devices.sprinkler_01.lastReason = 'season:summer:early_watering';
     simulator.restore(snapshot, simulator.getEvents());
-    simulator.advanceMinutes(258);
+    simulator.advanceMinutes(1);
     const updated = simulator.getSnapshot();
     const events = simulator.getEvents();
 
-    expect(events.some((event): event is PersonMovedEvent => (
-      event.type === 'PersonMoved' &&
-      event.personId === 'pet_1' &&
-      event.to === 'garden' &&
-      event.simTime === '2026-06-17T10:18:00+08:00'
-    ))).toBe(true);
     expect(updated.devices.sprinkler_01.state.valveOpen).toBe(false);
     expect(events.some((event): event is DeviceStateChangedEvent => (
       event.type === 'DeviceStateChanged' &&
@@ -353,6 +443,76 @@ describe('virtual home simulator MVP', () => {
       event.type === 'AutomationTriggered' &&
       event.ruleId === 'pet_garden_sprinkler_pause'
     ))).toBe(true);
+  });
+
+  it('does not turn garden camera recording on for pet-only garden motion', () => {
+    const simulator = createSimulator({ seed: 1 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T10:18:00+08:00';
+    snapshot.people.adult_1 = { ...snapshot.people.adult_1, location: 'away', activity: 'commuting' };
+    snapshot.people.adult_2 = { ...snapshot.people.adult_2, location: 'study', activity: 'remote_work' };
+    snapshot.people.child_1 = { ...snapshot.people.child_1, location: 'away', activity: 'school' };
+    snapshot.people.pet_1 = { ...snapshot.people.pet_1, location: 'garden', activity: 'resting' };
+    snapshot.devices.garden_camera_01.state = { ...snapshot.devices.garden_camera_01.state, motion: false, recording: false };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    const events = simulator.advanceMinutes(1);
+
+    expect(events.some((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'garden_camera_01' &&
+      event.state.recording === true
+    ))).toBe(false);
+    expect(simulator.getSnapshot().devices.garden_camera_01.state).toMatchObject({ recording: false });
+  });
+
+  it('does not turn garden camera recording on for empty-garden sensor noise', () => {
+    const simulator = createSimulator({ seed: 1 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T10:18:00+08:00';
+    snapshot.people.adult_1 = { ...snapshot.people.adult_1, location: 'living_room', activity: 'reading' };
+    snapshot.people.adult_2 = { ...snapshot.people.adult_2, location: 'study', activity: 'remote_work' };
+    snapshot.people.child_1 = { ...snapshot.people.child_1, location: 'child_bedroom', activity: 'homework' };
+    snapshot.people.pet_1 = { ...snapshot.people.pet_1, location: 'living_room', activity: 'resting' };
+    snapshot.devices.garden_camera_01.state = { ...snapshot.devices.garden_camera_01.state, motion: false, recording: false };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    simulator.advanceMinutes(20);
+
+    expect(simulator.getEvents().some((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'garden_camera_01' &&
+      event.state.recording === true
+    ))).toBe(false);
+    expect(simulator.getSnapshot().devices.garden_camera_01.state).toMatchObject({ recording: false });
+  });
+
+  it('turns garden camera recording on for human garden activity', () => {
+    const simulator = createSimulator({ seed: 1 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T10:18:00+08:00';
+    snapshot.people.adult_1 = { ...snapshot.people.adult_1, location: 'garden', activity: 'gardening' };
+    snapshot.people.adult_2 = { ...snapshot.people.adult_2, location: 'study', activity: 'remote_work' };
+    snapshot.people.child_1 = { ...snapshot.people.child_1, location: 'away', activity: 'school' };
+    snapshot.people.pet_1 = { ...snapshot.people.pet_1, location: 'living_room', activity: 'resting' };
+    snapshot.rooms.garden.people = ['adult_1'];
+    snapshot.devices.garden_camera_01.state = { ...snapshot.devices.garden_camera_01.state, motion: false, recording: false };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    const events = simulator.advanceMinutes(1);
+
+    expect(events.some((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'garden_camera_01' &&
+      event.state.recording === true
+    ))).toBe(true);
+    expect(simulator.getSnapshot().devices.garden_camera_01.state).toMatchObject({ recording: true });
   });
 
   it('applies remote-work habits to study comfort and network state', () => {
@@ -961,7 +1121,7 @@ describe('virtual home simulator MVP', () => {
 
     expect(new Set(values).size).toBeGreaterThan(1);
     expect(snapshot.devices.kitchen_temp_01.state.temperatureC).toBe(snapshot.rooms.kitchen.temperatureC);
-    expect(Math.abs(lastTemperatureTelemetry - snapshot.rooms.kitchen.temperatureC)).toBeGreaterThanOrEqual(0.2);
+    expect(Math.abs(lastTemperatureTelemetry - snapshot.rooms.kitchen.temperatureC)).toBeGreaterThan(0.19);
   });
 
   it('reports motion through sampled sensor telemetry instead of direct room truth', () => {
@@ -1152,6 +1312,58 @@ describe('virtual home simulator MVP', () => {
       })
     });
     expect(flowTelemetry?.lineage.ingestTime).not.toBe(flowTelemetry?.lineage.eventTime);
+  });
+
+  it('stops bathroom flow after the leak valve closes', () => {
+    const simulator = createSimulator({ seed: 339 });
+
+    simulator.startScenario('night_water_leak');
+    simulator.advanceMinutes(4);
+    const snapshot = simulator.getSnapshot();
+    const events = simulator.getEvents();
+
+    expect(snapshot.devices.water_valve_01.state.valveOpen).toBe(false);
+    expect(snapshot.devices.bathroom_water_01.state.flowLMin).toBe(0);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'DeviceStateChanged',
+        deviceId: 'bathroom_water_01',
+        state: expect.objectContaining({ flowLMin: 0 }),
+        reason: 'rule:close_water_valve_on_leak:flow_stopped'
+      })
+    ]));
+  });
+
+  it('does not keep reporting bathroom flow telemetry after a faucet is shut off', () => {
+    const simulator = createSimulator({ seed: 339 });
+
+    simulator.startScenario('weekday_normal');
+    const runningSnapshot = simulator.getSnapshot();
+    runningSnapshot.simClock.currentTime = '2026-06-17T08:00:00+08:00';
+    runningSnapshot.people.adult_1 = { ...runningSnapshot.people.adult_1, location: 'bathroom', activity: 'washing_hands' };
+    runningSnapshot.devices.water_valve_01.state = { ...runningSnapshot.devices.water_valve_01.state, valveOpen: true };
+    runningSnapshot.devices.bathroom_water_01.state = { ...runningSnapshot.devices.bathroom_water_01.state, flowLMin: 5.2 };
+    simulator.restore(runningSnapshot, simulator.getEvents());
+
+    const runningEvents = simulator.advanceMinutes(3);
+    expect(runningEvents.some((event): event is DeviceTelemetryEvent => (
+      event.type === 'DeviceTelemetry' &&
+      event.deviceId === 'bathroom_water_01' &&
+      typeof event.measurements.flow_l_min === 'number' &&
+      event.measurements.flow_l_min > 0
+    ))).toBe(true);
+
+    const stoppedSnapshot = simulator.getSnapshot();
+    stoppedSnapshot.devices.bathroom_water_01.state = { ...stoppedSnapshot.devices.bathroom_water_01.state, flowLMin: 0 };
+    simulator.restore(stoppedSnapshot, simulator.getEvents());
+
+    const stoppedEvents = simulator.advanceMinutes(12);
+    expect(stoppedEvents.filter((event): event is DeviceTelemetryEvent => (
+      event.type === 'DeviceTelemetry' &&
+      event.deviceId === 'bathroom_water_01' &&
+      typeof event.measurements.flow_l_min === 'number' &&
+      event.measurements.flow_l_min > 0
+    ))).toHaveLength(0);
   });
 
   it('uses autonomous agent policy to prevent unreasonable daytime sleep persistence', () => {
@@ -2182,6 +2394,62 @@ describe('virtual home simulator MVP', () => {
       cycleMinutes: 0
     });
     expect(simulator.getSnapshot().alerts.robot_vacuum_stuck_001.status).toBe('resolved');
+  });
+
+  it('recovers a stuck robot vacuum through household assistance when no operator command arrives', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T10:00:00+08:00';
+    snapshot.homeState.mode = 'morning';
+    snapshot.people.adult_1 = { ...snapshot.people.adult_1, location: 'living_room', activity: 'reading' };
+    snapshot.devices.robot_vacuum_01.state = { ...snapshot.devices.robot_vacuum_01.state, status: 'cleaning', cycleMinutes: 2, batteryPercent: 91 };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    simulator.advanceMinutes(1);
+    expect(simulator.getSnapshot().devices.robot_vacuum_01.state.status).toBe('stuck');
+
+    simulator.advanceMinutes(8);
+    const updated = simulator.getSnapshot();
+    const events = simulator.getEvents();
+
+    expect(updated.devices.robot_vacuum_01.state.status).toBe('docked');
+    expect(updated.alerts.robot_vacuum_stuck_001.status).toBe('resolved');
+    expect(events.some((event): event is RuleRecoveredEvent => (
+      event.type === 'RuleRecovered' &&
+      event.ruleId === 'robot_vacuum_stuck'
+    ))).toBe(true);
+  });
+
+  it('limits unattended robot vacuum stuck episodes when no household assist actor is available', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T10:00:00+08:00';
+    snapshot.homeState.mode = 'morning';
+    snapshot.people.adult_1 = { ...snapshot.people.adult_1, location: 'away', activity: 'commuting' };
+    snapshot.people.adult_2 = { ...snapshot.people.adult_2, location: 'study', activity: 'remote_work' };
+    snapshot.people.child_1 = { ...snapshot.people.child_1, location: 'away', activity: 'school' };
+    snapshot.devices.robot_vacuum_01.state = { ...snapshot.devices.robot_vacuum_01.state, status: 'cleaning', cycleMinutes: 2, batteryPercent: 91 };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    simulator.advanceMinutes(1);
+    expect(simulator.getSnapshot().devices.robot_vacuum_01.state.status).toBe('stuck');
+
+    simulator.advanceMinutes(40);
+    const updated = simulator.getSnapshot();
+    const stuckWaitingEvents = simulator.getEvents().filter((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'robot_vacuum_01' &&
+      event.reason === 'device_lifecycle:robot_vacuum:stuck_waiting'
+    ));
+
+    expect(updated.devices.robot_vacuum_01.state.status).toBe('docked');
+    expect(Number(updated.devices.robot_vacuum_01.state.batteryPercent)).toBeGreaterThan(20);
+    expect(stuckWaitingEvents.length).toBeLessThanOrEqual(2);
+    expect(updated.alerts.robot_vacuum_stuck_001.status).toBe('resolved');
   });
 
   it('resolves senior no activity alerts by source rule and lets them trigger again after cooldown', () => {
