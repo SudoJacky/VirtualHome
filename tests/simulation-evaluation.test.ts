@@ -3,6 +3,7 @@ import { getHomeDefinition } from '../src/sim/catalog';
 import { createSimulator } from '../src/sim/engine';
 import { buildEvaluationReport, compareDownstreamUtilityGaps } from '../src/sim/evaluation/metrics';
 import { createEvaluationCliOutput, createEvaluationCliReport, createTrainingDataset, parseEvaluationCliArgs, runSimulationEvaluation } from '../src/sim/evaluation/runEvaluation';
+import { createHomeMemoryDeviceEventDataset, createHomeMemoryDeviceEventDatasetCliReport } from '../src/sim/evaluation/homeMemoryDataset';
 import type { ActivityStartedEvent, ConversationOccurredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent } from '../src/shared/types';
 
 describe('long horizon simulation evaluation', () => {
@@ -99,6 +100,67 @@ describe('long horizon simulation evaluation', () => {
     expect(dataset.examples.length).toBeGreaterThan(0);
     expect(dataset.examples[0].observations.length).toBeGreaterThan(0);
     expect(dataset.examples[0].truth.homeMode).toEqual(expect.any(String));
+  });
+
+  it('generates a reproducible Home Memory dataset with /ws/device-events shaped events', () => {
+    const first = createHomeMemoryDeviceEventDataset({
+      startDate: '2026-07-14',
+      days: 1,
+      seed: 42,
+      minutesPerDay: 120
+    });
+    const second = createHomeMemoryDeviceEventDataset({
+      startDate: '2026-07-14',
+      days: 1,
+      seed: 42,
+      minutesPerDay: 120
+    });
+
+    expect(first).toEqual(second);
+    expect(first.metadata).toMatchObject({
+      schemaVersion: 1,
+      source: '/ws/device-events',
+      startDate: '2026-07-14',
+      days: 1,
+      seed: 42,
+      minutesPerDay: 120,
+      runId: 'home_memory_dataset_2026_07_14_1d_seed_42'
+    });
+    expect(first.events.length).toBeGreaterThan(0);
+    expect(first.metadata.eventCount).toBe(first.events.length);
+    expect(first.metadata.sequenceRange.from).toBeLessThanOrEqual(first.metadata.sequenceRange.to);
+    expect(first.events[0]).toMatchObject({
+      sourceEventType: expect.stringMatching(/DeviceTelemetry|DeviceStateChanged/),
+      runId: first.metadata.runId,
+      sequence: expect.any(Number),
+      homeId: expect.any(String),
+      roomId: expect.any(String),
+      deviceId: expect.any(String),
+      deviceType: expect.any(String),
+      field: expect.any(String)
+    });
+    expect(first.events.every((event) => event.runId === first.metadata.runId)).toBe(true);
+    expect(first.events.every((event) => Object.prototype.hasOwnProperty.call(event, 'value'))).toBe(true);
+  });
+
+  it('formats a JSON Home Memory device-event dataset from CLI arguments', () => {
+    const output = createHomeMemoryDeviceEventDatasetCliReport([
+      '--start-date', '2026-07-14',
+      '--days', '1',
+      '--seed', '42',
+      '--minutes-per-day', '60'
+    ]);
+    const dataset = JSON.parse(output);
+
+    expect(dataset.metadata).toMatchObject({
+      schemaVersion: 1,
+      source: '/ws/device-events',
+      startDate: '2026-07-14',
+      days: 1,
+      seed: 42,
+      minutesPerDay: 60
+    });
+    expect(dataset.events.length).toBeGreaterThan(0);
   });
 
   it('generates deterministic multi-day quality metrics for a fixed seed', () => {
