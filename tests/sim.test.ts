@@ -674,7 +674,7 @@ describe('virtual home simulator MVP', () => {
     const updated = simulator.getSnapshot();
     const events = simulator.getEvents();
 
-    expect(updated.devices.master_ac_01.state).toMatchObject({ power: 'off', mode: 'auto' });
+    expect(updated.devices.master_ac_01.state).toMatchObject({ power: 'off', mode: 'cool' });
     expect(events.some((event): event is DeviceStateChangedEvent => (
       event.type === 'DeviceStateChanged' &&
       event.deviceId === 'master_ac_01' &&
@@ -833,8 +833,8 @@ describe('virtual home simulator MVP', () => {
       eventExplanation: {
         why: 'child_1 is in after_school with intent finish_homework.',
         actorIds: ['child_1'],
-        affectedDeviceIds: ['child_sleep_01', 'tv_01', 'living_light_01'],
-        affectedRoomIds: ['living_room', 'child_bedroom'],
+        affectedDeviceIds: ['tv_01', 'living_light_01'],
+        affectedRoomIds: ['living_room'],
         relatedIntent: 'finish_homework',
         expectedOutcome: 'Reduce entertainment distraction while the student finishes homework.'
       }

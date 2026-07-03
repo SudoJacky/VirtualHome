@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generateDailyScenario } from '../src/sim/dailyPlan';
+import { generateDailyScenario, getDefaultHouseholdProfile } from '../src/sim/dailyPlan';
 import { createExternalContext } from '../src/sim/externalContext';
 import type { ScenarioAction } from '../src/sim/scenarios';
 
@@ -20,6 +20,37 @@ describe('calendar-driven daily plan generation', () => {
     expect(first.steps.some((step) => step.actions.some((action) => action.kind === 'movePerson' && action.personId === 'child_1' && action.to === 'away' && action.activity === 'school'))).toBe(true);
     expect(first.steps.some((step) => step.actions.some((action) => action.kind === 'movePerson' && action.personId === 'adult_1' && action.to === 'away' && action.activity === 'commuting'))).toBe(true);
     expect(first.steps.some((step) => step.actions.some((action) => action.kind === 'movePerson' && action.personId === 'adult_2' && action.to === 'study' && action.activity === 'remote_work'))).toBe(true);
+  });
+
+  it('keeps household portrait inputs internal while shaping weekday routines', () => {
+    const profile = getDefaultHouseholdProfile();
+    const plan = generateDailyScenario({ date: '2026-07-14', seed: 42 });
+    const breakfastActions = actionsBetween(plan, 0, lockMinute(plan, 'routine:school_departure'));
+
+    expect(profile).toMatchObject({
+      weekdayBreakfastStyle: 'quick_cold',
+      weekendBreakfastStyle: 'cooked_brunch',
+      childBedtimeHour: 21,
+      climateComfortTargetC: 25
+    });
+    expect(breakfastActions.some((action) => (
+      action.kind === 'setDevice' &&
+      ['stove_01', 'range_hood_01'].includes(action.deviceId)
+    ))).toBe(false);
+    expect(breakfastActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'setDevice',
+        deviceId: 'child_sleep_01',
+        state: expect.objectContaining({ inBed: false }),
+        reason: 'routine:child_wake'
+      }),
+      expect.objectContaining({
+        kind: 'setDevice',
+        deviceId: 'fridge_01',
+        state: expect.objectContaining({ doorOpen: true }),
+        reason: 'routine:breakfast'
+      })
+    ]));
   });
 
   it('generates a weekend routine without school or commute departures', () => {
@@ -130,6 +161,24 @@ describe('calendar-driven daily plan generation', () => {
     ]));
   });
 
+  it('schedules weekday robot cleaning after the final morning lock', () => {
+    const plan = generateDailyScenario({ date: '2026-07-14', seed: 42 });
+    const commuteLockMinute = lockMinute(plan, 'routine:commute_departure');
+    const robotStartMinute = deviceMinute(plan, 'robot_vacuum_01', 'routine:away_robot_cleaning');
+
+    expect(robotStartMinute).toBeGreaterThanOrEqual(commuteLockMinute + 5);
+    expect(robotStartMinute).toBeLessThanOrEqual(commuteLockMinute + 15);
+  });
+
+  it('uses trend flags to make chore days and meal timing coherent', () => {
+    const regularDay = generateDailyScenario({ date: '2026-07-01', seed: 42 });
+    const choreDay = generateDailyScenario({ date: '2026-07-02', seed: 43 });
+
+    expect(choreDay.calendar?.profileFlags).toEqual(expect.arrayContaining(['chore_day', 'early_dinner_day']));
+    expect(deviceMinute(choreDay, 'washer_01', 'routine:laundry_chore')).toBeGreaterThan(0);
+    expect(deviceMinute(choreDay, 'stove_01', 'routine:dinner')).toBeLessThan(deviceMinute(regularDay, 'stove_01', 'routine:dinner'));
+  });
+
   it('uses weather context to replace rainy weekend outings with indoor activity', () => {
     const heavyRain = createExternalContext({
       date: '2026-07-18',
@@ -193,6 +242,22 @@ function petMoves(plan: ReturnType<typeof generateDailyScenario>): Array<{ activ
   return plan.steps.flatMap((step) => step.actions)
     .filter((action): action is Extract<ScenarioAction, { kind: 'movePerson' }> => action.kind === 'movePerson' && action.personId === 'pet_1')
     .map((action) => ({ activity: action.activity }));
+}
+
+function actionsBetween(plan: ReturnType<typeof generateDailyScenario>, fromMinute: number, toMinute: number): ScenarioAction[] {
+  return plan.steps
+    .filter((step) => step.minute >= fromMinute && step.minute <= toMinute)
+    .flatMap((step) => step.actions);
+}
+
+function deviceMinute(plan: ReturnType<typeof generateDailyScenario>, deviceId: string, reason: string): number {
+  const step = plan.steps.find((item) => item.actions.some((action) => (
+    action.kind === 'setDevice' &&
+    action.deviceId === deviceId &&
+    action.reason === reason
+  )));
+  expect(step).toBeDefined();
+  return step!.minute;
 }
 
 function isSetDeviceAction(action: ScenarioAction): action is Extract<ScenarioAction, { kind: 'setDevice' }> {

@@ -24,17 +24,41 @@ interface CalendarProfile {
   weatherCondition: ExternalContext['weather']['condition'];
   outdoorTemperatureC: number;
   precipitationMm: number;
+  profileFlags: HouseholdProfileFlag[];
+}
+
+export type HouseholdProfileFlag = 'chore_day' | 'early_dinner_day' | 'busy_week';
+
+export interface HouseholdProfile {
+  weekdayBreakfastStyle: 'quick_cold';
+  weekendBreakfastStyle: 'cooked_brunch';
+  childBedtimeHour: number;
+  climateComfortTargetC: number;
+  weekdayRobotVacuumAfterDepartureMin: number;
+  laundryChoreCadenceDays: number;
+}
+
+export function getDefaultHouseholdProfile(): HouseholdProfile {
+  return {
+    weekdayBreakfastStyle: 'quick_cold',
+    weekendBreakfastStyle: 'cooked_brunch',
+    childBedtimeHour: 21,
+    climateComfortTargetC: 25,
+    weekdayRobotVacuumAfterDepartureMin: 10,
+    laundryChoreCadenceDays: 2
+  };
 }
 
 export function generateDailyScenario(options: DailyScenarioOptions): ScenarioDefinition {
   const externalContext = options.externalContext ?? createExternalContext({ date: options.date, seed: options.seed ?? seedFromDate(options.date) });
-  const calendar = createCalendarProfile(externalContext);
+  const profile = getDefaultHouseholdProfile();
+  const calendar = createCalendarProfile(externalContext, profile);
   const random = new SeededRandom(options.seed ?? seedFromDate(options.date));
   const routineKind = calendar.workday && calendar.schoolDay ? 'weekday' : 'non_workday';
   const wakeMinute = routineKind === 'weekday' ? jitter(random, 380, 18) : jitter(random, 455, 28);
   const startMinute = Math.max(0, wakeMinute - 60);
   const steps = routineKind === 'weekday'
-    ? createWeekdaySteps(calendar, random, wakeMinute)
+    ? createWeekdaySteps(calendar, random, wakeMinute, profile)
     : createWeekendSteps(calendar, random, wakeMinute);
 
   return {
@@ -55,17 +79,19 @@ export function generateDailyScenario(options: DailyScenarioOptions): ScenarioDe
       ...steps,
       ...createSeasonalCareSteps(calendar, random),
       ...createEveningSteps(calendar, random),
-      ...createNightSteps(calendar, random)
+      ...createNightSteps(calendar, random, profile)
     ]), startMinute)
   };
 }
 
-function createWeekdaySteps(calendar: CalendarProfile, random: SeededRandom, wakeMinute: number): ScenarioStep[] {
+function createWeekdaySteps(calendar: CalendarProfile, random: SeededRandom, wakeMinute: number, profile: HouseholdProfile): ScenarioStep[] {
   const breakfastMinute = wakeMinute + jitter(random, 28, 6);
   const schoolDeparture = wakeMinute + jitter(random, 78, 8);
   const commuteDeparture = wakeMinute + jitter(random, 92, 10);
   const remoteWorkStart = wakeMinute + jitter(random, 116, 12);
   const arrivalHomeMinute = 18 * 60 + jitter(random, 8, 20);
+  const robotVacuumMinute = commuteDeparture + profile.weekdayRobotVacuumAfterDepartureMin;
+  const laundryMinute = remoteWorkStart + 98;
 
   return [
     step(wakeMinute, [
@@ -79,6 +105,9 @@ function createWeekdaySteps(calendar: CalendarProfile, random: SeededRandom, wak
     ]),
     step(wakeMinute + 17, [
       device('bathroom_water_01', { flowLMin: 0 }, 'routine:morning_wash_done')
+    ]),
+    step(wakeMinute + 20, [
+      device('child_sleep_01', { inBed: false, heartRateSimulated: 74 }, 'routine:child_wake')
     ]),
     step(wakeMinute + 24, [
       move('pet_1', 'living_room', 'pet_patrol')
@@ -107,10 +136,21 @@ function createWeekdaySteps(calendar: CalendarProfile, random: SeededRandom, wak
       device('study_co2_01', { co2: 620 }, 'routine:remote_work'),
       device('kitchen_light_01', { power: 'off', brightness: 0 }, 'routine:morning_done')
     ]),
+    step(robotVacuumMinute, [
+      device('robot_vacuum_01', { status: 'cleaning', batteryPercent: 92, cycleMinutes: 0, binFull: false }, 'routine:away_robot_cleaning')
+    ]),
+    ...(calendar.profileFlags.includes('chore_day')
+      ? [
+          step(laundryMinute, [
+            move('adult_2', 'bathroom', 'laundry_cycle'),
+            activity('startActivity', 'laundry_cycle', ['adult_2'], 'bathroom', 'routine:laundry_chore'),
+            device('washer_01', { status: 'running', remainingMin: 55, powerW: 480 }, 'routine:laundry_chore')
+          ])
+        ]
+      : []),
     step(17 * 60 + jitter(random, 35, 20), [
       mode('evening_home'),
-      move('child_1', 'living_room', 'homework'),
-      device('child_sleep_01', { inBed: false, heartRateSimulated: 78 }, 'routine:homework')
+      move('child_1', 'living_room', 'homework')
     ]),
     step(arrivalHomeMinute, [
       move('adult_1', 'living_room', 'arrived_home'),
@@ -229,7 +269,8 @@ function createSeasonalCareSteps(calendar: CalendarProfile, random: SeededRandom
 }
 
 function createEveningSteps(calendar: CalendarProfile, random: SeededRandom): ScenarioStep[] {
-  const dinnerMinute = 18 * 60 + jitter(random, 58, 28);
+  const dinnerBaseMinute = calendar.profileFlags.includes('early_dinner_day') ? 38 : 58;
+  const dinnerMinute = 18 * 60 + jitter(random, dinnerBaseMinute, 28);
   const tvMinute = dinnerMinute + jitter(random, 82, 18);
   return [
     step(dinnerMinute, [
@@ -269,8 +310,8 @@ function createEveningSteps(calendar: CalendarProfile, random: SeededRandom): Sc
   ];
 }
 
-function createNightSteps(calendar: CalendarProfile, random: SeededRandom): ScenarioStep[] {
-  const childSleep = (calendar.dayType === 'weekday' ? 21 : 22) * 60 + jitter(random, 8, 16);
+function createNightSteps(calendar: CalendarProfile, random: SeededRandom, profile: HouseholdProfile): ScenarioStep[] {
+  const childSleep = (calendar.dayType === 'weekday' ? profile.childBedtimeHour : 22) * 60 + jitter(random, 8, 16);
   const adultSleep = (calendar.dayType === 'weekday' ? 22 : 23) * 60 + jitter(random, 25, 22);
   return [
     step(childSleep, [
@@ -289,7 +330,7 @@ function createNightSteps(calendar: CalendarProfile, random: SeededRandom): Scen
   ];
 }
 
-function createCalendarProfile(externalContext: ExternalContext): CalendarProfile {
+function createCalendarProfile(externalContext: ExternalContext, profile: HouseholdProfile): CalendarProfile {
   const { calendar } = externalContext;
   return {
     date: calendar.date,
@@ -302,8 +343,21 @@ function createCalendarProfile(externalContext: ExternalContext): CalendarProfil
     workday: calendar.workday,
     weatherCondition: externalContext.weather.condition,
     outdoorTemperatureC: externalContext.weather.outdoorTemperatureC,
-    precipitationMm: externalContext.weather.precipitationMm
+    precipitationMm: externalContext.weather.precipitationMm,
+    profileFlags: createProfileFlags(calendar.date, profile)
   };
+}
+
+function createProfileFlags(date: string, profile: HouseholdProfile): HouseholdProfileFlag[] {
+  const dayOfMonth = Number(date.slice(8, 10));
+  const flags: HouseholdProfileFlag[] = [];
+  if (dayOfMonth % profile.laundryChoreCadenceDays === 0) {
+    flags.push('chore_day', 'early_dinner_day');
+  }
+  if (dayOfMonth >= 8 && dayOfMonth <= 12) {
+    flags.push('busy_week');
+  }
+  return flags;
 }
 
 function isRainyDay(calendar: CalendarProfile): boolean {

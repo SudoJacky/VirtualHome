@@ -804,11 +804,11 @@ describe('dashboard view model', () => {
       ruleId: 'child_homework_focus',
       why: 'child_1 is in after_school with intent finish_homework.',
       actors: ['Student'],
-      affectedDevices: expect.arrayContaining(['Child Sleep Sensor', 'Living Room Light', 'Living Room TV']),
-      affectedRooms: ['Living Room', 'Child Bedroom'],
+      affectedDevices: expect.arrayContaining(['Living Room Light', 'Living Room TV']),
+      affectedRooms: ['Living Room'],
       relatedIntent: 'finish homework',
       expectedOutcome: 'Reduce entertainment distraction while the student finishes homework.',
-      actions: ['mark child out of bed', 'turn off tv for homework', 'dim living light for homework']
+      actions: ['turn off tv for homework', 'dim living light for homework']
     });
     expect(childAudit).toMatchObject({
       personId: 'child_1',
@@ -823,7 +823,7 @@ describe('dashboard view model', () => {
         source: 'role'
       }),
       triggeredRules: ['Child homework focus'],
-      affectsDevices: expect.arrayContaining(['Child Sleep Sensor', 'Living Room Light', 'Living Room TV'])
+      affectsDevices: expect.arrayContaining(['Living Room Light', 'Living Room TV'])
     });
     expect(childAudit?.nextCommitment?.pressure ?? 0).toBeGreaterThan(0);
     expect(model.behaviorAudit.recentCausalEvents[0]).toMatchObject({ ruleId: expect.any(String) });
@@ -950,7 +950,7 @@ describe('dashboard view model', () => {
   it('detects flat telemetry drift when a sensor reading stops changing', () => {
     const simulator = createSimulator({ seed: 42 });
     simulator.startScenario('weekday_normal');
-    simulator.advanceMinutes(750);
+    simulator.advanceMinutes(900);
 
     const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
     const soilDrift = model.deviceHealthCards.find((card) => card.deviceId === 'garden_soil_01' && card.kind === 'drift');
@@ -1022,7 +1022,8 @@ describe('dashboard view model', () => {
     expect(robotVacuum?.active).toBe(false);
     expect(robotVacuum?.summary).toBe('docked');
     expect(washer?.label).toBe('Washer');
-    expect(washer?.active).toBe(true);
+    expect(washer?.active).toBe(false);
+    expect(washer?.summary).toBe('idle');
   });
 
   it('uses registry short labels for 2D floorplan device labels', () => {

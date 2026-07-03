@@ -269,6 +269,117 @@ describe('long horizon simulation evaluation', () => {
     expect(crowdedMinutes.length).toBeLessThan(12);
   });
 
+  it('keeps profile-generation refinements inside existing device-event fields', () => {
+    const dataset = createHomeMemoryDeviceEventDataset({
+      startDate: '2026-07-01',
+      days: 2,
+      seed: 42,
+      minutesPerDay: 24 * 60
+    });
+    const allowedKeys = [
+      'id',
+      'sourceEventId',
+      'sourceEventType',
+      'runId',
+      'sequence',
+      'ts',
+      'simTime',
+      'homeId',
+      'roomId',
+      'deviceId',
+      'deviceType',
+      'field',
+      'value',
+      'simulationDayIndex',
+      'simulationDate'
+    ].sort();
+    const fieldValues = new Set(dataset.events.map((event) => event.field));
+
+    expect(dataset.events.every((event) => JSON.stringify(Object.keys(event).sort()) === JSON.stringify(allowedKeys))).toBe(true);
+    expect(fieldValues).not.toContain('householdProfile');
+    expect(fieldValues).not.toContain('profileFlags');
+    expect(fieldValues).not.toContain('breakfastStyle');
+    expect(fieldValues).not.toContain('trendState');
+  });
+
+  it('generates quieter door contacts, stable child sleep boundaries, and complete chore lifecycles', () => {
+    const dataset = createHomeMemoryDeviceEventDataset({
+      startDate: '2026-07-01',
+      days: 2,
+      seed: 42,
+      minutesPerDay: 24 * 60
+    });
+    const doorEvents = dataset.events.filter((event) => event.deviceId === 'door_lock_01');
+    const lowConfidenceDoorOpens = doorEvents.filter((event) => (
+      event.field === 'contact_open' &&
+      event.value === true &&
+      sameSourceValue(dataset.events, event.sourceEventId, 'confidence') === 0.28
+    ));
+    const overnightLowConfidenceDoorOpens = lowConfidenceDoorOpens.filter((event) => {
+      const hour = Number(event.simTime.slice(11, 13));
+      return hour >= 23 || hour < 6;
+    });
+    const childSleepEvents = dataset.events.filter((event) => event.deviceId === 'child_sleep_01' && event.field === 'inBed');
+    const childWakeEvents = childSleepEvents.filter((event) => event.value === false);
+    const childBedtimeEvents = childSleepEvents.filter((event) => event.value === true && Number(event.simTime.slice(11, 13)) >= 20);
+    const washerStatus = dataset.events
+      .filter((event) => event.deviceId === 'washer_01' && event.field === 'status')
+      .map((event) => event.value);
+
+    expect(lowConfidenceDoorOpens.length).toBeLessThanOrEqual(4);
+    expect(overnightLowConfidenceDoorOpens).toHaveLength(0);
+    expect(childWakeEvents.length).toBeGreaterThanOrEqual(2);
+    expect(childBedtimeEvents.length).toBeGreaterThanOrEqual(2);
+    expect(washerStatus).toEqual(expect.arrayContaining(['running', 'waiting_unload', 'idle']));
+  });
+
+  it('aligns AC, robot vacuum, breakfast, and dinner events with household profile logic', () => {
+    const dataset = createHomeMemoryDeviceEventDataset({
+      startDate: '2026-07-01',
+      days: 2,
+      seed: 42,
+      minutesPerDay: 24 * 60
+    });
+    const breakfastStoveEvents = dataset.events.filter((event) => (
+      event.deviceId === 'stove_01' &&
+      event.field === 'level' &&
+      Number(event.value) > 0 &&
+      Number(event.simTime.slice(11, 13)) < 9
+    ));
+    const robotStarts = dataset.events.filter((event) => (
+      event.deviceId === 'robot_vacuum_01' &&
+      event.field === 'status' &&
+      event.value === 'cleaning'
+    ));
+    const commuteLocks = dataset.events.filter((event) => (
+      event.deviceId === 'door_lock_01' &&
+      event.field === 'locked' &&
+      event.value === true &&
+      Number(event.simTime.slice(11, 13)) === 7
+    ));
+    const acModeChanges = dataset.events.filter((event) => (
+      event.deviceType === 'air_conditioner' &&
+      event.sourceEventType === 'DeviceStateChanged' &&
+      event.field === 'mode'
+    ));
+    const dinnerStarts = dataset.events.filter((event) => (
+      event.deviceId === 'stove_01' &&
+      event.field === 'level' &&
+      Number(event.value) > 0 &&
+      Number(event.simTime.slice(11, 13)) >= 17
+    ));
+
+    expect(breakfastStoveEvents).toHaveLength(0);
+    expect(robotStarts.length).toBeGreaterThan(0);
+    expect(robotStarts.every((start) => (
+      commuteLocks.some((lock) => sameSimulationDate(lock, start) && minutesBetween(lock.simTime, start.simTime) >= 5)
+    ))).toBe(true);
+    expect(acModeChanges.length).toBeLessThanOrEqual(12);
+    expect(minuteOfDay(dinnerStarts.find((event) => event.simulationDate === '2026-07-02')?.simTime ?? '')).toBeLessThan(
+      minuteOfDay(dinnerStarts.find((event) => event.simulationDate === '2026-07-01')?.simTime ?? '')
+    );
+  });
+
   it('generates deterministic multi-day quality metrics for a fixed seed', () => {
     const first = runSimulationEvaluation({
       startDate: '2026-07-14',
@@ -1323,3 +1434,21 @@ describe('long horizon simulation evaluation', () => {
     ]));
   });
 });
+
+function sameSourceValue(events: Array<{ sourceEventId: string; field: string; value: unknown }>, sourceEventId: string, field: string): unknown {
+  return events.find((event) => event.sourceEventId === sourceEventId && event.field === field)?.value;
+}
+
+function sameSimulationDate(left: { simulationDate?: string }, right: { simulationDate?: string }): boolean {
+  return left.simulationDate === right.simulationDate;
+}
+
+function minutesBetween(start: string, end: string): number {
+  return Math.round((new Date(end).getTime() - new Date(start).getTime()) / 60000);
+}
+
+function minuteOfDay(simTime: string): number {
+  const match = simTime.match(/T(\d{2}):(\d{2}):/);
+  expect(match).not.toBeNull();
+  return Number(match![1]) * 60 + Number(match![2]);
+}

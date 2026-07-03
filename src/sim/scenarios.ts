@@ -32,6 +32,7 @@ export interface ScenarioDefinition {
     weatherCondition?: 'clear' | 'cloudy' | 'light_rain' | 'heavy_rain' | 'hot' | 'cold';
     outdoorTemperatureC?: number;
     precipitationMm?: number;
+    profileFlags?: string[];
   };
   steps: ScenarioStep[];
 }
