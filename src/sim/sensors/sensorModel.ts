@@ -32,6 +32,12 @@ export interface NumericSensorOptions {
   noiseAmplitude?: number;
 }
 
+export interface EnvironmentSensorReportingOptions {
+  thresholds?: Partial<Record<'temperatureC' | 'humidityPercent' | 'pm25' | 'co2' | 'moisturePercent', number>>;
+  heartbeatIntervalMinutes?: number;
+  heartbeatOffsetMinutes?: number;
+}
+
 export function observeMotionSensor(input: SensorObservationInput, profile: SensorProfile): SensorObservation | null {
   if (!shouldSampleSensor(profile, input.currentTime, input.previousObservation)) {
     return null;
@@ -175,7 +181,7 @@ export function observeNumericSensor(input: SensorObservationInput, profile: Sen
   });
 }
 
-export function observeEnvironmentSensor(input: SensorObservationInput, profile: SensorProfile): SensorObservation | null {
+export function observeEnvironmentSensor(input: SensorObservationInput, profile: SensorProfile, reporting: EnvironmentSensorReportingOptions = {}): SensorObservation | null {
   if (!shouldSampleSensor(profile, input.currentTime, input.previousObservation)) {
     return null;
   }
@@ -195,22 +201,28 @@ export function observeEnvironmentSensor(input: SensorObservationInput, profile:
   );
   const pm25 = maybeSmoothMetric('pm25', input, smoothingFactor, profile, 0.15);
   const co2 = maybeSmoothMetric('co2', input, smoothingFactor, profile, 3);
+  const moisturePercent = maybeSmoothMetric('moisturePercent', input, smoothingFactor, profile, 0);
   const measurements: Record<string, number> = {};
   const observedState: Record<string, number | string> = {
+    ...copyReportedEnvironmentState(input.previousObservation),
     lastObservedAt: input.currentTime
   };
+  let heartbeat = false;
 
   if ('temperatureC' in input.worldState) {
-    addEnvironmentMeasurement(input, profile, measurements, observedState, 'temperatureC', 'temperature_c', roundOne(temperatureC), 25);
+    heartbeat = addEnvironmentMeasurement(input, profile, reporting, measurements, observedState, 'temperatureC', 'temperature_c', roundOne(temperatureC), 25) || heartbeat;
   }
   if ('humidityPercent' in input.worldState) {
-    addEnvironmentMeasurement(input, profile, measurements, observedState, 'humidityPercent', 'humidity_percent', roundOne(humidityPercent), 50);
+    heartbeat = addEnvironmentMeasurement(input, profile, reporting, measurements, observedState, 'humidityPercent', 'humidity_percent', roundOne(humidityPercent), 50) || heartbeat;
   }
   if (pm25 !== null) {
-    addEnvironmentMeasurement(input, profile, measurements, observedState, 'pm25', 'pm25', roundOne(pm25), 0);
+    heartbeat = addEnvironmentMeasurement(input, profile, reporting, measurements, observedState, 'pm25', 'pm25', roundOne(pm25), 0) || heartbeat;
   }
   if (co2 !== null) {
-    addEnvironmentMeasurement(input, profile, measurements, observedState, 'co2', 'co2', roundOne(co2), 0);
+    heartbeat = addEnvironmentMeasurement(input, profile, reporting, measurements, observedState, 'co2', 'co2', roundOne(co2), 0) || heartbeat;
+  }
+  if (moisturePercent !== null) {
+    heartbeat = addEnvironmentMeasurement(input, profile, reporting, measurements, observedState, 'moisturePercent', 'moisture_percent', roundOne(moisturePercent), 0) || heartbeat;
   }
 
   if (Object.keys(measurements).length === 0) {
@@ -218,28 +230,77 @@ export function observeEnvironmentSensor(input: SensorObservationInput, profile:
   }
 
   return createSensorObservation(input, measurements, profile, {
-    noisy: Boolean(profile.driftPerDay) || Object.keys(measurements).length > 0
+    noisy: Boolean(profile.driftPerDay) || Object.keys(measurements).length > 0,
+    ...(heartbeat ? { heartbeat } : {})
   }, observedState);
 }
 
 function addEnvironmentMeasurement(
   input: SensorObservationInput,
   profile: SensorProfile,
+  reporting: EnvironmentSensorReportingOptions,
   measurements: Record<string, number>,
   observedState: Record<string, number | string>,
-  stateKey: string,
+  stateKey: keyof NonNullable<EnvironmentSensorReportingOptions['thresholds']>,
   measurementName: string,
   observedValue: number,
   fallback: number
-): void {
-  const threshold = profile.reportOnChangeThreshold ?? 0;
+): boolean {
+  const threshold = reporting.thresholds?.[stateKey] ?? profile.reportOnChangeThreshold ?? 0;
   const previousRaw = input.previousObservation?.[stateKey];
   const previous = numberValue(previousRaw, fallback);
-  if (previousRaw !== undefined && Math.abs(observedValue - previous) < threshold) {
-    return;
+  const reportedAtKey = `${stateKey}ReportedAt`;
+  const lastReportedAt = typeof input.previousObservation?.[reportedAtKey] === 'string'
+    ? input.previousObservation[reportedAtKey]
+    : typeof input.previousObservation?.lastObservedAt === 'string'
+      ? input.previousObservation.lastObservedAt
+      : undefined;
+  const firstReport = previousRaw === undefined || !lastReportedAt;
+  const changed = !firstReport && Math.abs(observedValue - previous) >= threshold;
+  const heartbeat = !firstReport && !changed && isEnvironmentHeartbeatDue(input.currentTime, lastReportedAt, reporting);
+
+  if (!firstReport && !changed && !heartbeat) {
+    return false;
   }
   measurements[measurementName] = observedValue;
   observedState[stateKey] = observedValue;
+  observedState[reportedAtKey] = input.currentTime;
+  return heartbeat;
+}
+
+function copyReportedEnvironmentState(previousObservation?: Record<string, unknown>): Record<string, number | string> {
+  const copy: Record<string, number | string> = {};
+  if (!previousObservation) {
+    return copy;
+  }
+  for (const [key, value] of Object.entries(previousObservation)) {
+    if (typeof value === 'number' || typeof value === 'string') {
+      copy[key] = value;
+    }
+  }
+  return copy;
+}
+
+function isEnvironmentHeartbeatDue(
+  currentTime: string,
+  lastReportedAt: string,
+  reporting: EnvironmentSensorReportingOptions
+): boolean {
+  const interval = reporting.heartbeatIntervalMinutes;
+  if (!interval || interval <= 0) {
+    return false;
+  }
+  const elapsedMs = Date.parse(currentTime) - Date.parse(lastReportedAt);
+  if (elapsedMs < interval * 60 * 1000) {
+    return false;
+  }
+  const offset = positiveModulo(reporting.heartbeatOffsetMinutes ?? 0, interval);
+  const currentMinute = Math.floor(Date.parse(currentTime) / 60000);
+  return positiveModulo(currentMinute, interval) === offset;
+}
+
+function positiveModulo(value: number, divisor: number): number {
+  return ((value % divisor) + divisor) % divisor;
 }
 
 function createSensorObservation(

@@ -682,7 +682,7 @@ describe('virtual home simulator MVP', () => {
     ))).toBe(true);
   });
 
-  it('moves an active air conditioner room temperature toward the target and reports telemetry', () => {
+  it('moves an active air conditioner room temperature toward the target without controller telemetry', () => {
     const simulator = createSimulator({ seed: 42 });
 
     simulator.startScenario('weekday_normal');
@@ -700,10 +700,8 @@ describe('virtual home simulator MVP', () => {
     expect(updated.rooms.living_room.temperatureC).toBeLessThan(29.4);
     expect(events.some((event): event is DeviceTelemetryEvent => (
       event.type === 'DeviceTelemetry' &&
-      event.deviceId === 'living_ac_01' &&
-      event.measurements.power_on === true &&
-      event.measurements.target_c === 25
-    ))).toBe(true);
+      event.deviceType === 'air_conditioner'
+    ))).toBe(false);
   });
 
   it('uses hot outdoor weather to warm occupied rooms and trigger cooling', () => {
@@ -1116,12 +1114,85 @@ describe('virtual home simulator MVP', () => {
     const snapshot = simulator.getSnapshot();
     const values = simulator.getEvents()
       .filter((event): event is DeviceTelemetryEvent => event.type === 'DeviceTelemetry' && event.deviceId === 'kitchen_temp_01')
-      .map((event) => event.measurements.temperature_c);
+      .map((event) => event.measurements.temperature_c)
+      .filter((value): value is number => typeof value === 'number');
     const lastTemperatureTelemetry = Number(values.at(-1));
 
     expect(new Set(values).size).toBeGreaterThan(1);
     expect(snapshot.devices.kitchen_temp_01.state.temperatureC).toBe(snapshot.rooms.kitchen.temperatureC);
     expect(Math.abs(lastTemperatureTelemetry - snapshot.rooms.kitchen.temperatureC)).toBeGreaterThan(0.19);
+  });
+
+  it('uses staggered environment heartbeats while keeping sensors continuously updated', () => {
+    const simulator = createSimulator({ seed: 222 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T09:00:00+08:00';
+    snapshot.homeState.mode = 'morning';
+    snapshot.people.adult_1 = { ...snapshot.people.adult_1, location: 'away', activity: 'commuting' };
+    snapshot.people.adult_2 = { ...snapshot.people.adult_2, location: 'study', activity: 'remote_work' };
+    snapshot.people.child_1 = { ...snapshot.people.child_1, location: 'away', activity: 'school' };
+    snapshot.people.pet_1 = { ...snapshot.people.pet_1, location: 'living_room', activity: 'resting' };
+    snapshot.rooms.kitchen.temperatureC = 27.2;
+    snapshot.rooms.kitchen.humidityPercent = 72;
+    snapshot.devices.kitchen_temp_01.state = { ...snapshot.devices.kitchen_temp_01.state, temperatureC: 27.2, humidityPercent: 72 };
+    snapshot.devices.pm25_01.state = { ...snapshot.devices.pm25_01.state, pm25: 8, co2: 530 };
+    snapshot.devices.study_co2_01.state = { ...snapshot.devices.study_co2_01.state, pm25: 8, co2: 720 };
+    snapshot.devices.garden_soil_01.state = { ...snapshot.devices.garden_soil_01.state, moisturePercent: 38 };
+    simulator.restore(snapshot, simulator.getEvents());
+
+    const events = simulator.advanceMinutes(61);
+    const environmentDeviceIds = ['kitchen_temp_01', 'pm25_01', 'study_co2_01', 'garden_soil_01'];
+    const telemetry = events.filter((event): event is DeviceTelemetryEvent => (
+      event.type === 'DeviceTelemetry' &&
+      environmentDeviceIds.includes(event.deviceId)
+    ));
+    const countsByDevice = Object.fromEntries(environmentDeviceIds.map((deviceId) => [
+      deviceId,
+      telemetry.filter((event) => event.deviceId === deviceId).length
+    ]));
+    const reportingMinutes = new Map<string, Set<string>>();
+    for (const event of telemetry) {
+      const devices = reportingMinutes.get(event.simTime) ?? new Set<string>();
+      devices.add(event.deviceId);
+      reportingMinutes.set(event.simTime, devices);
+    }
+    const crowdedStableMinutes = [...reportingMinutes.entries()]
+      .filter(([time]) => time !== telemetry[0]?.simTime)
+      .filter(([, devices]) => devices.size > 2);
+    const updated = simulator.getSnapshot();
+
+    expect(countsByDevice.kitchen_temp_01).toBeGreaterThanOrEqual(3);
+    expect(countsByDevice.kitchen_temp_01).toBeLessThanOrEqual(8);
+    expect(countsByDevice.garden_soil_01).toBeGreaterThanOrEqual(3);
+    expect(countsByDevice.garden_soil_01).toBeLessThanOrEqual(8);
+    expect(crowdedStableMinutes).toHaveLength(0);
+    expect(updated.rooms.kitchen.temperatureC).not.toBe(27.2);
+    expect(updated.devices.kitchen_temp_01.state.temperatureC).toBe(updated.rooms.kitchen.temperatureC);
+  });
+
+  it('reports air conditioner controller state only as state changes', () => {
+    const simulator = createSimulator({ seed: 223 });
+
+    simulator.startScenario('weekday_normal');
+    const commandEvents = simulator.commandDevice('living_ac_01', 'set_target', 24);
+    const telemetryEvents = simulator.advanceMinutes(20).filter((event): event is DeviceTelemetryEvent => (
+      event.type === 'DeviceTelemetry' &&
+      event.deviceType === 'air_conditioner'
+    ));
+
+    expect(commandEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'DeviceStateChanged',
+        deviceId: 'living_ac_01',
+        state: expect.objectContaining({
+          power: 'on',
+          targetC: 24
+        })
+      })
+    ]));
+    expect(telemetryEvents).toHaveLength(0);
   });
 
   it('reports motion through sampled sensor telemetry instead of direct room truth', () => {

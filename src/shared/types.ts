@@ -195,6 +195,7 @@ export interface EventLineage {
     outOfOrder?: boolean;
     noisy?: boolean;
     confidence?: number;
+    heartbeat?: boolean;
   };
   schemaVersion: number;
   behaviorModelVersion: string;

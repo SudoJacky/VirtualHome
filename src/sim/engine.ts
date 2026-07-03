@@ -6,7 +6,7 @@ import { getScenario, type ScenarioAction, type ScenarioDefinition } from './sce
 import { getDeviceCapability, validateDeviceStatePatch } from '../shared/deviceRegistry';
 import { getDeviceSupportedCommands } from '../shared/deviceInstanceCapabilities';
 import { getSensorProfile, withSensorProfileOverrides } from './sensors/deviceProfiles';
-import { observeBinarySensor, observeContactSensor, observeEnvironmentSensor, observeMotionSensor, observeNumericSensor, type SensorObservation } from './sensors/sensorModel';
+import { observeBinarySensor, observeContactSensor, observeEnvironmentSensor, observeMotionSensor, observeNumericSensor, type EnvironmentSensorReportingOptions, type SensorObservation } from './sensors/sensorModel';
 import { selectActivity } from './agents/agentPolicy';
 import { advanceNeeds, applyActivityEffectsToNeeds, createInitialNeeds, type NeedState } from './agents/needs';
 import { commitmentPressureAtMinute, createDailyCommitments } from './agents/scheduler';
@@ -2960,7 +2960,7 @@ class Simulator implements VirtualHomeSimulator {
   private generateTelemetry(): TwinEvent[] {
     const events: TwinEvent[] = [];
     for (const device of this.state.catalog.devices) {
-      if (!['temperature_humidity_sensor', 'air_quality_sensor', 'water_flow_sensor', 'soil_moisture_sensor', 'fridge', 'door_lock', 'water_leak_sensor', 'sleep_sensor', 'router', 'stove', 'dishwasher', 'washer', 'air_conditioner'].includes(device.type)) {
+      if (!['temperature_humidity_sensor', 'air_quality_sensor', 'water_flow_sensor', 'soil_moisture_sensor', 'fridge', 'door_lock', 'water_leak_sensor', 'sleep_sensor', 'router', 'stove', 'dishwasher', 'washer'].includes(device.type)) {
         continue;
       }
       const state = this.state.snapshot.devices[device.id].state;
@@ -2971,6 +2971,10 @@ class Simulator implements VirtualHomeSimulator {
         const roomOccupied = room.humanOccupancy;
         const worldTemperatureC = this.round(this.clamp((Number(room.temperatureC) || Number(state.temperatureC) || 25) + this.state.random.range(-0.12, 0.18) + (roomOccupied ? 0.03 : -0.02), 17, 31));
         const worldHumidityPercent = this.round(this.clamp((Number(room.humidityPercent) || Number(state.humidityPercent) || 55) + this.state.random.range(-0.25, 0.35) + (roomOccupied ? 0.04 : -0.03), 35, 78));
+        room.temperatureC = worldTemperatureC;
+        room.humidityPercent = worldHumidityPercent;
+        state.temperatureC = worldTemperatureC;
+        state.humidityPercent = worldHumidityPercent;
         sensorObservation = observeEnvironmentSensor({
           deviceId: device.id,
           roomId: device.roomId,
@@ -2982,37 +2986,15 @@ class Simulator implements VirtualHomeSimulator {
           previousObservation: this.state.sensorObservations.get(device.id),
           currentTime: this.state.snapshot.simClock.currentTime,
           randomSeed: this.state.random.getState()
-        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1, reportOnChangeThreshold: 0 }));
+        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }), this.environmentSensorReportingPolicy(device.id, {
+          temperatureC: 0.5,
+          humidityPercent: 3
+        }));
         if (!sensorObservation) {
           continue;
         }
         Object.assign(measurements, sensorObservation.event.measurements);
-        const previousTemperature = this.state.sensorObservations.get(device.id)?.temperatureC;
-        if (typeof measurements.temperature_c !== 'number') {
-          measurements.temperature_c = typeof previousTemperature === 'number' ? previousTemperature : worldTemperatureC;
-        }
-        if (
-          typeof previousTemperature === 'number' &&
-          Math.abs(Number(measurements.temperature_c) - worldTemperatureC) < 0.2 &&
-          Math.abs(previousTemperature - worldTemperatureC) >= 0.2
-        ) {
-          measurements.temperature_c = previousTemperature;
-        }
-        if (Math.abs(Number(measurements.temperature_c) - worldTemperatureC) < 0.2) {
-          const direction = typeof previousTemperature === 'number' && previousTemperature > worldTemperatureC ? 1 : -1;
-          measurements.temperature_c = this.round(this.clamp(worldTemperatureC + direction * 0.2, 17, 31));
-        }
-        if (typeof measurements.humidity_percent !== 'number') {
-          const previousHumidity = this.state.sensorObservations.get(device.id)?.humidityPercent;
-          measurements.humidity_percent = typeof previousHumidity === 'number' ? previousHumidity : worldHumidityPercent;
-        }
         sensorObservation.event.measurements = { ...measurements };
-        sensorObservation.observedState.temperatureC = measurements.temperature_c;
-        sensorObservation.observedState.humidityPercent = measurements.humidity_percent;
-        room.temperatureC = worldTemperatureC;
-        room.humidityPercent = worldHumidityPercent;
-        state.temperatureC = worldTemperatureC;
-        state.humidityPercent = worldHumidityPercent;
       } else if (device.type === 'air_quality_sensor') {
         const cooking = this.state.snapshot.activities.breakfast || this.state.snapshot.activities.cooking_dinner;
         const humanOccupancy = this.state.snapshot.rooms[device.roomId].people
@@ -3021,6 +3003,8 @@ class Simulator implements VirtualHomeSimulator {
         const remoteWorkLoad = device.roomId === 'study' && this.state.snapshot.people.adult_2?.location === 'study' && this.state.snapshot.people.adult_2.activity === 'remote_work' ? 145 : 0;
         const worldPm25 = this.round(this.clamp((cooking ? 18 : 8) + this.state.random.range(-1, 1), 2, 60));
         const worldCo2 = this.round(this.clamp((cooking ? 690 : 530) + humanOccupancy * 42 + remoteWorkLoad + this.state.random.range(-8, 8), 420, 1200));
+        state.pm25 = worldPm25;
+        state.co2 = worldCo2;
         sensorObservation = observeEnvironmentSensor({
           deviceId: device.id,
           roomId: device.roomId,
@@ -3032,17 +3016,14 @@ class Simulator implements VirtualHomeSimulator {
           previousObservation: this.state.sensorObservations.get(device.id),
           currentTime: this.state.snapshot.simClock.currentTime,
           randomSeed: this.state.random.getState()
-        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }));
+        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }), this.environmentSensorReportingPolicy(device.id, {
+          pm25: 5,
+          co2: 75
+        }));
         if (!sensorObservation) {
           continue;
         }
         Object.assign(measurements, sensorObservation.event.measurements);
-        if (typeof measurements.pm25 === 'number') {
-          state.pm25 = measurements.pm25;
-        }
-        if (typeof measurements.co2 === 'number') {
-          state.co2 = measurements.co2;
-        }
       } else if (device.type === 'fridge' || device.type === 'door_lock') {
         const contactOpen = device.type === 'fridge'
           ? state.doorOpen === true
@@ -3215,10 +3196,23 @@ class Simulator implements VirtualHomeSimulator {
         const sprinklerOn = this.state.snapshot.devices.sprinkler_01.state.valveOpen === true;
         const moisturePercent = this.round(this.clamp((Number(state.moisturePercent) || 38) + (sprinklerOn ? 0.55 : -0.03) + this.state.random.range(-0.04, 0.04), 20, 75));
         state.moisturePercent = moisturePercent;
-        measurements.moisture_percent = moisturePercent;
-      } else if (device.type === 'air_conditioner') {
-        measurements.power_on = state.power === 'on';
-        measurements.target_c = Number(state.targetC ?? 26);
+        sensorObservation = observeEnvironmentSensor({
+          deviceId: device.id,
+          roomId: device.roomId,
+          deviceType: device.type,
+          worldState: {
+            moisturePercent
+          },
+          previousObservation: this.state.sensorObservations.get(device.id),
+          currentTime: this.state.snapshot.simClock.currentTime,
+          randomSeed: this.state.random.getState()
+        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }), this.environmentSensorReportingPolicy(device.id, {
+          moisturePercent: 2
+        }));
+        if (!sensorObservation) {
+          continue;
+        }
+        Object.assign(measurements, sensorObservation.event.measurements);
       }
       if (sensorObservation) {
         this.state.sensorObservations.set(device.id, sensorObservation.observedState);
@@ -3237,6 +3231,26 @@ class Simulator implements VirtualHomeSimulator {
       }));
     }
     return events;
+  }
+
+  private environmentSensorReportingPolicy(
+    deviceId: string,
+    thresholds: NonNullable<EnvironmentSensorReportingOptions['thresholds']>
+  ): EnvironmentSensorReportingOptions {
+    return {
+      thresholds,
+      heartbeatIntervalMinutes: 15,
+      heartbeatOffsetMinutes: this.environmentHeartbeatOffsetMinutes(deviceId)
+    };
+  }
+
+  private environmentHeartbeatOffsetMinutes(deviceId: string): number {
+    const source = `${this.state.snapshot.runContext.seed}:${deviceId}`;
+    let hash = 0;
+    for (const char of source) {
+      hash = ((hash * 31) + char.charCodeAt(0)) >>> 0;
+    }
+    return hash % 15;
   }
 
   private createTelemetryEventFromObservation(observation: SensorObservation): DeviceTelemetryEvent {
@@ -4064,8 +4078,14 @@ function restoreSensorObservations(events: TwinEvent[], runId: string, sequence:
     if (event.runId !== runId || event.sequence > sequence || event.type !== 'DeviceTelemetry') {
       continue;
     }
+    const observation = telemetryMeasurementsToObservation(event.measurements);
+    const reportedAt = Object.fromEntries(Object.keys(observation)
+      .map((stateKey) => [`${stateKey}ReportedAt`, event.lineage.eventTime] as const));
+    const previous = observations.get(event.deviceId) ?? {};
     observations.set(event.deviceId, {
-      ...telemetryMeasurementsToObservation(event.measurements),
+      ...previous,
+      ...observation,
+      ...reportedAt,
       lastObservedAt: event.lineage.eventTime
     });
   }

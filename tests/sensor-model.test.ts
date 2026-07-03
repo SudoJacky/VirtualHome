@@ -172,6 +172,97 @@ describe('sensor model', () => {
     expect(observation).toBeNull();
   });
 
+  it('reports environment telemetry immediately on meaningful changes and otherwise on staggered heartbeat', () => {
+    const profile = withSensorProfileOverrides(getSensorProfile('temperature_humidity_sensor'), {
+      samplingIntervalSec: 60,
+      smoothingFactor: 1,
+      driftPerDay: 0,
+      dropRate: 0,
+      duplicateRate: 0,
+      delayMs: { kind: 'constant', value: 0 }
+    });
+    const previousObservation = {
+      temperatureC: 24,
+      temperatureCReportedAt: '2026-06-17T08:00:00+08:00',
+      humidityPercent: 50,
+      humidityPercentReportedAt: '2026-06-17T08:00:00+08:00',
+      lastObservedAt: '2026-06-17T08:00:00+08:00'
+    };
+
+    const stableBeforeHeartbeat = observeEnvironmentSensor({
+      deviceId: 'kitchen_temp_01',
+      roomId: 'kitchen',
+      deviceType: 'temperature_humidity_sensor',
+      worldState: {
+        temperatureC: 24.2,
+        humidityPercent: 51
+      },
+      previousObservation,
+      currentTime: '2026-06-17T08:14:00+08:00',
+      randomSeed: 13
+    }, profile, {
+      thresholds: {
+        temperatureC: 0.5,
+        humidityPercent: 3
+      },
+      heartbeatIntervalMinutes: 15,
+      heartbeatOffsetMinutes: 0
+    });
+    const heartbeat = observeEnvironmentSensor({
+      deviceId: 'kitchen_temp_01',
+      roomId: 'kitchen',
+      deviceType: 'temperature_humidity_sensor',
+      worldState: {
+        temperatureC: 24.2,
+        humidityPercent: 51
+      },
+      previousObservation,
+      currentTime: '2026-06-17T08:15:00+08:00',
+      randomSeed: 13
+    }, profile, {
+      thresholds: {
+        temperatureC: 0.5,
+        humidityPercent: 3
+      },
+      heartbeatIntervalMinutes: 15,
+      heartbeatOffsetMinutes: 0
+    });
+    const changed = observeEnvironmentSensor({
+      deviceId: 'kitchen_temp_01',
+      roomId: 'kitchen',
+      deviceType: 'temperature_humidity_sensor',
+      worldState: {
+        temperatureC: 24.7,
+        humidityPercent: 51
+      },
+      previousObservation,
+      currentTime: '2026-06-17T08:03:00+08:00',
+      randomSeed: 13
+    }, profile, {
+      thresholds: {
+        temperatureC: 0.5,
+        humidityPercent: 3
+      },
+      heartbeatIntervalMinutes: 15,
+      heartbeatOffsetMinutes: 0
+    });
+
+    expect(stableBeforeHeartbeat).toBeNull();
+    expect(heartbeat?.event.measurements).toEqual({
+      humidity_percent: 51,
+      temperature_c: 24.2
+    });
+    expect(heartbeat?.event.lineage.quality).toMatchObject({ heartbeat: true });
+    expect(changed?.event.measurements).toEqual({
+      temperature_c: 24.7
+    });
+    expect(changed?.observedState).toMatchObject({
+      humidityPercent: 50,
+      temperatureC: 24.7,
+      temperatureCReportedAt: '2026-06-17T08:03:00+08:00'
+    });
+  });
+
   it('marks dropped samples and duplicate reports from profile rates', () => {
     const droppedProfile = withSensorProfileOverrides(getSensorProfile('motion_sensor'), {
       dropRate: 1,

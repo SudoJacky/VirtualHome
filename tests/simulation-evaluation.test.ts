@@ -233,6 +233,42 @@ describe('long horizon simulation evaluation', () => {
     expect(closedContactOpenEvents).toBe(0);
   });
 
+  it('keeps controller state out of telemetry and reduces environment heartbeat volume', () => {
+    const dataset = createHomeMemoryDeviceEventDataset({
+      startDate: '2026-07-01',
+      days: 2,
+      seed: 42,
+      minutesPerDay: 24 * 60
+    });
+    const acTelemetry = dataset.events.filter((event) => (
+      event.deviceType === 'air_conditioner' &&
+      event.sourceEventType === 'DeviceTelemetry' &&
+      ['power_on', 'target_c', 'mode'].includes(event.field)
+    ));
+    const acStateChanges = dataset.events.filter((event) => (
+      event.deviceType === 'air_conditioner' &&
+      event.sourceEventType === 'DeviceStateChanged' &&
+      ['power', 'targetC', 'mode'].includes(event.field)
+    ));
+    const environmentTelemetry = dataset.events.filter((event) => (
+      event.sourceEventType === 'DeviceTelemetry' &&
+      ['temperature_humidity_sensor', 'air_quality_sensor', 'soil_moisture_sensor'].includes(event.deviceType)
+    ));
+    const reportsByMinute = new Map<string, Set<string>>();
+    for (const event of environmentTelemetry) {
+      const devices = reportsByMinute.get(event.simTime) ?? new Set<string>();
+      devices.add(event.deviceId);
+      reportsByMinute.set(event.simTime, devices);
+    }
+    const crowdedMinutes = [...reportsByMinute.values()].filter((devices) => devices.size > 2);
+
+    expect(acTelemetry).toHaveLength(0);
+    expect(acStateChanges.length).toBeGreaterThan(0);
+    expect(environmentTelemetry.length).toBeGreaterThan(500);
+    expect(environmentTelemetry.length).toBeLessThan(2500);
+    expect(crowdedMinutes.length).toBeLessThan(12);
+  });
+
   it('generates deterministic multi-day quality metrics for a fixed seed', () => {
     const first = runSimulationEvaluation({
       startDate: '2026-07-14',
