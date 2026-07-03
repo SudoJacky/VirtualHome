@@ -104,7 +104,7 @@ describe('dashboard view model', () => {
   it('marks recently moved people for restrained floorplan animation', () => {
     const simulator = createSimulator({ seed: 314 });
     simulator.startScenario('weekday_normal');
-    simulator.advanceMinutes(14);
+    simulator.advanceMinutes(60);
 
     const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
     const activePeople = Object.values(model.floorplanRooms).flatMap((room) => room.people);
@@ -520,15 +520,15 @@ describe('dashboard view model', () => {
 
     expect(powerPoint?.ignored).toEqual([176, 188, 198, 206]);
     expect(powerPoint?.handledNow).toEqual([176, 134, 102, 90]);
-    expect(temperaturePoint?.ignored).toEqual([30.4, 30.9, 31.4, 31.8]);
-    expect(temperaturePoint?.handledNow).toEqual([30.4, 29.9, 29.2, 28.6]);
+    expect(temperaturePoint?.ignored).toEqual([30.8, 31.3, 31.8, 32.2]);
+    expect(temperaturePoint?.handledNow).toEqual([30.8, 30.3, 29.6, 29]);
     expect(fridge?.forecastModel).toMatchObject({
       kind: 'fridge_thermal_load',
       season: 'summer',
       roomVolumeM3: 42,
       currentPowerW: 176,
       openMinutes: 12,
-      currentTemperatureC: 30.4
+      currentTemperatureC: 30.8
     });
   });
 
@@ -804,11 +804,11 @@ describe('dashboard view model', () => {
       ruleId: 'child_homework_focus',
       why: 'child_1 is in after_school with intent finish_homework.',
       actors: ['Student'],
-      affectedDevices: expect.arrayContaining(['Child Sleep Sensor', 'Living Room Light', 'Living Room TV']),
-      affectedRooms: ['Living Room', 'Child Bedroom'],
+      affectedDevices: expect.arrayContaining(['Living Room Light', 'Living Room TV']),
+      affectedRooms: ['Living Room'],
       relatedIntent: 'finish homework',
       expectedOutcome: 'Reduce entertainment distraction while the student finishes homework.',
-      actions: ['mark child out of bed', 'turn off tv for homework', 'dim living light for homework']
+      actions: ['turn off tv for homework', 'dim living light for homework']
     });
     expect(childAudit).toMatchObject({
       personId: 'child_1',
@@ -823,7 +823,7 @@ describe('dashboard view model', () => {
         source: 'role'
       }),
       triggeredRules: ['Child homework focus'],
-      affectsDevices: expect.arrayContaining(['Child Sleep Sensor', 'Living Room Light', 'Living Room TV'])
+      affectsDevices: expect.arrayContaining(['Living Room Light', 'Living Room TV'])
     });
     expect(childAudit?.nextCommitment?.pressure ?? 0).toBeGreaterThan(0);
     expect(model.behaviorAudit.recentCausalEvents[0]).toMatchObject({ ruleId: expect.any(String) });
@@ -950,7 +950,7 @@ describe('dashboard view model', () => {
   it('detects flat telemetry drift when a sensor reading stops changing', () => {
     const simulator = createSimulator({ seed: 42 });
     simulator.startScenario('weekday_normal');
-    simulator.advanceMinutes(750);
+    simulator.advanceMinutes(900);
 
     const model = createDashboardModel(simulator.getSnapshot(), simulator.getEvents());
     const soilDrift = model.deviceHealthCards.find((card) => card.deviceId === 'garden_soil_01' && card.kind === 'drift');
@@ -1019,9 +1019,11 @@ describe('dashboard view model', () => {
     expect(packageSensor?.label).toBe('Package');
     expect(packageSensor?.active).toBe(true);
     expect(robotVacuum?.label).toBe('Vacuum');
-    expect(robotVacuum?.active).toBe(true);
+    expect(robotVacuum?.active).toBe(false);
+    expect(robotVacuum?.summary).toBe('docked');
     expect(washer?.label).toBe('Washer');
-    expect(washer?.active).toBe(true);
+    expect(washer?.active).toBe(false);
+    expect(washer?.summary).toBe('idle');
   });
 
   it('uses registry short labels for 2D floorplan device labels', () => {

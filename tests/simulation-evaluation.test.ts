@@ -1,8 +1,12 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { getHomeDefinition } from '../src/sim/catalog';
 import { createSimulator } from '../src/sim/engine';
 import { buildEvaluationReport, compareDownstreamUtilityGaps } from '../src/sim/evaluation/metrics';
 import { createEvaluationCliOutput, createEvaluationCliReport, createTrainingDataset, parseEvaluationCliArgs, runSimulationEvaluation } from '../src/sim/evaluation/runEvaluation';
+import { createHomeMemoryDeviceEventDataset, createHomeMemoryDeviceEventDatasetCliReport, writeHomeMemoryDeviceEventDatasetCliReport } from '../src/sim/evaluation/homeMemoryDataset';
 import type { ActivityStartedEvent, ConversationOccurredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent } from '../src/shared/types';
 
 describe('long horizon simulation evaluation', () => {
@@ -99,6 +103,281 @@ describe('long horizon simulation evaluation', () => {
     expect(dataset.examples.length).toBeGreaterThan(0);
     expect(dataset.examples[0].observations.length).toBeGreaterThan(0);
     expect(dataset.examples[0].truth.homeMode).toEqual(expect.any(String));
+  });
+
+  it('generates a reproducible Home Memory dataset with /ws/device-events shaped events', () => {
+    const first = createHomeMemoryDeviceEventDataset({
+      startDate: '2026-07-14',
+      days: 1,
+      seed: 42,
+      minutesPerDay: 120
+    });
+    const second = createHomeMemoryDeviceEventDataset({
+      startDate: '2026-07-14',
+      days: 1,
+      seed: 42,
+      minutesPerDay: 120
+    });
+
+    expect(first).toEqual(second);
+    expect(first.metadata).toMatchObject({
+      schemaVersion: 1,
+      source: '/ws/device-events',
+      startDate: '2026-07-14',
+      days: 1,
+      seed: 42,
+      minutesPerDay: 120,
+      runId: 'home_memory_dataset_2026_07_14_1d_seed_42'
+    });
+    expect(first.events.length).toBeGreaterThan(0);
+    expect(first.metadata.eventCount).toBe(first.events.length);
+    expect(first.metadata.sequenceRange.from).toBeLessThanOrEqual(first.metadata.sequenceRange.to);
+    expect(first.events[0]).toMatchObject({
+      sourceEventType: expect.stringMatching(/DeviceTelemetry|DeviceStateChanged/),
+      runId: first.metadata.runId,
+      sequence: expect.any(Number),
+      simulationDayIndex: 0,
+      simulationDate: '2026-07-14',
+      homeId: expect.any(String),
+      roomId: expect.any(String),
+      deviceId: expect.any(String),
+      deviceType: expect.any(String),
+      field: expect.any(String)
+    });
+    expect(first.events.every((event) => event.runId === first.metadata.runId)).toBe(true);
+    expect(first.events.every((event) => event.simulationDayIndex === 0 && event.simulationDate === '2026-07-14')).toBe(true);
+    expect(first.events.every((event) => Object.prototype.hasOwnProperty.call(event, 'value'))).toBe(true);
+    expect(first.metadata.simulationDays).toEqual([expect.objectContaining({
+      index: 0,
+      date: '2026-07-14',
+      eventCount: first.events.length
+    })]);
+  });
+
+  it('formats a JSON Home Memory device-event dataset from CLI arguments', () => {
+    const output = createHomeMemoryDeviceEventDatasetCliReport([
+      '--start-date', '2026-07-14',
+      '--days', '1',
+      '--seed', '42',
+      '--minutes-per-day', '60'
+    ]);
+    const dataset = JSON.parse(output);
+
+    expect(dataset.metadata).toMatchObject({
+      schemaVersion: 1,
+      source: '/ws/device-events',
+      startDate: '2026-07-14',
+      days: 1,
+      seed: 42,
+      minutesPerDay: 60
+    });
+    expect(dataset.events.length).toBeGreaterThan(0);
+  });
+
+  it('writes clean UTF-8 Home Memory dataset JSON directly to an output file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'virtualhome-memory-dataset-'));
+
+    try {
+      const outputPath = join(dir, 'home-memory.json');
+      const cliOutput = writeHomeMemoryDeviceEventDatasetCliReport([
+        '--start-date', '2026-07-14',
+        '--days', '1',
+        '--seed', '42',
+        '--minutes-per-day', '60',
+        '--output', outputPath
+      ]);
+      const text = readFileSync(outputPath, 'utf8');
+      const dataset = JSON.parse(text);
+
+      expect(cliOutput).toContain(outputPath);
+      expect(text.trimStart().startsWith('{')).toBe(true);
+      expect(text).not.toContain('> virtualhome-twin-demo');
+      expect(dataset.metadata).toMatchObject({
+        schemaVersion: 1,
+        source: '/ws/device-events',
+        startDate: '2026-07-14',
+        days: 1,
+        seed: 42,
+        minutesPerDay: 60
+      });
+      expect(dataset.events.length).toBeGreaterThan(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not generate closed-fridge contact-open false positives in a two-day Home Memory dataset', () => {
+    const dataset = createHomeMemoryDeviceEventDataset({
+      startDate: '2026-07-01',
+      days: 2,
+      seed: 42,
+      minutesPerDay: 24 * 60
+    });
+    let fridgeOpen = false;
+    let contactOpenEvents = 0;
+    let closedContactOpenEvents = 0;
+
+    for (const event of dataset.events.filter((item) => item.deviceId === 'fridge_01')) {
+      if (event.field === 'doorOpen') {
+        fridgeOpen = event.value === true;
+      }
+      if (event.field === 'contact_open' && event.value === true) {
+        contactOpenEvents += 1;
+        if (!fridgeOpen) {
+          closedContactOpenEvents += 1;
+        }
+      }
+    }
+
+    expect(contactOpenEvents).toBeGreaterThan(0);
+    expect(closedContactOpenEvents).toBe(0);
+  });
+
+  it('keeps controller state out of telemetry and reduces environment heartbeat volume', () => {
+    const dataset = createHomeMemoryDeviceEventDataset({
+      startDate: '2026-07-01',
+      days: 2,
+      seed: 42,
+      minutesPerDay: 24 * 60
+    });
+    const acTelemetry = dataset.events.filter((event) => (
+      event.deviceType === 'air_conditioner' &&
+      event.sourceEventType === 'DeviceTelemetry' &&
+      ['power_on', 'target_c', 'mode'].includes(event.field)
+    ));
+    const acStateChanges = dataset.events.filter((event) => (
+      event.deviceType === 'air_conditioner' &&
+      event.sourceEventType === 'DeviceStateChanged' &&
+      ['power', 'targetC', 'mode'].includes(event.field)
+    ));
+    const environmentTelemetry = dataset.events.filter((event) => (
+      event.sourceEventType === 'DeviceTelemetry' &&
+      ['temperature_humidity_sensor', 'air_quality_sensor', 'soil_moisture_sensor'].includes(event.deviceType)
+    ));
+    const reportsByMinute = new Map<string, Set<string>>();
+    for (const event of environmentTelemetry) {
+      const devices = reportsByMinute.get(event.simTime) ?? new Set<string>();
+      devices.add(event.deviceId);
+      reportsByMinute.set(event.simTime, devices);
+    }
+    const crowdedMinutes = [...reportsByMinute.values()].filter((devices) => devices.size > 2);
+
+    expect(acTelemetry).toHaveLength(0);
+    expect(acStateChanges.length).toBeGreaterThan(0);
+    expect(environmentTelemetry.length).toBeGreaterThan(500);
+    expect(environmentTelemetry.length).toBeLessThan(2500);
+    expect(crowdedMinutes.length).toBeLessThan(12);
+  });
+
+  it('keeps profile-generation refinements inside existing device-event fields', () => {
+    const dataset = createHomeMemoryDeviceEventDataset({
+      startDate: '2026-07-01',
+      days: 2,
+      seed: 42,
+      minutesPerDay: 24 * 60
+    });
+    const allowedKeys = [
+      'id',
+      'sourceEventId',
+      'sourceEventType',
+      'runId',
+      'sequence',
+      'ts',
+      'simTime',
+      'homeId',
+      'roomId',
+      'deviceId',
+      'deviceType',
+      'field',
+      'value',
+      'simulationDayIndex',
+      'simulationDate'
+    ].sort();
+    const fieldValues = new Set(dataset.events.map((event) => event.field));
+
+    expect(dataset.events.every((event) => JSON.stringify(Object.keys(event).sort()) === JSON.stringify(allowedKeys))).toBe(true);
+    expect(fieldValues).not.toContain('householdProfile');
+    expect(fieldValues).not.toContain('profileFlags');
+    expect(fieldValues).not.toContain('breakfastStyle');
+    expect(fieldValues).not.toContain('trendState');
+  });
+
+  it('generates quieter door contacts, stable child sleep boundaries, and complete chore lifecycles', () => {
+    const dataset = createHomeMemoryDeviceEventDataset({
+      startDate: '2026-07-01',
+      days: 2,
+      seed: 42,
+      minutesPerDay: 24 * 60
+    });
+    const doorEvents = dataset.events.filter((event) => event.deviceId === 'door_lock_01');
+    const lowConfidenceDoorOpens = doorEvents.filter((event) => (
+      event.field === 'contact_open' &&
+      event.value === true &&
+      sameSourceValue(dataset.events, event.sourceEventId, 'confidence') === 0.28
+    ));
+    const overnightLowConfidenceDoorOpens = lowConfidenceDoorOpens.filter((event) => {
+      const hour = Number(event.simTime.slice(11, 13));
+      return hour >= 23 || hour < 6;
+    });
+    const childSleepEvents = dataset.events.filter((event) => event.deviceId === 'child_sleep_01' && event.field === 'inBed');
+    const childWakeEvents = childSleepEvents.filter((event) => event.value === false);
+    const childBedtimeEvents = childSleepEvents.filter((event) => event.value === true && Number(event.simTime.slice(11, 13)) >= 20);
+    const washerStatus = dataset.events
+      .filter((event) => event.deviceId === 'washer_01' && event.field === 'status')
+      .map((event) => event.value);
+
+    expect(lowConfidenceDoorOpens.length).toBeLessThanOrEqual(4);
+    expect(overnightLowConfidenceDoorOpens).toHaveLength(0);
+    expect(childWakeEvents.length).toBeGreaterThanOrEqual(2);
+    expect(childBedtimeEvents.length).toBeGreaterThanOrEqual(2);
+    expect(washerStatus).toEqual(expect.arrayContaining(['running', 'waiting_unload', 'idle']));
+  });
+
+  it('aligns AC, robot vacuum, breakfast, and dinner events with household profile logic', () => {
+    const dataset = createHomeMemoryDeviceEventDataset({
+      startDate: '2026-07-01',
+      days: 2,
+      seed: 42,
+      minutesPerDay: 24 * 60
+    });
+    const breakfastStoveEvents = dataset.events.filter((event) => (
+      event.deviceId === 'stove_01' &&
+      event.field === 'level' &&
+      Number(event.value) > 0 &&
+      Number(event.simTime.slice(11, 13)) < 9
+    ));
+    const robotStarts = dataset.events.filter((event) => (
+      event.deviceId === 'robot_vacuum_01' &&
+      event.field === 'status' &&
+      event.value === 'cleaning'
+    ));
+    const commuteLocks = dataset.events.filter((event) => (
+      event.deviceId === 'door_lock_01' &&
+      event.field === 'locked' &&
+      event.value === true &&
+      Number(event.simTime.slice(11, 13)) === 7
+    ));
+    const acModeChanges = dataset.events.filter((event) => (
+      event.deviceType === 'air_conditioner' &&
+      event.sourceEventType === 'DeviceStateChanged' &&
+      event.field === 'mode'
+    ));
+    const dinnerStarts = dataset.events.filter((event) => (
+      event.deviceId === 'stove_01' &&
+      event.field === 'level' &&
+      Number(event.value) > 0 &&
+      Number(event.simTime.slice(11, 13)) >= 17
+    ));
+
+    expect(breakfastStoveEvents).toHaveLength(0);
+    expect(robotStarts.length).toBeGreaterThan(0);
+    expect(robotStarts.every((start) => (
+      commuteLocks.some((lock) => sameSimulationDate(lock, start) && minutesBetween(lock.simTime, start.simTime) >= 5)
+    ))).toBe(true);
+    expect(acModeChanges.length).toBeLessThanOrEqual(12);
+    expect(minuteOfDay(dinnerStarts.find((event) => event.simulationDate === '2026-07-02')?.simTime ?? '')).toBeLessThan(
+      minuteOfDay(dinnerStarts.find((event) => event.simulationDate === '2026-07-01')?.simTime ?? '')
+    );
   });
 
   it('generates deterministic multi-day quality metrics for a fixed seed', () => {
@@ -1155,3 +1434,21 @@ describe('long horizon simulation evaluation', () => {
     ]));
   });
 });
+
+function sameSourceValue(events: Array<{ sourceEventId: string; field: string; value: unknown }>, sourceEventId: string, field: string): unknown {
+  return events.find((event) => event.sourceEventId === sourceEventId && event.field === field)?.value;
+}
+
+function sameSimulationDate(left: { simulationDate?: string }, right: { simulationDate?: string }): boolean {
+  return left.simulationDate === right.simulationDate;
+}
+
+function minutesBetween(start: string, end: string): number {
+  return Math.round((new Date(end).getTime() - new Date(start).getTime()) / 60000);
+}
+
+function minuteOfDay(simTime: string): number {
+  const match = simTime.match(/T(\d{2}):(\d{2}):/);
+  expect(match).not.toBeNull();
+  return Number(match![1]) * 60 + Number(match![2]);
+}

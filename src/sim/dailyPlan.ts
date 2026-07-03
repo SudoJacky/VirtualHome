@@ -24,17 +24,41 @@ interface CalendarProfile {
   weatherCondition: ExternalContext['weather']['condition'];
   outdoorTemperatureC: number;
   precipitationMm: number;
+  profileFlags: HouseholdProfileFlag[];
+}
+
+export type HouseholdProfileFlag = 'chore_day' | 'early_dinner_day' | 'busy_week';
+
+export interface HouseholdProfile {
+  weekdayBreakfastStyle: 'quick_cold';
+  weekendBreakfastStyle: 'cooked_brunch';
+  childBedtimeHour: number;
+  climateComfortTargetC: number;
+  weekdayRobotVacuumAfterDepartureMin: number;
+  laundryChoreCadenceDays: number;
+}
+
+export function getDefaultHouseholdProfile(): HouseholdProfile {
+  return {
+    weekdayBreakfastStyle: 'quick_cold',
+    weekendBreakfastStyle: 'cooked_brunch',
+    childBedtimeHour: 21,
+    climateComfortTargetC: 25,
+    weekdayRobotVacuumAfterDepartureMin: 10,
+    laundryChoreCadenceDays: 2
+  };
 }
 
 export function generateDailyScenario(options: DailyScenarioOptions): ScenarioDefinition {
   const externalContext = options.externalContext ?? createExternalContext({ date: options.date, seed: options.seed ?? seedFromDate(options.date) });
-  const calendar = createCalendarProfile(externalContext);
+  const profile = getDefaultHouseholdProfile();
+  const calendar = createCalendarProfile(externalContext, profile);
   const random = new SeededRandom(options.seed ?? seedFromDate(options.date));
   const routineKind = calendar.workday && calendar.schoolDay ? 'weekday' : 'non_workday';
   const wakeMinute = routineKind === 'weekday' ? jitter(random, 380, 18) : jitter(random, 455, 28);
   const startMinute = Math.max(0, wakeMinute - 60);
   const steps = routineKind === 'weekday'
-    ? createWeekdaySteps(calendar, random, wakeMinute)
+    ? createWeekdaySteps(calendar, random, wakeMinute, profile)
     : createWeekendSteps(calendar, random, wakeMinute);
 
   return {
@@ -55,16 +79,19 @@ export function generateDailyScenario(options: DailyScenarioOptions): ScenarioDe
       ...steps,
       ...createSeasonalCareSteps(calendar, random),
       ...createEveningSteps(calendar, random),
-      ...createNightSteps(calendar, random)
+      ...createNightSteps(calendar, random, profile)
     ]), startMinute)
   };
 }
 
-function createWeekdaySteps(calendar: CalendarProfile, random: SeededRandom, wakeMinute: number): ScenarioStep[] {
+function createWeekdaySteps(calendar: CalendarProfile, random: SeededRandom, wakeMinute: number, profile: HouseholdProfile): ScenarioStep[] {
   const breakfastMinute = wakeMinute + jitter(random, 28, 6);
   const schoolDeparture = wakeMinute + jitter(random, 78, 8);
   const commuteDeparture = wakeMinute + jitter(random, 92, 10);
   const remoteWorkStart = wakeMinute + jitter(random, 116, 12);
+  const arrivalHomeMinute = 18 * 60 + jitter(random, 8, 20);
+  const robotVacuumMinute = commuteDeparture + profile.weekdayRobotVacuumAfterDepartureMin;
+  const laundryMinute = remoteWorkStart + 98;
 
   return [
     step(wakeMinute, [
@@ -76,6 +103,15 @@ function createWeekdaySteps(calendar: CalendarProfile, random: SeededRandom, wak
       move('adult_2', 'bathroom', 'bathroom'),
       device('bathroom_water_01', { flowLMin: 4.8 }, 'routine:morning_wash')
     ]),
+    step(wakeMinute + 17, [
+      device('bathroom_water_01', { flowLMin: 0 }, 'routine:morning_wash_done')
+    ]),
+    step(wakeMinute + 20, [
+      device('child_sleep_01', { inBed: false, heartRateSimulated: 74 }, 'routine:child_wake')
+    ]),
+    step(wakeMinute + 24, [
+      move('pet_1', 'living_room', 'pet_patrol')
+    ]),
     step(breakfastMinute, [
       move('adult_1', 'kitchen', 'breakfast'),
       move('child_1', 'kitchen', 'breakfast'),
@@ -83,7 +119,7 @@ function createWeekdaySteps(calendar: CalendarProfile, random: SeededRandom, wak
       device('kitchen_light_01', { power: 'on', brightness: calendar.season === 'winter' ? 82 : 68 }, 'routine:breakfast'),
       device('fridge_01', { doorOpen: true, powerW: 135 }, 'routine:breakfast')
     ]),
-    step(breakfastMinute + 18, [
+    step(breakfastMinute + 3, [
       device('fridge_01', { doorOpen: false, powerW: 92 }, 'routine:breakfast_done')
     ]),
     step(schoolDeparture, [
@@ -100,14 +136,28 @@ function createWeekdaySteps(calendar: CalendarProfile, random: SeededRandom, wak
       device('study_co2_01', { co2: 620 }, 'routine:remote_work'),
       device('kitchen_light_01', { power: 'off', brightness: 0 }, 'routine:morning_done')
     ]),
+    step(robotVacuumMinute, [
+      device('robot_vacuum_01', { status: 'cleaning', batteryPercent: 92, cycleMinutes: 0, binFull: false }, 'routine:away_robot_cleaning')
+    ]),
+    ...(calendar.profileFlags.includes('chore_day')
+      ? [
+          step(laundryMinute, [
+            move('adult_2', 'bathroom', 'laundry_cycle'),
+            activity('startActivity', 'laundry_cycle', ['adult_2'], 'bathroom', 'routine:laundry_chore'),
+            device('washer_01', { status: 'running', remainingMin: 55, powerW: 480 }, 'routine:laundry_chore')
+          ])
+        ]
+      : []),
     step(17 * 60 + jitter(random, 35, 20), [
       mode('evening_home'),
-      move('child_1', 'living_room', 'homework'),
-      device('child_sleep_01', { inBed: false, heartRateSimulated: 78 }, 'routine:homework')
+      move('child_1', 'living_room', 'homework')
     ]),
-    step(18 * 60 + jitter(random, 8, 20), [
+    step(arrivalHomeMinute, [
       move('adult_1', 'living_room', 'arrived_home'),
-      device('door_lock_01', { locked: true }, 'routine:arrival_home')
+      device('door_lock_01', { locked: false }, 'routine:arrival_home_unlock')
+    ]),
+    step(arrivalHomeMinute + 1, [
+      device('door_lock_01', { locked: true }, 'routine:arrival_home_lock')
     ])
   ];
 }
@@ -126,11 +176,26 @@ function createWeekendSteps(calendar: CalendarProfile, random: SeededRandom, wak
       move('child_1', 'living_room', 'weekend_play'),
       device('master_sleep_01', { inBed: false, heartRateSimulated: 70 }, 'routine:weekend_wake')
     ]),
+    step(wakeMinute + 18, [
+      move('adult_1', 'bathroom', 'bathroom'),
+      device('bathroom_water_01', { flowLMin: 4.2 }, 'routine:weekend_wash')
+    ]),
+    step(wakeMinute + 24, [
+      move('adult_1', 'living_room', 'slow_morning'),
+      device('bathroom_water_01', { flowLMin: 0 }, 'routine:weekend_wash_done')
+    ]),
+    step(wakeMinute + 30, [
+      move('pet_1', 'living_room', 'pet_patrol')
+    ]),
     step(brunchMinute, [
       move('adult_2', 'kitchen', 'brunch'),
       activity('startActivity', 'weekend_brunch', ['adult_2', 'child_1'], 'kitchen', 'routine:weekend_brunch'),
       device('kitchen_light_01', { power: 'on', brightness: calendar.season === 'winter' ? 78 : 58 }, 'routine:brunch'),
+      device('fridge_01', { doorOpen: true, powerW: 132 }, 'routine:brunch'),
       device('stove_01', { powerW: 680, level: 4 }, 'routine:brunch')
+    ]),
+    step(brunchMinute + 3, [
+      device('fridge_01', { doorOpen: false, powerW: 92 }, 'routine:brunch_done')
     ]),
     step(brunchMinute + 35, [
       device('stove_01', { powerW: 0, level: 0 }, 'routine:brunch_done'),
@@ -155,13 +220,18 @@ function createWeekendSteps(calendar: CalendarProfile, random: SeededRandom, wak
             move('adult_1', 'away', 'family_outing'),
             move('adult_2', 'away', 'family_outing'),
             move('child_1', 'away', 'family_outing'),
-            device('door_lock_01', { locked: true }, 'routine:family_outing')
+            device('door_lock_01', { locked: false }, 'routine:family_outing_unlock'),
+            device('door_lock_01', { locked: true }, 'routine:family_outing_lock')
           ]),
           step(returnMinute, [
             mode('evening_home'),
+            device('door_lock_01', { locked: false }, 'routine:family_return_unlock'),
             move('adult_1', 'living_room', 'returned_home'),
             move('adult_2', 'living_room', 'returned_home'),
             move('child_1', 'living_room', 'playing')
+          ]),
+          step(returnMinute + 1, [
+            device('door_lock_01', { locked: true }, 'routine:family_return_lock')
           ])
         ])
   ];
@@ -178,9 +248,14 @@ function createSeasonOpeningSteps(calendar: CalendarProfile): ScenarioStep[] {
 
 function createSeasonalCareSteps(calendar: CalendarProfile, random: SeededRandom): ScenarioStep[] {
   if (calendar.season === 'summer') {
+    const wateringMinute = 6 * 60 + jitter(random, 18, 12);
     return [
-      step(6 * 60 + jitter(random, 18, 12), [
+      step(wateringMinute, [
+        move('adult_1', 'garden', 'garden_check'),
         device('sprinkler_01', { valveOpen: true }, 'season:summer:early_watering')
+      ]),
+      step(wateringMinute + 4, [
+        move('adult_1', 'kitchen', 'breakfast')
       ]),
       step(6 * 60 + jitter(random, 38, 12), [
         device('sprinkler_01', { valveOpen: false }, 'season:summer:watering_done')
@@ -194,14 +269,19 @@ function createSeasonalCareSteps(calendar: CalendarProfile, random: SeededRandom
 }
 
 function createEveningSteps(calendar: CalendarProfile, random: SeededRandom): ScenarioStep[] {
-  const dinnerMinute = 18 * 60 + jitter(random, 58, 28);
+  const dinnerBaseMinute = calendar.profileFlags.includes('early_dinner_day') ? 38 : 58;
+  const dinnerMinute = 18 * 60 + jitter(random, dinnerBaseMinute, 28);
   const tvMinute = dinnerMinute + jitter(random, 82, 18);
   return [
     step(dinnerMinute, [
       move('adult_2', 'kitchen', 'cooking_dinner'),
       activity('startActivity', 'daily_dinner', ['adult_2'], 'kitchen', 'routine:dinner'),
+      device('fridge_01', { doorOpen: true, powerW: 142 }, 'routine:dinner_prep'),
       device('stove_01', { powerW: calendar.season === 'summer' ? 620 : 820, level: calendar.season === 'summer' ? 4 : 6 }, 'routine:dinner'),
       device('range_hood_01', { power: 'on', speed: 2 }, 'routine:dinner')
+    ]),
+    step(dinnerMinute + 3, [
+      device('fridge_01', { doorOpen: false, powerW: 94 }, 'routine:dinner_prep_done')
     ]),
     step(dinnerMinute + 45, [
       move('adult_1', 'dining_room', 'dinner'),
@@ -218,12 +298,20 @@ function createEveningSteps(calendar: CalendarProfile, random: SeededRandom): Sc
       device('tv_01', { power: 'on', app: 'streaming', volume: 16 }, 'routine:family_evening'),
       device('living_light_01', { power: 'on', brightness: 38 }, 'routine:family_evening'),
       activity('endActivity', 'daily_dinner', [], 'kitchen', 'routine:dinner_done')
+    ]),
+    step(tvMinute + 45, [
+      move('adult_1', 'bathroom', 'evening_wash'),
+      device('bathroom_water_01', { flowLMin: 3.6 }, 'routine:evening_wash')
+    ]),
+    step(tvMinute + 51, [
+      move('adult_1', 'living_room', 'watching_tv'),
+      device('bathroom_water_01', { flowLMin: 0 }, 'routine:evening_wash_done')
     ])
   ];
 }
 
-function createNightSteps(calendar: CalendarProfile, random: SeededRandom): ScenarioStep[] {
-  const childSleep = (calendar.dayType === 'weekday' ? 21 : 22) * 60 + jitter(random, 8, 16);
+function createNightSteps(calendar: CalendarProfile, random: SeededRandom, profile: HouseholdProfile): ScenarioStep[] {
+  const childSleep = (calendar.dayType === 'weekday' ? profile.childBedtimeHour : 22) * 60 + jitter(random, 8, 16);
   const adultSleep = (calendar.dayType === 'weekday' ? 22 : 23) * 60 + jitter(random, 25, 22);
   return [
     step(childSleep, [
@@ -234,6 +322,7 @@ function createNightSteps(calendar: CalendarProfile, random: SeededRandom): Scen
       mode('sleeping'),
       move('adult_1', 'master_bedroom', 'sleeping'),
       move('adult_2', 'master_bedroom', 'sleeping'),
+      move('pet_1', 'living_room', 'sleeping'),
       device('master_sleep_01', { inBed: true, heartRateSimulated: 61 }, 'routine:adult_sleep'),
       device('living_light_01', { power: 'off', brightness: 0 }, 'routine:sleep'),
       device('tv_01', { power: 'off', app: null, volume: 0 }, 'routine:sleep')
@@ -241,7 +330,7 @@ function createNightSteps(calendar: CalendarProfile, random: SeededRandom): Scen
   ];
 }
 
-function createCalendarProfile(externalContext: ExternalContext): CalendarProfile {
+function createCalendarProfile(externalContext: ExternalContext, profile: HouseholdProfile): CalendarProfile {
   const { calendar } = externalContext;
   return {
     date: calendar.date,
@@ -254,8 +343,21 @@ function createCalendarProfile(externalContext: ExternalContext): CalendarProfil
     workday: calendar.workday,
     weatherCondition: externalContext.weather.condition,
     outdoorTemperatureC: externalContext.weather.outdoorTemperatureC,
-    precipitationMm: externalContext.weather.precipitationMm
+    precipitationMm: externalContext.weather.precipitationMm,
+    profileFlags: createProfileFlags(calendar.date, profile)
   };
+}
+
+function createProfileFlags(date: string, profile: HouseholdProfile): HouseholdProfileFlag[] {
+  const dayOfMonth = Number(date.slice(8, 10));
+  const flags: HouseholdProfileFlag[] = [];
+  if (dayOfMonth % profile.laundryChoreCadenceDays === 0) {
+    flags.push('chore_day', 'early_dinner_day');
+  }
+  if (dayOfMonth >= 8 && dayOfMonth <= 12) {
+    flags.push('busy_week');
+  }
+  return flags;
 }
 
 function isRainyDay(calendar: CalendarProfile): boolean {

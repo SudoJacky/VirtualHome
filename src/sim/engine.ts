@@ -6,7 +6,7 @@ import { getScenario, type ScenarioAction, type ScenarioDefinition } from './sce
 import { getDeviceCapability, validateDeviceStatePatch } from '../shared/deviceRegistry';
 import { getDeviceSupportedCommands } from '../shared/deviceInstanceCapabilities';
 import { getSensorProfile, withSensorProfileOverrides } from './sensors/deviceProfiles';
-import { observeBinarySensor, observeContactSensor, observeEnvironmentSensor, observeMotionSensor, observeNumericSensor, type SensorObservation } from './sensors/sensorModel';
+import { observeBinarySensor, observeContactSensor, observeEnvironmentSensor, observeMotionSensor, observeNumericSensor, type EnvironmentSensorReportingOptions, type SensorObservation } from './sensors/sensorModel';
 import { selectActivity } from './agents/agentPolicy';
 import { advanceNeeds, applyActivityEffectsToNeeds, createInitialNeeds, type NeedState } from './agents/needs';
 import { commitmentPressureAtMinute, createDailyCommitments } from './agents/scheduler';
@@ -516,6 +516,7 @@ class Simulator implements VirtualHomeSimulator {
     events.push(...this.advanceRobotVacuumLifecycle());
     events.push(...this.advanceRouterRestartLifecycle());
     events.push(...this.advanceFridgeDoorLifecycle());
+    events.push(...this.advanceWaterFlowAfterValveClosure());
     this.advanceWeatherClimateDynamics();
     this.advanceAirConditionerClimateEffects();
     events.push(...this.applyPersonStateConsistency());
@@ -534,6 +535,48 @@ class Simulator implements VirtualHomeSimulator {
     const events: TwinEvent[] = [];
     events.push(...this.advanceTimedDevice('dishwasher_01', 'dishwasher_cycle_done', 'Dishwasher is waiting to be unloaded', 'empty_dishwasher'));
     events.push(...this.advanceTimedDevice('washer_01', 'washer_cycle_done', 'Washing machine is waiting to be unloaded', 'move_laundry_to_dryer'));
+    events.push(...this.advanceWasherUnloadLifecycle());
+    return events;
+  }
+
+  private advanceWasherUnloadLifecycle(): TwinEvent[] {
+    const washer = this.state.snapshot.devices.washer_01;
+    if (!washer || washer.state.status !== 'waiting_unload' || !String(washer.lastReason).startsWith('ambient:washer:waiting_unload')) {
+      return [];
+    }
+    const events: TwinEvent[] = [
+      this.setDeviceState('washer_01', { status: 'idle', remainingMin: 0, powerW: 0 }, 'household_activity:laundry_unloaded')
+    ];
+    const activity = this.state.snapshot.activities.laundry_cycle;
+    if (activity) {
+      delete this.state.snapshot.activities.laundry_cycle;
+      for (const participantId of activity.participants) {
+        const participant = this.state.snapshot.people[participantId];
+        if (participant && participant.location !== 'away') {
+          events.push(...this.createRoutedPersonMovedEvents(participantId, 'study', 'remote_work', 'household_activity:laundry_unloaded'));
+        }
+      }
+      events.push(this.createEvent({
+        type: 'ActivityEnded',
+        activityId: 'laundry_cycle',
+        participants: activity.participants,
+        roomId: activity.roomId,
+        reason: 'household_activity:laundry_unloaded'
+      }));
+    }
+    const alert = this.state.snapshot.alerts.washer_cycle_done;
+    if (alert && alert.status !== 'resolved') {
+      const previousStatus = alert.status;
+      alert.status = 'resolved';
+      alert.resolvedAt = this.state.snapshot.simClock.currentTime;
+      events.push(this.createEvent({
+        type: 'AlertStatusChanged',
+        alertId: alert.id,
+        previousStatus,
+        status: 'resolved',
+        reason: 'household_activity:laundry_unloaded'
+      }));
+    }
     return events;
   }
 
@@ -620,6 +663,20 @@ class Simulator implements VirtualHomeSimulator {
     return events;
   }
 
+  private advanceWaterFlowAfterValveClosure(): TwinEvent[] {
+    const waterValve = this.state.snapshot.devices.water_valve_01;
+    const bathroomWater = this.state.snapshot.devices.bathroom_water_01;
+    if (!waterValve || !bathroomWater || waterValve.state.valveOpen !== false || Number(bathroomWater.state.flowLMin ?? 0) <= 0) {
+      return [];
+    }
+    if (!String(waterValve.lastReason).startsWith('rule:close_water_valve_on_leak')) {
+      return [];
+    }
+    return [
+      this.setDeviceState('bathroom_water_01', { flowLMin: 0 }, 'rule:close_water_valve_on_leak:flow_stopped')
+    ];
+  }
+
   private advanceWeatherClimateDynamics(): void {
     const weather = this.currentWeatherContext();
     const minute = minuteOfDayFromTime(this.state.snapshot.simClock.currentTime);
@@ -700,6 +757,60 @@ class Simulator implements VirtualHomeSimulator {
         this.setDeviceState('robot_vacuum_01', { status: 'cleaning' }, 'device_lifecycle:robot_vacuum:resume_after_assist')
       ];
     }
+    if (vacuum.state.status === 'stuck') {
+      const cycleMinutes = Math.max(1, Number(vacuum.state.cycleMinutes ?? 0) + 1);
+      const batteryPercent = this.clamp(Number(vacuum.state.batteryPercent ?? 92) - 0.6, 20, 100);
+      const actor = this.selectRobotVacuumAssistActor();
+      if (cycleMinutes >= 6 && actor && this.state.snapshot.homeState.mode !== 'away') {
+        const events: TwinEvent[] = actor
+          ? this.createRoutedPersonMovedEvents(actor.id, 'living_room', 'controlling_robot_vacuum_01', 'social:robot_vacuum_assist')
+          : [];
+        events.push(this.setDeviceState('robot_vacuum_01', { status: 'assisted', cycleMinutes, batteryPercent: this.round(batteryPercent) }, 'social:robot_vacuum_assist'));
+        events.push(this.createEvent({
+          type: 'AutomationTriggered',
+          ruleId: 'robot_vacuum_assisted',
+          explanation: 'A household member noticed the stuck robot vacuum and cleared the path so cleaning can resume.',
+          actions: ['route_household_member_to_robot', 'clear_robot_path', 'resume_robot_cleaning'],
+          reason: 'robot_vacuum_01.status:stuck_waiting',
+          eventExplanation: {
+            why: 'The robot vacuum stayed stuck while an awake household member was home.',
+            actorIds: actor ? [actor.id] : [],
+            affectedDeviceIds: ['robot_vacuum_01'],
+            affectedRoomIds: ['living_room'],
+            expectedOutcome: 'Clear the stuck condition without requiring an explicit operator command.'
+          }
+        }));
+        return events;
+      }
+      if (cycleMinutes >= 12) {
+        const events: TwinEvent[] = [
+          this.setDeviceState('robot_vacuum_01', { status: 'docked', cycleMinutes: 0, batteryPercent: this.round(batteryPercent), binFull: false }, 'device_lifecycle:robot_vacuum:stuck_timeout_docked')
+        ];
+        const alert = this.state.snapshot.alerts.robot_vacuum_stuck_001;
+        if (alert && alert.status !== 'resolved') {
+          const previousStatus = alert.status;
+          alert.status = 'resolved';
+          alert.resolvedAt = this.state.snapshot.simClock.currentTime;
+          events.push(this.createEvent({
+            type: 'AlertStatusChanged',
+            alertId: alert.id,
+            previousStatus,
+            status: 'resolved',
+            reason: 'robot_vacuum_01.status:stuck_timeout_docked'
+          }));
+        }
+        events.push(...this.recoverRuleIfActive('robot_vacuum_stuck', ['robot_vacuum_01.status:docked']));
+        return events;
+      }
+      vacuum.state.cycleMinutes = cycleMinutes;
+      vacuum.state.batteryPercent = this.round(batteryPercent);
+      if (cycleMinutes === 4 || cycleMinutes === 8) {
+        return [
+          this.setDeviceState('robot_vacuum_01', { cycleMinutes, batteryPercent: this.round(batteryPercent) }, 'device_lifecycle:robot_vacuum:stuck_waiting')
+        ];
+      }
+      return [];
+    }
     if (vacuum.state.status !== 'cleaning') {
       return [];
     }
@@ -707,7 +818,7 @@ class Simulator implements VirtualHomeSimulator {
     const cycleMinutes = Math.max(1, Number(vacuum.state.cycleMinutes ?? 0) + 1);
     const batteryPercent = this.clamp(Number(vacuum.state.batteryPercent ?? 92) - 1.5, 20, 100);
     if (this.shouldRobotVacuumReportStuck(cycleMinutes)) {
-      this.state.triggeredRules.add('robot_vacuum_stuck');
+      this.activateRule('robot_vacuum_stuck');
       return [
         this.setDeviceState('robot_vacuum_01', { status: 'stuck', cycleMinutes, batteryPercent: this.round(batteryPercent) }, 'device_lifecycle:robot_vacuum:stuck'),
         this.createAlertEvent('robot_vacuum_stuck_001', 'warning', 'living_room', 'Robot vacuum needs help in the living room', 'clear_robot_path', 'rule:robot_vacuum_stuck'),
@@ -744,6 +855,7 @@ class Simulator implements VirtualHomeSimulator {
           reason: 'robot_vacuum_01.status:docked'
         }));
       }
+      events.push(...this.recoverRuleIfActive('robot_vacuum_stuck', ['robot_vacuum_01.status:docked']));
       return events;
     }
     return [
@@ -753,6 +865,16 @@ class Simulator implements VirtualHomeSimulator {
 
   private shouldRobotVacuumReportStuck(cycleMinutes: number): boolean {
     if (this.state.triggeredRules.has('robot_vacuum_stuck') || cycleMinutes < 3) {
+      return false;
+    }
+    const vacuum = this.state.snapshot.devices.robot_vacuum_01;
+    const minuteOfDay = minuteOfDayFromTime(this.state.snapshot.simClock.currentTime);
+    const weekdayMorningRoutineCleaning = (
+      minuteOfDay >= 7 * 60 &&
+      minuteOfDay <= 9 * 60 &&
+      vacuum?.state.status === 'cleaning'
+    );
+    if (weekdayMorningRoutineCleaning && this.state.snapshot.runContext.seed % 5 !== 0) {
       return false;
     }
     const clutterPressure = Math.min(2, Math.max(0, this.state.snapshot.worldState.inventory.unfinishedChores));
@@ -790,7 +912,11 @@ class Simulator implements VirtualHomeSimulator {
       return [];
     }
 
-    const interval = this.state.snapshot.homeState.mode === 'sleeping' ? 17 : 7;
+    if (this.state.snapshot.homeState.mode === 'sleeping' || pet.activity === 'sleeping') {
+      return [];
+    }
+
+    const interval = pet.activity === 'resting' ? 60 : 45;
     if (this.state.elapsedMinutes % interval !== 0) {
       return [];
     }
@@ -798,7 +924,9 @@ class Simulator implements VirtualHomeSimulator {
     const destinations: RoomId[] = ['living_room', 'kitchen', 'dining_room', 'garden', 'master_bedroom'];
     const candidates = destinations.filter((roomId) => roomId !== pet.location);
     const to = candidates[Math.floor(this.state.random.range(0, candidates.length))] ?? 'living_room';
-    const activities = ['wandering', 'sniffing', 'resting', 'checking_room'];
+    const activities = this.state.elapsedMinutes < 90
+      ? ['wandering', 'sniffing', 'checking_room']
+      : ['wandering', 'sniffing', 'resting', 'checking_room'];
     const activity = activities[Math.floor(this.state.random.range(0, activities.length))] ?? 'wandering';
     return this.createRoutedPersonMovedEvents('pet_1', to, activity);
   }
@@ -1370,6 +1498,9 @@ class Simulator implements VirtualHomeSimulator {
     if (!host || host.location === 'away') {
       return [];
     }
+    if (!this.isCookingReadyForMealInvitation(host.id)) {
+      return [];
+    }
 
     this.state.triggeredRules.add(decision.ruleId);
     const participants = ['adult_1', 'adult_2', 'child_1', 'senior_1']
@@ -1429,6 +1560,23 @@ class Simulator implements VirtualHomeSimulator {
       }
     }));
     return events;
+  }
+
+  private isCookingReadyForMealInvitation(cookId: string): boolean {
+    const cook = this.state.snapshot.people[cookId];
+    if (!cook || cook.location !== 'kitchen' || !['cooking_dinner', 'prepare_dinner'].includes(cook.activity)) {
+      return true;
+    }
+    const stovePowerW = Number(this.state.snapshot.devices.stove_01.state.powerW ?? 0);
+    if (stovePowerW <= 100) {
+      return true;
+    }
+    const activeCooking = Object.values(this.state.snapshot.activities)
+      .filter((activity) => activity.participants.includes(cookId))
+      .filter((activity) => ['cooking_dinner', 'daily_dinner', 'weekend_brunch'].includes(activity.activityId))
+      .map((activity) => minutesBetween(activity.startedAt, this.state.snapshot.simClock.currentTime));
+    const cookingMinutes = activeCooking.length > 0 ? Math.max(...activeCooking) : 0;
+    return cookingMinutes >= 45;
   }
 
   private applySeniorMedicineReminder(decision: SocialDecision): TwinEvent[] {
@@ -1800,7 +1948,7 @@ class Simulator implements VirtualHomeSimulator {
         events.push(...this.setRoomClimateIfChanged({
           deviceId,
           roomId,
-          patch: { power: 'off', mode: 'auto' },
+          patch: { power: 'off' },
           reason: `habit:climate:${roomId}:vacant_or_comfortable`,
           explanation: `${roomId} is empty, so the twin releases rule-controlled air conditioning.`,
           actions: [`turn_off_${roomId}_ac_when_vacant`],
@@ -1851,7 +1999,7 @@ class Simulator implements VirtualHomeSimulator {
       events.push(...this.setRoomClimateIfChanged({
         deviceId,
         roomId,
-        patch: { power: 'off', mode: 'auto' },
+        patch: { power: 'off' },
         reason: `habit:climate:${roomId}:vacant_or_comfortable`,
         explanation: `${roomId} temperature is back in the comfort range, so the twin stops rule-controlled climate support.`,
         actions: [`turn_off_${roomId}_ac_after_comfort_recovers`],
@@ -1877,7 +2025,11 @@ class Simulator implements VirtualHomeSimulator {
     humidityPercent: number;
     allowedToChange: boolean;
   }): TwinEvent[] {
-    if (!input.allowedToChange || !this.devicePatchChanges(input.deviceId, input.patch)) {
+    const device = this.state.snapshot.devices[input.deviceId];
+    const changedPatch = device
+      ? Object.fromEntries(Object.entries(input.patch).filter(([key, value]) => device.state[key] !== value))
+      : {};
+    if (!input.allowedToChange || Object.keys(changedPatch).length === 0) {
       return [];
     }
 
@@ -1890,7 +2042,7 @@ class Simulator implements VirtualHomeSimulator {
       input.actor.activity = originalActivity;
       this.updatePersonBehavior(input.actor.id);
     }
-    events.push(this.setDeviceState(input.deviceId, input.patch, input.reason));
+    events.push(this.setDeviceState(input.deviceId, changedPatch, input.reason));
     events.push(this.createEvent({
       type: 'AutomationTriggered',
       ruleId: 'room_climate_comfort',
@@ -1983,20 +2135,19 @@ class Simulator implements VirtualHomeSimulator {
 
     this.state.triggeredRules.add('child_homework_focus');
     return [
-      this.setDeviceState('child_sleep_01', { inBed: false, heartRateSimulated: 78 }, 'habit:child_1:homework:desk_time'),
       this.setDeviceState('tv_01', { power: 'off', app: null, volume: 0 }, 'habit:child_1:homework:quiet_focus'),
       this.setDeviceState('living_light_01', { power: 'on', brightness: 32 }, 'habit:child_1:homework:reduce_living_room_distraction'),
       this.createEvent({
         type: 'AutomationTriggered',
         ruleId: 'child_homework_focus',
-        explanation: 'The student is doing homework in the living room, so entertainment is kept quiet while the bedroom sleep pad reflects out-of-bed time.',
-        actions: ['mark_child_out_of_bed', 'turn_off_tv_for_homework', 'dim_living_light_for_homework'],
+        explanation: 'The student is doing homework in the living room, so entertainment is kept quiet.',
+        actions: ['turn_off_tv_for_homework', 'dim_living_light_for_homework'],
         reason: 'habit:child_1:homework',
         eventExplanation: {
           why: 'child_1 is in after_school with intent finish_homework.',
           actorIds: ['child_1'],
-          affectedDeviceIds: ['child_sleep_01', 'tv_01', 'living_light_01'],
-          affectedRoomIds: ['living_room', 'child_bedroom'],
+          affectedDeviceIds: ['tv_01', 'living_light_01'],
+          affectedRoomIds: ['living_room'],
           relatedIntent: 'finish_homework',
           expectedOutcome: 'Reduce entertainment distraction while the student finishes homework.'
         }
@@ -2226,6 +2377,10 @@ class Simulator implements VirtualHomeSimulator {
 
   private syncSecurityCameraMotion(deviceId: 'doorbell_camera_01' | 'garden_camera_01', roomId: RoomId): TwinEvent[] {
     const room = this.state.snapshot.rooms[roomId];
+    if (deviceId === 'garden_camera_01' && !room.humanOccupancy) {
+      return [];
+    }
+
     const observation = observeMotionSensor({
       deviceId,
       roomId,
@@ -2306,7 +2461,18 @@ class Simulator implements VirtualHomeSimulator {
     if (this.state.triggeredRules.has('robot_cleaning') || this.state.elapsedMinutes < 90 || this.state.elapsedMinutes > 540 || vacuum.state.status !== 'docked') {
       return [];
     }
-    if (!this.allowsNoisyAutomation() || this.state.snapshot.rooms.living_room.humanOccupancy || this.state.random.next() >= 0.014) {
+    const weekendCleaning = Object.values(this.state.snapshot.people).some((person) => (
+      person.kind === 'human' &&
+      ['weekend_cleaning', 'tidying'].includes(person.activity)
+    ));
+    const awayCleaningWindow = this.state.snapshot.homeState.mode === 'away';
+    if (!awayCleaningWindow && !weekendCleaning) {
+      return [];
+    }
+    if (!awayCleaningWindow && (!this.allowsNoisyAutomation() || this.state.snapshot.rooms.living_room.humanOccupancy)) {
+      return [];
+    }
+    if (this.state.random.next() >= (awayCleaningWindow ? 0.004 : 0.014)) {
       return [];
     }
 
@@ -2467,6 +2633,19 @@ class Simulator implements VirtualHomeSimulator {
     return candidates.find((person) => person.location !== 'away' && preferredRooms.includes(person.location)) ?? candidates[0];
   }
 
+  private selectRobotVacuumAssistActor(): PersonState | undefined {
+    const interruptibleActivities = new Set(['reading', 'watching_tv', 'slow_morning', 'weekend_cleaning', 'tidying']);
+    const candidates = Object.values(this.state.snapshot.people).filter((person): person is PersonState => (
+      person.kind === 'human' &&
+      person.location !== 'away' &&
+      person.activity !== 'sleeping' &&
+      !person.activity.startsWith('walking_to_') &&
+      !person.activity.startsWith('controlling_') &&
+      interruptibleActivities.has(person.activity)
+    ));
+    return candidates.find((person) => person.location === 'living_room') ?? candidates[0];
+  }
+
   private startHouseholdActivity(personId: string, roomId: RoomId, activityId: string, reason: string): TwinEvent[] {
     const events: TwinEvent[] = this.createRoutedPersonMovedEvents(personId, roomId, activityId, reason);
     this.state.snapshot.activities[activityId] = {
@@ -2609,14 +2788,21 @@ class Simulator implements VirtualHomeSimulator {
       }
     }
 
+    const stovePowerW = Number(snapshot.devices.stove_01.state.powerW ?? 0);
     if (
       snapshot.rooms.kitchen.occupancy &&
-      Number(snapshot.devices.stove_01.state.powerW ?? 0) > 500 &&
+      stovePowerW > 500 &&
       !this.state.triggeredRules.has('cooking_ventilation')
     ) {
       this.state.triggeredRules.add('cooking_ventilation');
-      events.push(this.setDeviceState('range_hood_01', { power: 'on', speed: 2 }, 'rule:cooking_ventilation'));
-      events.push(this.setDeviceState('kitchen_light_01', { power: 'on', brightness: 80 }, 'rule:cooking_ventilation'));
+      const hoodEvent = this.setDeviceStateIfChanged('range_hood_01', { power: 'on', speed: 2 }, 'rule:cooking_ventilation');
+      const lightEvent = this.setDeviceStateIfChanged('kitchen_light_01', { power: 'on', brightness: 80 }, 'rule:cooking_ventilation');
+      if (hoodEvent) {
+        events.push(hoodEvent);
+      }
+      if (lightEvent) {
+        events.push(lightEvent);
+      }
       events.push(this.createEvent({
         type: 'AutomationTriggered',
         ruleId: 'cooking_ventilation',
@@ -2634,7 +2820,37 @@ class Simulator implements VirtualHomeSimulator {
     }
 
     if (
-      Number(snapshot.devices.stove_01.state.powerW ?? 0) > 1000 &&
+      stovePowerW <= 100 &&
+      snapshot.devices.range_hood_01.state.power === 'on' &&
+      snapshot.devices.range_hood_01.lastReason.startsWith('rule:cooking_ventilation') &&
+      !Object.values(snapshot.people).some((person) => (
+        person.kind === 'human' &&
+        person.location === 'kitchen' &&
+        ['cooking_dinner', 'prepare_dinner', 'brunch'].includes(person.activity)
+      ))
+    ) {
+      const hoodEvent = this.setDeviceStateIfChanged('range_hood_01', { power: 'off', speed: 0 }, 'rule:cooking_ventilation_complete');
+      if (hoodEvent) {
+        events.push(hoodEvent);
+        events.push(this.createEvent({
+          type: 'AutomationTriggered',
+          ruleId: 'cooking_ventilation_complete',
+          explanation: 'The stove is off and cooking activity has left the kitchen, so ventilation stops after clearing residual cooking air.',
+          actions: ['turn_off_range_hood_after_cooking'],
+          reason: 'stove_power_off_after_cooking',
+          eventExplanation: {
+            why: 'The stove power is low and no active cook remains in the kitchen.',
+            actorIds: [],
+            affectedDeviceIds: ['range_hood_01', 'stove_01'],
+            affectedRoomIds: ['kitchen'],
+            expectedOutcome: 'Avoid range hood idle runtime after cooking has ended.'
+          }
+        }));
+      }
+    }
+
+    if (
+      stovePowerW > 1000 &&
       !snapshot.rooms.kitchen.occupancy &&
       !this.state.triggeredRules.has('stove_unattended_safety')
     ) {
@@ -2704,6 +2920,10 @@ class Simulator implements VirtualHomeSimulator {
     if (
       snapshot.devices.fridge_01.state.doorOpen === true &&
       ['opened', 'still_open', 'alert'].includes(String(snapshot.devices.fridge_01.state.lifecyclePhase ?? '')) &&
+      (
+        snapshot.devices.fridge_01.lastReason === 'abnormality:fridge_left_open' ||
+        Number(snapshot.devices.fridge_01.state.openMinutes ?? 0) >= alertEscalationPolicies.fridge_left_open.highSeverityAfterOpenMinutes
+      ) &&
       this.canTriggerRule('fridge_left_open')
     ) {
       this.activateRule('fridge_left_open');
@@ -2806,7 +3026,7 @@ class Simulator implements VirtualHomeSimulator {
   private generateTelemetry(): TwinEvent[] {
     const events: TwinEvent[] = [];
     for (const device of this.state.catalog.devices) {
-      if (!['temperature_humidity_sensor', 'air_quality_sensor', 'water_flow_sensor', 'soil_moisture_sensor', 'fridge', 'door_lock', 'water_leak_sensor', 'sleep_sensor', 'router', 'stove', 'dishwasher', 'washer', 'air_conditioner'].includes(device.type)) {
+      if (!['temperature_humidity_sensor', 'air_quality_sensor', 'water_flow_sensor', 'soil_moisture_sensor', 'fridge', 'door_lock', 'water_leak_sensor', 'sleep_sensor', 'router', 'stove', 'dishwasher', 'washer'].includes(device.type)) {
         continue;
       }
       const state = this.state.snapshot.devices[device.id].state;
@@ -2817,6 +3037,10 @@ class Simulator implements VirtualHomeSimulator {
         const roomOccupied = room.humanOccupancy;
         const worldTemperatureC = this.round(this.clamp((Number(room.temperatureC) || Number(state.temperatureC) || 25) + this.state.random.range(-0.12, 0.18) + (roomOccupied ? 0.03 : -0.02), 17, 31));
         const worldHumidityPercent = this.round(this.clamp((Number(room.humidityPercent) || Number(state.humidityPercent) || 55) + this.state.random.range(-0.25, 0.35) + (roomOccupied ? 0.04 : -0.03), 35, 78));
+        room.temperatureC = worldTemperatureC;
+        room.humidityPercent = worldHumidityPercent;
+        state.temperatureC = worldTemperatureC;
+        state.humidityPercent = worldHumidityPercent;
         sensorObservation = observeEnvironmentSensor({
           deviceId: device.id,
           roomId: device.roomId,
@@ -2828,37 +3052,15 @@ class Simulator implements VirtualHomeSimulator {
           previousObservation: this.state.sensorObservations.get(device.id),
           currentTime: this.state.snapshot.simClock.currentTime,
           randomSeed: this.state.random.getState()
-        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1, reportOnChangeThreshold: 0 }));
+        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }), this.environmentSensorReportingPolicy(device.id, {
+          temperatureC: 0.5,
+          humidityPercent: 3
+        }));
         if (!sensorObservation) {
           continue;
         }
         Object.assign(measurements, sensorObservation.event.measurements);
-        const previousTemperature = this.state.sensorObservations.get(device.id)?.temperatureC;
-        if (typeof measurements.temperature_c !== 'number') {
-          measurements.temperature_c = typeof previousTemperature === 'number' ? previousTemperature : worldTemperatureC;
-        }
-        if (
-          typeof previousTemperature === 'number' &&
-          Math.abs(Number(measurements.temperature_c) - worldTemperatureC) < 0.2 &&
-          Math.abs(previousTemperature - worldTemperatureC) >= 0.2
-        ) {
-          measurements.temperature_c = previousTemperature;
-        }
-        if (Math.abs(Number(measurements.temperature_c) - worldTemperatureC) < 0.2) {
-          const direction = typeof previousTemperature === 'number' && previousTemperature > worldTemperatureC ? 1 : -1;
-          measurements.temperature_c = this.round(this.clamp(worldTemperatureC + direction * 0.2, 17, 31));
-        }
-        if (typeof measurements.humidity_percent !== 'number') {
-          const previousHumidity = this.state.sensorObservations.get(device.id)?.humidityPercent;
-          measurements.humidity_percent = typeof previousHumidity === 'number' ? previousHumidity : worldHumidityPercent;
-        }
         sensorObservation.event.measurements = { ...measurements };
-        sensorObservation.observedState.temperatureC = measurements.temperature_c;
-        sensorObservation.observedState.humidityPercent = measurements.humidity_percent;
-        room.temperatureC = worldTemperatureC;
-        room.humidityPercent = worldHumidityPercent;
-        state.temperatureC = worldTemperatureC;
-        state.humidityPercent = worldHumidityPercent;
       } else if (device.type === 'air_quality_sensor') {
         const cooking = this.state.snapshot.activities.breakfast || this.state.snapshot.activities.cooking_dinner;
         const humanOccupancy = this.state.snapshot.rooms[device.roomId].people
@@ -2867,6 +3069,8 @@ class Simulator implements VirtualHomeSimulator {
         const remoteWorkLoad = device.roomId === 'study' && this.state.snapshot.people.adult_2?.location === 'study' && this.state.snapshot.people.adult_2.activity === 'remote_work' ? 145 : 0;
         const worldPm25 = this.round(this.clamp((cooking ? 18 : 8) + this.state.random.range(-1, 1), 2, 60));
         const worldCo2 = this.round(this.clamp((cooking ? 690 : 530) + humanOccupancy * 42 + remoteWorkLoad + this.state.random.range(-8, 8), 420, 1200));
+        state.pm25 = worldPm25;
+        state.co2 = worldCo2;
         sensorObservation = observeEnvironmentSensor({
           deviceId: device.id,
           roomId: device.roomId,
@@ -2878,21 +3082,30 @@ class Simulator implements VirtualHomeSimulator {
           previousObservation: this.state.sensorObservations.get(device.id),
           currentTime: this.state.snapshot.simClock.currentTime,
           randomSeed: this.state.random.getState()
-        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }));
+        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }), this.environmentSensorReportingPolicy(device.id, {
+          pm25: 5,
+          co2: 75
+        }));
         if (!sensorObservation) {
           continue;
         }
         Object.assign(measurements, sensorObservation.event.measurements);
-        if (typeof measurements.pm25 === 'number') {
-          state.pm25 = measurements.pm25;
-        }
-        if (typeof measurements.co2 === 'number') {
-          state.co2 = measurements.co2;
-        }
       } else if (device.type === 'fridge' || device.type === 'door_lock') {
         const contactOpen = device.type === 'fridge'
           ? state.doorOpen === true
           : state.locked === false;
+        const contactProfile = device.type === 'fridge'
+          ? withSensorProfileOverrides(getSensorProfile('contact_sensor'), {
+              samplingIntervalSec: 1,
+              falsePositiveRate: 0,
+              outOfOrderRate: 0
+            })
+          : withSensorProfileOverrides(getSensorProfile('contact_sensor'), {
+              samplingIntervalSec: 1,
+              falsePositiveRate: 0,
+              duplicateRate: 0.005,
+              cooldownSec: 120
+            });
         sensorObservation = observeContactSensor({
           deviceId: device.id,
           roomId: device.roomId,
@@ -2903,7 +3116,7 @@ class Simulator implements VirtualHomeSimulator {
           previousObservation: this.state.sensorObservations.get(device.id),
           currentTime: this.state.snapshot.simClock.currentTime,
           randomSeed: this.state.random.getState()
-        }, withSensorProfileOverrides(getSensorProfile('contact_sensor'), { samplingIntervalSec: 1 }));
+        }, contactProfile);
         if (!sensorObservation) {
           continue;
         }
@@ -2938,7 +3151,12 @@ class Simulator implements VirtualHomeSimulator {
           previousObservation: this.state.sensorObservations.get(device.id),
           currentTime: this.state.snapshot.simClock.currentTime,
           randomSeed: this.state.random.getState()
-        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }), {
+        }, withSensorProfileOverrides(getSensorProfile(device.type), {
+          samplingIntervalSec: 1,
+          falsePositiveRate: 0,
+          falseNegativeRate: 0.004,
+          cooldownSec: 180
+        }), {
           worldKey: 'inBed',
           measurementName: 'in_bed'
         });
@@ -3008,10 +3226,18 @@ class Simulator implements VirtualHomeSimulator {
         const leakActive = this.state.snapshot.devices.water_leak_01.state.leakDetected === true;
         const valveOpen = this.state.snapshot.devices.water_valve_01.state.valveOpen !== false;
         const currentFlow = Number(state.flowLMin) || 0;
+        if (!leakActive && currentFlow <= 0) {
+          state.flowLMin = 0;
+          this.state.sensorObservations.set(device.id, {
+            flowLMin: 0,
+            lastObservedAt: this.state.snapshot.simClock.currentTime
+          });
+          continue;
+        }
         const nextFlow = leakActive && valveOpen
           ? currentFlow
           : this.clamp(currentFlow + (roomOccupied ? this.state.random.range(-0.15, 0.08) : -0.7), 0, 12);
-        const flowLMin = this.round(nextFlow);
+        const flowLMin = nextFlow < 0.3 ? 0 : this.round(nextFlow);
         const totalL = this.round((Number(state.totalL) || 0) + flowLMin);
         state.flowLMin = flowLMin;
         state.totalL = totalL;
@@ -3034,17 +3260,35 @@ class Simulator implements VirtualHomeSimulator {
           continue;
         }
         Object.assign(measurements, sensorObservation.event.measurements);
-        if (typeof measurements.flow_l_min === 'number') {
+        if (!valveOpen && flowLMin === 0) {
+          measurements.flow_l_min = 0;
+          sensorObservation.event.measurements = { ...measurements };
+          sensorObservation.observedState.flowLMin = 0;
+          state.flowLMin = 0;
+        } else if (typeof measurements.flow_l_min === 'number') {
           state.flowLMin = measurements.flow_l_min;
         }
       } else if (device.type === 'soil_moisture_sensor') {
         const sprinklerOn = this.state.snapshot.devices.sprinkler_01.state.valveOpen === true;
         const moisturePercent = this.round(this.clamp((Number(state.moisturePercent) || 38) + (sprinklerOn ? 0.55 : -0.03) + this.state.random.range(-0.04, 0.04), 20, 75));
         state.moisturePercent = moisturePercent;
-        measurements.moisture_percent = moisturePercent;
-      } else if (device.type === 'air_conditioner') {
-        measurements.power_on = state.power === 'on';
-        measurements.target_c = Number(state.targetC ?? 26);
+        sensorObservation = observeEnvironmentSensor({
+          deviceId: device.id,
+          roomId: device.roomId,
+          deviceType: device.type,
+          worldState: {
+            moisturePercent
+          },
+          previousObservation: this.state.sensorObservations.get(device.id),
+          currentTime: this.state.snapshot.simClock.currentTime,
+          randomSeed: this.state.random.getState()
+        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }), this.environmentSensorReportingPolicy(device.id, {
+          moisturePercent: 2
+        }));
+        if (!sensorObservation) {
+          continue;
+        }
+        Object.assign(measurements, sensorObservation.event.measurements);
       }
       if (sensorObservation) {
         this.state.sensorObservations.set(device.id, sensorObservation.observedState);
@@ -3065,6 +3309,26 @@ class Simulator implements VirtualHomeSimulator {
     return events;
   }
 
+  private environmentSensorReportingPolicy(
+    deviceId: string,
+    thresholds: NonNullable<EnvironmentSensorReportingOptions['thresholds']>
+  ): EnvironmentSensorReportingOptions {
+    return {
+      thresholds,
+      heartbeatIntervalMinutes: 15,
+      heartbeatOffsetMinutes: this.environmentHeartbeatOffsetMinutes(deviceId)
+    };
+  }
+
+  private environmentHeartbeatOffsetMinutes(deviceId: string): number {
+    const source = `${this.state.snapshot.runContext.seed}:${deviceId}`;
+    let hash = 0;
+    for (const char of source) {
+      hash = ((hash * 31) + char.charCodeAt(0)) >>> 0;
+    }
+    return hash % 15;
+  }
+
   private createTelemetryEventFromObservation(observation: SensorObservation): DeviceTelemetryEvent {
     return this.createEvent(observation.event);
   }
@@ -3078,14 +3342,32 @@ class Simulator implements VirtualHomeSimulator {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Invalid state patch for ${deviceId} (${device.type}): ${message}`);
     }
+    if (device.type === 'fridge') {
+      if (validPatch.doorOpen === false) {
+        validPatch = {
+          ...validPatch,
+          lifecyclePhase: validPatch.lifecyclePhase ?? 'closed',
+          openMinutes: 0
+        };
+      } else if (validPatch.doorOpen === true && device.state.doorOpen !== true) {
+        validPatch = {
+          ...validPatch,
+          lifecyclePhase: validPatch.lifecyclePhase ?? 'opened',
+          openMinutes: validPatch.openMinutes ?? 0
+        };
+      }
+    }
     device.state = { ...device.state, ...validPatch };
     device.lastReason = reason;
+    const eventState = device.type === 'air_conditioner'
+      ? validPatch
+      : device.state;
     return this.createEvent({
       type: 'DeviceStateChanged',
       roomId: device.roomId,
       deviceId,
       deviceType: device.type,
-      state: structuredClone(device.state),
+      state: structuredClone(eventState),
       reason
     });
   }
@@ -3875,8 +4157,14 @@ function restoreSensorObservations(events: TwinEvent[], runId: string, sequence:
     if (event.runId !== runId || event.sequence > sequence || event.type !== 'DeviceTelemetry') {
       continue;
     }
+    const observation = telemetryMeasurementsToObservation(event.measurements);
+    const reportedAt = Object.fromEntries(Object.keys(observation)
+      .map((stateKey) => [`${stateKey}ReportedAt`, event.lineage.eventTime] as const));
+    const previous = observations.get(event.deviceId) ?? {};
     observations.set(event.deviceId, {
-      ...telemetryMeasurementsToObservation(event.measurements),
+      ...previous,
+      ...observation,
+      ...reportedAt,
       lastObservedAt: event.lineage.eventTime
     });
   }

@@ -437,7 +437,7 @@ describe('3D floorplan layout and model', () => {
   it('keeps recent pet movement animation without drawing an ambient trail', () => {
     const simulator = createSimulator({ seed: 314 });
     simulator.startScenario('weekday_normal');
-    simulator.advanceMinutes(14);
+    simulator.advanceMinutes(60);
 
     const model = createFloorplan3DModel(simulator.getSnapshot(), simulator.getEvents());
     const pet = model.people.find((person) => person.id === 'pet_1');
@@ -454,7 +454,7 @@ describe('3D floorplan layout and model', () => {
   it('limits frequent pet movement segments to the latest route burst', () => {
     const simulator = createSimulator({ seed: 42 });
     simulator.startScenario('weekday_normal');
-    simulator.advanceMinutes(120);
+    simulator.advanceMinutes(91);
 
     const model = createFloorplan3DModel(simulator.getSnapshot(), simulator.getEvents());
     const pet = model.people.find((person) => person.id === 'pet_1');

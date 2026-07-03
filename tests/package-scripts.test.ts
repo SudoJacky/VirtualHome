@@ -26,4 +26,12 @@ describe('package scripts', () => {
 
     expect(packageJson.scripts?.dataset).toBe('tsx src/sim/evaluation/runEvaluation.ts --dataset');
   });
+
+  it('defines a Home Memory device-event dataset export command', () => {
+    const packageJson = JSON.parse(readFileSync(path.resolve('package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+
+    expect(packageJson.scripts?.['memory:dataset']).toBe('tsx src/sim/evaluation/homeMemoryDataset.ts');
+  });
 });
