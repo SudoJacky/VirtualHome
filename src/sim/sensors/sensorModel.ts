@@ -39,10 +39,6 @@ export interface EnvironmentSensorReportingOptions {
 }
 
 export function observeMotionSensor(input: SensorObservationInput, profile: SensorProfile): SensorObservation | null {
-  if (!shouldSampleSensor(profile, input.currentTime, input.previousObservation)) {
-    return null;
-  }
-
   const humanOccupancy = input.worldState.humanOccupancy === true;
   const petOccupancy = input.worldState.petOccupancy === true;
   const worldMotion = input.worldState.motionDetected === true;
@@ -58,6 +54,18 @@ export function observeMotionSensor(input: SensorObservationInput, profile: Sens
     motion,
     confidence
   };
+  const previousMotion = typeof input.previousObservation?.motion === 'boolean'
+    ? input.previousObservation.motion
+    : undefined;
+  const initialActiveMotion = previousMotion === undefined && motion;
+  const changedMotion = previousMotion !== undefined && previousMotion !== motion;
+
+  if (!initialActiveMotion && !changedMotion && !noisy) {
+    return null;
+  }
+  if (!initialActiveMotion && !changedMotion && noisy && !shouldSampleSensor(profile, input.currentTime, input.previousObservation)) {
+    return null;
+  }
 
   return createSensorObservation(input, measurements, profile, {
       noisy,

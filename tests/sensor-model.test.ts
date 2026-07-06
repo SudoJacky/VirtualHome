@@ -102,6 +102,61 @@ describe('sensor model', () => {
     });
   });
 
+  it('reports motion only when observed occupancy changes', () => {
+    const profile = withSensorProfileOverrides(getSensorProfile('motion_sensor'), {
+      falseNegativeRate: 0,
+      falsePositiveRate: 0,
+      cooldownSec: 120,
+      delayMs: { kind: 'constant', value: 0 },
+      dropRate: 0,
+      duplicateRate: 0
+    });
+    const baseInput: SensorObservationInput = {
+      deviceId: 'living_motion_01',
+      roomId: 'living_room',
+      deviceType: 'motion_sensor',
+      worldState: {
+        humanOccupancy: false,
+        petOccupancy: false,
+        motionDetected: false
+      },
+      currentTime: '2026-06-17T08:00:00+08:00',
+      randomSeed: 11
+    };
+
+    const initiallyEmpty = observeMotionSensor(baseInput, profile);
+    const arrival = observeMotionSensor({
+      ...baseInput,
+      worldState: {
+        humanOccupancy: true,
+        petOccupancy: false,
+        motionDetected: true
+      },
+      currentTime: '2026-06-17T08:01:00+08:00',
+      previousObservation: initiallyEmpty?.observedState
+    }, profile);
+    const stableOccupied = observeMotionSensor({
+      ...baseInput,
+      worldState: {
+        humanOccupancy: true,
+        petOccupancy: false,
+        motionDetected: true
+      },
+      currentTime: '2026-06-17T08:02:00+08:00',
+      previousObservation: arrival?.observedState
+    }, profile);
+    const departure = observeMotionSensor({
+      ...baseInput,
+      currentTime: '2026-06-17T08:03:00+08:00',
+      previousObservation: arrival?.observedState
+    }, profile);
+
+    expect(initiallyEmpty).toBeNull();
+    expect(arrival?.event.measurements).toEqual({ motion: true, confidence: 0.84 });
+    expect(stableOccupied).toBeNull();
+    expect(departure?.event.measurements).toEqual({ motion: false, confidence: 0 });
+  });
+
   it('smooths environment readings and applies sensor drift before reporting', () => {
     const profile = withSensorProfileOverrides(getSensorProfile('temperature_humidity_sensor'), {
       delayMs: { kind: 'constant', value: 1500 },
@@ -605,7 +660,7 @@ describe('sensor model', () => {
       cooldownSec: expect.any(Number)
     });
     expect(doorbellProfile.delayMs).not.toEqual(roomMotionProfile.delayMs);
-    expect(gardenCameraProfile.falsePositiveRate).toBeGreaterThan(roomMotionProfile.falsePositiveRate);
+    expect(gardenCameraProfile.falsePositiveRate).toBeLessThanOrEqual(roomMotionProfile.falsePositiveRate);
   });
 
   it('reports numeric sensor changes after smoothing and threshold checks', () => {

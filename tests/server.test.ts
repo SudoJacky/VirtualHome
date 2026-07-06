@@ -1591,7 +1591,7 @@ describe('server API', () => {
     const advance = await server.inject({
       method: 'POST',
       url: '/api/control/advance',
-      payload: { minutes: 300 }
+      payload: { minutes: 1200 }
     });
     expect(advance.json().events.length).toBeGreaterThan(500);
 
