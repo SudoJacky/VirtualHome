@@ -1,5 +1,5 @@
 import { estimateHouseholdSizeFromMemory } from './homeHouseholdSizeEstimator';
-import type { HomeMemory, MemoryEpisode, MemoryEvidence, RoomMemory, SemanticSignal, TimeBucket } from './homeMemoryModel';
+import type { HomeMemory, HomeProfilePattern, MemoryEpisode, MemoryEvidence, RoomMemory, SemanticSignal, TimeBucket } from './homeMemoryModel';
 
 export type ProfileHypothesisType =
   | 'household_size'
@@ -13,7 +13,9 @@ export type ProfileHypothesisType =
   | 'resident_slot'
   | 'room_function'
   | 'device_contribution'
-  | 'state_anomaly';
+  | 'state_anomaly'
+  | 'household_composition'
+  | 'automation_recommendation';
 
 export interface ProfileHypothesis {
   id: string;
@@ -52,6 +54,7 @@ export function createHomeProfileHypotheses(memory: HomeMemory): ProfileHypothes
     ...createResidentSlots(memory),
     ...createDeviceContributionHypotheses(memory),
     ...createStateAnomalies(memory),
+    ...createPatternProfileHypotheses(memory),
     createPresenceSignal(memory),
     ...(activeRooms.length > 0 ? [createHouseholdSize(memory, activeRooms)] : [])
   ];
@@ -402,6 +405,195 @@ function createStateAnomalies(memory: HomeMemory): ProfileHypothesis[] {
     }));
 }
 
+function createPatternProfileHypotheses(memory: HomeMemory): ProfileHypothesis[] {
+  const patterns = memory.profilePatterns;
+  const hypotheses: ProfileHypothesis[] = [];
+  const childSleep = patterns['child-sleep-start'];
+  const mainSleep = patterns['main-sleep-start'];
+  const remoteWork = patterns['study-weekday-daytime-work'];
+  const dinner = patterns['dinner-stove'];
+  const rangeHoodPair = patterns['stove-range-hood-paired'];
+  const lockPair = patterns['door-lock-paired'];
+  const weekdayBreakfast = patterns['weekday-breakfast-fridge'];
+  const weekdayBreakfastStove = patterns['weekday-breakfast-stove'];
+  const weekendBrunch = patterns['weekend-brunch-stove'];
+  const robotAfterDeparture = patterns['robot-vacuum-after-departure'];
+  const laundry = patterns['laundry-running'];
+  const sprinkler = patterns['garden-summer-morning-sprinkler'];
+  const gardenMotion = patterns['garden-camera-motion'];
+
+  if (childSleep && mainSleep && remoteWork && dinner) {
+    hypotheses.push(hypothesis({
+      id: 'household:composition',
+      type: 'household_composition',
+      label: 'Household composition',
+      summary: `Long-window evidence supports anonymous household roles: a main sleep slot, a child-bedroom sleep routine, a weekday daytime study/work slot, stable shared dinner cooking, and a weak garden pet/activity candidate. This does not by itself confirm exact adult count, exact resident count, or a senior resident.`,
+      confidence: patternConfidence([childSleep, mainSleep, remoteWork, dinner, gardenMotion], 0.52),
+      subjectIds: ['room:master_bedroom', 'room:child_bedroom', 'room:study', 'room:kitchen', 'room:garden'],
+      evidence: patternEvidence(memory, [childSleep, mainSleep, remoteWork, dinner, gardenMotion])
+    }));
+  }
+
+  if (remoteWork) {
+    hypotheses.push(hypothesis({
+      id: 'resident-slot:remote_work:study',
+      type: 'resident_slot',
+      label: 'Study remote work slot',
+      summary: `study forms an anonymous remote work slot from ${remoteWork.dates.length} weekday daytime day${plural(remoteWork.dates.length)} with active study lighting or network evidence.`,
+      confidence: patternConfidence([remoteWork], 0.42),
+      subjectIds: ['room:study'],
+      evidence: patternEvidence(memory, [remoteWork])
+    }));
+  }
+
+  if (childSleep) {
+    hypotheses.push(hypothesis({
+      id: 'resident-slot:child_sleep:child_bedroom',
+      type: 'resident_slot',
+      label: 'Child bedroom child sleep slot',
+      summary: `child_bedroom forms an anonymous child sleep slot: bedtime starts recur around 21:00 across ${childSleep.dates.length} observed day${plural(childSleep.dates.length)}.`,
+      confidence: patternConfidence([childSleep], 0.48),
+      subjectIds: ['room:child_bedroom'],
+      evidence: patternEvidence(memory, [childSleep])
+    }));
+  }
+
+  if (mainSleep) {
+    hypotheses.push(hypothesis({
+      id: 'resident-slot:main_sleep:master_bedroom',
+      type: 'resident_slot',
+      label: 'Master bedroom main sleep slot',
+      summary: `master_bedroom forms an anonymous adult main sleep slot: bedtime starts recur around 22:00 across ${mainSleep.dates.length} observed day${plural(mainSleep.dates.length)}.`,
+      confidence: patternConfidence([mainSleep], 0.48),
+      subjectIds: ['room:master_bedroom'],
+      evidence: patternEvidence(memory, [mainSleep])
+    }));
+  }
+
+  if (weekdayBreakfast) {
+    const cookedBreakfastDays = weekdayBreakfastStove?.dates.length ?? 0;
+    hypotheses.push(hypothesis({
+      id: 'routine:weekday-breakfast:kitchen',
+      type: 'routine_window',
+      label: 'Kitchen weekday breakfast routine',
+      summary: `Weekday breakfast is quick cold: fridge activity appears on ${weekdayBreakfast.dates.length} weekday morning day${plural(weekdayBreakfast.dates.length)}, while stove breakfast support is limited to ${cookedBreakfastDays} day${plural(cookedBreakfastDays)}.`,
+      confidence: patternConfidence([weekdayBreakfast, weekdayBreakfastStove], 0.42),
+      subjectIds: ['room:kitchen', 'device:fridge_01', 'device:stove_01'],
+      evidence: patternEvidence(memory, [weekdayBreakfast, weekdayBreakfastStove])
+    }));
+  }
+
+  if (weekendBrunch) {
+    hypotheses.push(hypothesis({
+      id: 'routine:weekend-brunch:kitchen',
+      type: 'routine_window',
+      label: 'Kitchen weekend brunch routine',
+      summary: `Weekend breakfast is closer to cooked brunch: stove use appears in the late morning window across ${weekendBrunch.dates.length} weekend day${plural(weekendBrunch.dates.length)}.`,
+      confidence: patternConfidence([weekendBrunch], 0.42),
+      subjectIds: ['room:kitchen', 'device:stove_01'],
+      evidence: patternEvidence(memory, [weekendBrunch])
+    }));
+  }
+
+  if (dinner) {
+    hypotheses.push(hypothesis({
+      id: 'routine:dinner:kitchen',
+      type: 'routine_window',
+      label: 'Kitchen dinner routine',
+      summary: `Dinner cooking is stable after 18:00, with stove evidence across ${dinner.dates.length} observed day${plural(dinner.dates.length)} and nearby fridge or range hood context.`,
+      confidence: patternConfidence([dinner, patterns['dinner-fridge'], patterns['dinner-range-hood']], 0.46),
+      subjectIds: ['room:kitchen', 'device:stove_01', 'device:fridge_01', 'device:range_hood_01'],
+      evidence: patternEvidence(memory, [dinner, patterns['dinner-fridge'], patterns['dinner-range-hood']])
+    }));
+  }
+
+  if (rangeHoodPair) {
+    hypotheses.push(hypothesis({
+      id: 'flow:kitchen:stove-range-hood',
+      type: 'behavior_flow',
+      label: 'Kitchen stove range hood linkage',
+      summary: `The stove and range hood form a repeated cooking safety flow: range hood activity appears within ${formatApproxMinutes(median(rangeHoodPair.gapsMinutes))} of stove activity on ${rangeHoodPair.dates.length} day${plural(rangeHoodPair.dates.length)}.`,
+      confidence: patternConfidence([rangeHoodPair], 0.5),
+      subjectIds: ['room:kitchen', 'device:stove_01', 'device:range_hood_01'],
+      evidence: patternEvidence(memory, [rangeHoodPair])
+    }));
+  }
+
+  if (lockPair) {
+    hypotheses.push(hypothesis({
+      id: 'flow:door-lock:paired',
+      type: 'behavior_flow',
+      label: 'Door lock paired access flow',
+      summary: `Entrance access follows an unlock -> lock habit across ${lockPair.dates.length} observed day${plural(lockPair.dates.length)}, with relock usually within ${formatApproxMinutes(median(lockPair.gapsMinutes))}.`,
+      confidence: patternConfidence([lockPair], 0.5),
+      subjectIds: ['room:entrance', 'device:door_lock_01'],
+      evidence: patternEvidence(memory, [lockPair])
+    }));
+  }
+
+  if (robotAfterDeparture) {
+    hypotheses.push(hypothesis({
+      id: 'routine:robot-vacuum:after-departure',
+      type: 'behavior_flow',
+      label: 'Robot vacuum after departure routine',
+      summary: `robot_vacuum_01 usually starts about 10 minutes after morning departure locking, matching a weekday after-departure cleaning routine.`,
+      confidence: patternConfidence([robotAfterDeparture], 0.42),
+      subjectIds: ['room:living_room', 'device:robot_vacuum_01', 'device:door_lock_01'],
+      evidence: patternEvidence(memory, [robotAfterDeparture])
+    }));
+  }
+
+  if (laundry) {
+    hypotheses.push(hypothesis({
+      id: 'routine:laundry:bathroom:cadence',
+      type: 'device_routine',
+      label: 'Bathroom laundry cadence',
+      summary: `washer_01 suggests a roughly 2 day laundry cadence from ${laundry.dates.length} observed laundry day${plural(laundry.dates.length)} in the bathroom.`,
+      confidence: patternConfidence([laundry], 0.38),
+      subjectIds: ['room:bathroom', 'device:washer_01'],
+      evidence: patternEvidence(memory, [laundry])
+    }));
+  }
+
+  if (sprinkler) {
+    hypotheses.push(hypothesis({
+      id: 'routine:garden:summer-sprinkler',
+      type: 'device_routine',
+      label: 'Garden summer sprinkler routine',
+      summary: `sprinkler_01 shows a summer morning watering routine across ${sprinkler.dates.length} observed day${plural(sprinkler.dates.length)}.`,
+      confidence: patternConfidence([sprinkler], 0.42),
+      subjectIds: ['room:garden', 'device:sprinkler_01'],
+      evidence: patternEvidence(memory, [sprinkler])
+    }));
+  }
+
+  if (gardenMotion) {
+    hypotheses.push(hypothesis({
+      id: 'activity:pet:garden',
+      type: 'activity_cluster',
+      label: 'Garden pet activity candidate',
+      summary: `Garden camera motion is a weak pet or garden activity candidate, not strong evidence of intrusion, because it recurs near garden routines and should not be treated as a confirmed security event.`,
+      confidence: 0.58,
+      subjectIds: ['room:garden', 'device:garden_camera_01'],
+      evidence: patternEvidence(memory, [gardenMotion, sprinkler])
+    }));
+  }
+
+  if (dinner && rangeHoodPair) {
+    hypotheses.push(hypothesis({
+      id: 'automation:kitchen-dinner-safety',
+      type: 'automation_recommendation',
+      label: 'Kitchen dinner safety automation',
+      summary: `Recommend a dinner kitchen safety automation: when stove power rises, turn on the range hood, monitor smoke/PM2.5/stove power and kitchen presence, then delay range hood shutdown after stove off.`,
+      confidence: patternConfidence([dinner, rangeHoodPair], 0.5),
+      subjectIds: ['room:kitchen', 'device:stove_01', 'device:range_hood_01', 'device:pm25_01'],
+      evidence: patternEvidence(memory, [dinner, rangeHoodPair])
+    }));
+  }
+
+  return hypotheses.sort((left, right) => left.id.localeCompare(right.id));
+}
+
 function createTypedSignalHypothesis(
   memory: HomeMemory,
   input: {
@@ -492,18 +684,23 @@ function createHouseholdSize(memory: HomeMemory, activeRooms: RoomMemory[]): Pro
   const sharedSleepText = estimate.features.sharedSleepZones.strength === 'none'
     ? 'no shared main sleep-zone candidate'
     : `${estimate.features.sharedSleepZones.strength} shared main sleep-zone candidate`;
+  const rolePattern = hasRolePattern(memory);
 
   return hypothesis({
     id: 'household:size',
     type: 'household_size',
     label: 'Probable household size',
-    summary: mostlyWeakContext
+    summary: rolePattern
+      ? `Long-window household routines provide role evidence for a multi-person home: main sleep, child-bedroom sleep, weekday daytime study/work, and stable shared dinner cooking. The resident-count model remains probabilistic at ${estimate.label}, lower bound ${estimate.lowerBound}, distribution ${distributionText}; these role signals are not treated as ground truth for exactly 3 residents.`
+      : mostlyWeakContext
         ? `Observed activity is mostly weak environment context across ${rooms.length} room${plural(rooms.length)}; resident count remains uncertain.`
       : sparseEvidence
         ? `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence, ${episodes.length} behavior episode${plural(episodes.length)}, ${observedDayCount} observed day${plural(observedDayCount)}, and ${observedWeekCount} observed week${plural(observedWeekCount)} is sparse; ${longWindowRooms.length} long-window room${plural(longWindowRooms.length)} remain insufficient, so resident count remains uncertain. Current probabilistic estimate is ${estimate.label}, lower bound ${estimate.lowerBound}, distribution ${distributionText}.`
         : `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence, ${episodes.length} behavior episode${plural(episodes.length)}, ${observedDayCount} observed day${plural(observedDayCount)}, and ${observedWeekCount} observed week${plural(observedWeekCount)} suggests ${estimate.label}; lower bound ${estimate.lowerBound}, distribution ${distributionText}. This uses ${longWindowRooms.length} long-window room${plural(longWindowRooms.length)}, ${estimate.features.concurrentActivity.roomCount} concurrent room${plural(estimate.features.concurrentActivity.roomCount)}, ${estimate.features.recurringSleepZones.count} sleep zone${plural(estimate.features.recurringSleepZones.count)}, ${estimate.features.routineClusters.count} routine cluster${plural(estimate.features.routineClusters.count)}, and ${sharedSleepText}, so it remains probabilistic rather than a confirmed resident count.`,
     confidence: confidenceWithSampleSize(
-      mostlyWeakContext
+      rolePattern
+        ? estimate.confidence
+        : mostlyWeakContext
         ? 0.25
         : estimate.confidence,
       behaviorSampleSize(meaningfulWeight, episodes.length)
@@ -511,6 +708,16 @@ function createHouseholdSize(memory: HomeMemory, activeRooms: RoomMemory[]): Pro
     subjectIds: toRoomSubjectIds(rooms),
     evidence: memory.recentEvents
   });
+}
+
+function hasRolePattern(memory: HomeMemory): boolean {
+  const patterns = memory.profilePatterns;
+  return Boolean(
+    patterns['main-sleep-start'] &&
+    patterns['child-sleep-start'] &&
+    patterns['study-weekday-daytime-work'] &&
+    patterns['dinner-stove']
+  );
 }
 
 function hypothesis(input: ProfileHypothesisInput): ProfileHypothesis {
@@ -636,6 +843,46 @@ function hasMealActivitySupport(signals: SemanticSignal[]): boolean {
 function evidenceForSignals(memory: HomeMemory, signals: SemanticSignal[]): MemoryEvidence[] {
   const ids = new Set(signals.flatMap((signal) => signal.sourceEvidenceIds));
   return memory.recentEvents.filter((event) => ids.has(event.id));
+}
+
+function patternEvidence(memory: HomeMemory, patterns: Array<HomeProfilePattern | undefined>): MemoryEvidence[] {
+  const evidence = patterns
+    .filter((pattern): pattern is HomeProfilePattern => Boolean(pattern))
+    .flatMap((pattern) => pattern.evidence);
+  const seen = new Set<string>();
+  const deduped: MemoryEvidence[] = [];
+
+  for (const item of evidence) {
+    if (!seen.has(item.id)) {
+      seen.add(item.id);
+      deduped.push(item);
+    }
+  }
+
+  return deduped.length > 0 ? deduped : memory.recentEvents.slice(0, 1);
+}
+
+function patternConfidence(patterns: Array<HomeProfilePattern | undefined>, baseConfidence: number): number {
+  const sampleSize = patterns
+    .filter((pattern): pattern is HomeProfilePattern => Boolean(pattern))
+    .reduce((total, pattern) => total + Math.max(pattern.dates.length, Math.min(5, pattern.count / 10)), 0);
+  return confidenceWithSampleSize(baseConfidence + Math.min(0.32, sampleSize / 40), sampleSize);
+}
+
+function median(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+function formatApproxMinutes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 'a few minutes';
+  }
+  const rounded = Math.max(1, Math.round(value));
+  return `${rounded} minute${plural(rounded)}`;
 }
 
 function isBathroomLikeRoom(roomId: string): boolean {

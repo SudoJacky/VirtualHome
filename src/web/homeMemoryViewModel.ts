@@ -499,6 +499,8 @@ function localizedHypothesisType(type: ProfileHypothesis['type'], locale: Memory
     resident_slot: '住户槽位',
     room_function: '房间功能',
     device_contribution: '设备贡献',
+    household_composition: '家庭组成',
+    automation_recommendation: '自动化建议',
     state_anomaly: '状态异常'
   };
   return labels[type];
