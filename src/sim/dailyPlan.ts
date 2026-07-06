@@ -1,6 +1,7 @@
 import type { HomeMode, RoomId, ScenarioId } from '../shared/types';
 import { createExternalContext, type ExternalContext } from './externalContext';
 import { SeededRandom } from './random';
+import { createWeekdayResidentRoutineAnchorSteps } from './residents/routineAnchors';
 import type { ScenarioAction, ScenarioDefinition, ScenarioStep } from './scenarios';
 
 export type DayType = 'weekday' | 'weekend';
@@ -148,6 +149,10 @@ function createWeekdaySteps(calendar: CalendarProfile, random: SeededRandom, wak
           ])
         ]
       : []),
+    ...createWeekdayResidentRoutineAnchorSteps({
+      remoteWorkStartMinute: remoteWorkStart,
+      childSleepMinute: profile.childBedtimeHour * 60
+    }),
     step(17 * 60 + jitter(random, 35, 20), [
       mode('evening_home'),
       move('child_1', 'living_room', 'homework')

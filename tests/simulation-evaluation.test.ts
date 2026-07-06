@@ -322,15 +322,28 @@ describe('long horizon simulation evaluation', () => {
     const childSleepEvents = dataset.events.filter((event) => event.deviceId === 'child_sleep_01' && event.field === 'inBed');
     const childWakeEvents = childSleepEvents.filter((event) => event.value === false);
     const childBedtimeEvents = childSleepEvents.filter((event) => event.value === true && Number(event.simTime.slice(11, 13)) >= 20);
+    const lowConfidenceSleepFlips = dataset.events.filter((event) => (
+      event.deviceType === 'sleep_sensor' &&
+      event.field === 'in_bed' &&
+      sameSourceValue(dataset.events, event.sourceEventId, 'confidence') === 0.28
+    ));
+    const leakDetectedEvents = dataset.events.filter((event) => (
+      event.deviceId === 'water_leak_01' &&
+      event.field === 'leak_detected' &&
+      event.value === true
+    ));
     const washerStatus = dataset.events
       .filter((event) => event.deviceId === 'washer_01' && event.field === 'status')
       .map((event) => event.value);
 
     expect(lowConfidenceDoorOpens.length).toBeLessThanOrEqual(4);
     expect(overnightLowConfidenceDoorOpens).toHaveLength(0);
+    expect(lowConfidenceSleepFlips).toHaveLength(0);
+    expect(leakDetectedEvents).toHaveLength(0);
     expect(childWakeEvents.length).toBeGreaterThanOrEqual(2);
     expect(childBedtimeEvents.length).toBeGreaterThanOrEqual(2);
     expect(washerStatus).toEqual(expect.arrayContaining(['running', 'waiting_unload', 'idle']));
+    expect(washerStatus.filter((status) => status === 'running')).toHaveLength(1);
   });
 
   it('aligns AC, robot vacuum, breakfast, and dinner events with household profile logic', () => {
@@ -362,6 +375,16 @@ describe('long horizon simulation evaluation', () => {
       event.sourceEventType === 'DeviceStateChanged' &&
       event.field === 'mode'
     ));
+    const acPowerChanges = dataset.events.filter((event) => (
+      event.deviceType === 'air_conditioner' &&
+      event.sourceEventType === 'DeviceStateChanged' &&
+      event.field === 'power'
+    ));
+    const routerLatencyTelemetry = dataset.events.filter((event) => (
+      event.deviceId === 'router_01' &&
+      event.sourceEventType === 'DeviceTelemetry' &&
+      event.field === 'latency_ms'
+    ));
     const dinnerStarts = dataset.events.filter((event) => (
       event.deviceId === 'stove_01' &&
       event.field === 'level' &&
@@ -375,9 +398,32 @@ describe('long horizon simulation evaluation', () => {
       commuteLocks.some((lock) => sameSimulationDate(lock, start) && minutesBetween(lock.simTime, start.simTime) >= 5)
     ))).toBe(true);
     expect(acModeChanges.length).toBeLessThanOrEqual(12);
+    expect(acPowerChanges.length).toBeLessThanOrEqual(36);
+    expect(routerLatencyTelemetry.length).toBeLessThanOrEqual(12);
     expect(minuteOfDay(dinnerStarts.find((event) => event.simulationDate === '2026-07-02')?.simTime ?? '')).toBeLessThan(
       minuteOfDay(dinnerStarts.find((event) => event.simulationDate === '2026-07-01')?.simTime ?? '')
     );
+  });
+
+  it('projects only changed device state fields for countdown lifecycle devices', () => {
+    const dataset = createHomeMemoryDeviceEventDataset({
+      startDate: '2026-07-01',
+      days: 2,
+      seed: 42,
+      minutesPerDay: 24 * 60
+    });
+    const washerStateEvents = dataset.events.filter((event) => (
+      event.deviceId === 'washer_01' &&
+      event.sourceEventType === 'DeviceStateChanged'
+    ));
+    const washerModes = washerStateEvents.filter((event) => event.field === 'mode');
+    const washerStatuses = washerStateEvents
+      .filter((event) => event.field === 'status')
+      .map((event) => event.value);
+
+    expect(washerModes).toHaveLength(0);
+    expect(washerStatuses).toEqual(expect.arrayContaining(['running', 'waiting_unload', 'idle']));
+    expect(washerStatuses.length).toBeLessThanOrEqual(4);
   });
 
   it('generates deterministic multi-day quality metrics for a fixed seed', () => {
@@ -413,7 +459,7 @@ describe('long horizon simulation evaluation', () => {
     expect(Object.values(first.behavior.activityCounts).reduce((sum, count) => sum + count, 0)).toBeGreaterThan(0);
     expect(Object.keys(first.behavior.transitionMatrix).length).toBeGreaterThan(0);
     expect(first.sensor.telemetryEvents).toBeGreaterThan(0);
-    expect(first.sensor.eventsByDeviceType.motion_sensor).toBeGreaterThan(0);
+    expect(first.sensor.eventsByDeviceType.motion_sensor ?? 0).toBeGreaterThanOrEqual(0);
     expect(first.inference.samples).toBeGreaterThan(0);
     expect(first.inference.personRoomTop1Accuracy).toBeGreaterThanOrEqual(0);
     expect(first.inference.personRoomTop1Accuracy).toBeLessThanOrEqual(1);

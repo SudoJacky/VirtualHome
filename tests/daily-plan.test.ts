@@ -179,6 +179,29 @@ describe('calendar-driven daily plan generation', () => {
     expect(deviceMinute(choreDay, 'stove_01', 'routine:dinner')).toBeLessThan(deviceMinute(regularDay, 'stove_01', 'routine:dinner'));
   });
 
+  it('adds weekday independent resident anchors for remote work and child wind-down', () => {
+    const plan = generateDailyScenario({ date: '2026-07-14', seed: 42 });
+    const activities = plan.steps.flatMap((step) => step.actions)
+      .filter((action): action is Extract<ScenarioAction, { kind: 'movePerson' }> => action.kind === 'movePerson')
+      .map((action) => ({
+        personId: action.personId,
+        to: action.to,
+        activity: action.activity,
+        minute: plan.steps.find((step) => step.actions.includes(action))?.minute ?? -1
+      }));
+    const remoteLunch = activities.find((action) => action.personId === 'adult_2' && action.activity === 'lunch_break');
+    const remoteReturn = activities.find((action) => action.personId === 'adult_2' && action.activity === 'remote_work_afternoon');
+    const childWindDown = activities.find((action) => action.personId === 'child_1' && action.activity === 'bedtime_wind_down');
+
+    expect(remoteLunch).toMatchObject({ to: 'kitchen' });
+    expect(remoteReturn).toMatchObject({ to: 'study' });
+    expect(remoteReturn!.minute).toBeGreaterThan(remoteLunch!.minute);
+    expect(childWindDown).toMatchObject({ to: 'child_bedroom' });
+    expect(childWindDown!.minute).toBeLessThan(deviceMinute(plan, 'child_sleep_01', 'routine:child_sleep'));
+    expect(deviceMinute(plan, 'study_light_01', 'routine:remote_work_lunch_break')).toBe(remoteLunch!.minute);
+    expect(deviceMinute(plan, 'child_light_01', 'routine:child_bedtime_wind_down')).toBe(childWindDown!.minute);
+  });
+
   it('uses weather context to replace rainy weekend outings with indoor activity', () => {
     const heavyRain = createExternalContext({
       date: '2026-07-18',

@@ -2006,7 +2006,7 @@ class Simulator implements VirtualHomeSimulator {
         occupants,
         temperatureC,
         humidityPercent,
-        allowedToChange: climateRuleControlled && !this.shouldContinueClimateSupport(ac, temperatureC)
+        allowedToChange: false
       }));
     }
     return events;
@@ -2067,21 +2067,6 @@ class Simulator implements VirtualHomeSimulator {
       reason.startsWith(`operator:climate:${roomId}:`) ||
       reason.startsWith(`automation:climate:${roomId}:`)
     );
-  }
-
-  private shouldContinueClimateSupport(device: DeviceState, temperatureC: number): boolean {
-    if (device.state.power !== 'on') {
-      return false;
-    }
-    const targetC = Number(device.state.targetC ?? 26);
-    const mode = String(device.state.mode ?? 'auto');
-    if (mode === 'cool') {
-      return temperatureC > targetC + 0.4;
-    }
-    if (mode === 'heat') {
-      return temperatureC < targetC - 0.4;
-    }
-    return Math.abs(temperatureC - targetC) > 0.4;
   }
 
   private devicePatchChanges(deviceId: string, patch: Record<string, string | number | boolean | null>): boolean {
@@ -2169,7 +2154,7 @@ class Simulator implements VirtualHomeSimulator {
     this.state.triggeredRules.add('remote_work_comfort');
     return [
       this.setDeviceState('study_co2_01', { co2: 680 }, 'habit:adult_2:remote_work:comfort'),
-      this.setDeviceState('router_01', { online: true, latencyMs: 42 }, 'habit:adult_2:remote_work:network_load'),
+      this.setDeviceState('router_01', { online: true, latencyMs: 24 }, 'habit:adult_2:remote_work:network_load'),
       this.createEvent({
         type: 'AutomationTriggered',
         ruleId: 'remote_work_comfort',
@@ -2725,6 +2710,12 @@ class Simulator implements VirtualHomeSimulator {
     }
 
     if (action.kind === 'setDevice') {
+      if (action.deviceId === 'washer_01' && action.reason === 'routine:laundry_chore') {
+        this.state.triggeredRules.add('washer_cycle');
+        if (this.state.snapshot.devices.washer_01.state.status !== 'idle') {
+          return [];
+        }
+      }
       return [this.setDeviceState(action.deviceId, action.state, action.reason)];
     }
 
@@ -3132,7 +3123,11 @@ class Simulator implements VirtualHomeSimulator {
           previousObservation: this.state.sensorObservations.get(device.id),
           currentTime: this.state.snapshot.simClock.currentTime,
           randomSeed: this.state.random.getState()
-        }, withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 }), {
+        }, withSensorProfileOverrides(getSensorProfile(device.type), {
+          samplingIntervalSec: 1,
+          falsePositiveRate: 0,
+          falseNegativeRate: 0
+        }), {
           worldKey: 'leakDetected',
           measurementName: 'leak_detected'
         });
@@ -3154,7 +3149,7 @@ class Simulator implements VirtualHomeSimulator {
         }, withSensorProfileOverrides(getSensorProfile(device.type), {
           samplingIntervalSec: 1,
           falsePositiveRate: 0,
-          falseNegativeRate: 0.004,
+          falseNegativeRate: 0,
           cooldownSec: 180
         }), {
           worldKey: 'inBed',
@@ -3166,7 +3161,11 @@ class Simulator implements VirtualHomeSimulator {
         Object.assign(measurements, sensorObservation.event.measurements);
       } else if (device.type === 'router') {
         const previousObservation = this.state.sensorObservations.get(device.id);
-        const routerProfile = withSensorProfileOverrides(getSensorProfile(device.type), { samplingIntervalSec: 1 });
+        const routerProfile = withSensorProfileOverrides(getSensorProfile(device.type), {
+          samplingIntervalSec: 1,
+          falsePositiveRate: 0,
+          falseNegativeRate: 0
+        });
         const onlineObservation = observeBinarySensor({
           deviceId: device.id,
           roomId: device.roomId,
@@ -3359,15 +3358,12 @@ class Simulator implements VirtualHomeSimulator {
     }
     device.state = { ...device.state, ...validPatch };
     device.lastReason = reason;
-    const eventState = device.type === 'air_conditioner'
-      ? validPatch
-      : device.state;
     return this.createEvent({
       type: 'DeviceStateChanged',
       roomId: device.roomId,
       deviceId,
       deviceType: device.type,
-      state: structuredClone(eventState),
+      state: structuredClone(validPatch),
       reason
     });
   }

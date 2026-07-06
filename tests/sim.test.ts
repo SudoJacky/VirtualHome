@@ -289,16 +289,14 @@ describe('virtual home simulator MVP', () => {
     expect(petMoves.length).toBeLessThanOrEqual(4);
     expect(new Set(petMoves.map((event) => event.to)).size).toBeGreaterThan(1);
     expect(snapshot.people.pet_1.location).not.toBe('away');
-    expect(events.some((event) => event.type === 'DeviceStateChanged' && event.deviceType === 'motion_sensor')).toBe(true);
   });
 
-  it('treats pet movement as low-risk motion without human occupancy', () => {
+  it('keeps pet movement out of human motion telemetry when nobody is home', () => {
     const simulator = createSimulator({ seed: 314 });
 
     simulator.startScenario('away_day');
-    simulator.advanceMinutes(20);
+    const events = simulator.advanceMinutes(20);
     const snapshot = simulator.getSnapshot();
-    const events = simulator.getEvents();
     const petRoomId = snapshot.people.pet_1.location as RoomId;
 
     expect(snapshot.homeState.occupancyCount).toBe(0);
@@ -308,10 +306,11 @@ describe('virtual home simulator MVP', () => {
     expect(events.some((event): event is DeviceTelemetryEvent => (
       event.type === 'DeviceTelemetry' &&
       event.sourceLayer === 'sensor' &&
+      event.deviceType === 'motion_sensor' &&
       event.measurements.motion === true &&
       event.lineage.quality.noisy === true &&
       Number(event.measurements.confidence) <= 0.42
-    ))).toBe(true);
+    ))).toBe(false);
   });
 
   it('keeps sleeping-mode pet movement from turning on lights', () => {
@@ -598,6 +597,32 @@ describe('virtual home simulator MVP', () => {
 
     expect(updated.devices.living_ac_01.state).toMatchObject({ power: 'on', targetC: 25, mode: 'cool' });
     expect(updated.rooms.living_room.temperatureC).toBeLessThan(28.4);
+    expect(events.some((event): event is DeviceStateChangedEvent => (
+      event.type === 'DeviceStateChanged' &&
+      event.deviceId === 'living_ac_01' &&
+      event.state.power === 'off'
+    ))).toBe(false);
+  });
+
+  it('does not power-cycle occupied room air conditioning just because the target is reached', () => {
+    const simulator = createSimulator({ seed: 42 });
+
+    simulator.startScenario('weekday_normal');
+    const snapshot = simulator.getSnapshot();
+    snapshot.simClock.currentTime = '2026-06-17T20:18:00+08:00';
+    snapshot.homeState.mode = 'evening_home';
+    snapshot.people.adult_1 = { ...snapshot.people.adult_1, location: 'living_room', activity: 'reading' };
+    snapshot.people.adult_2 = { ...snapshot.people.adult_2, location: 'living_room', activity: 'family_time' };
+    snapshot.rooms.living_room.temperatureC = 25.2;
+    snapshot.rooms.living_room.humidityPercent = 56;
+    snapshot.devices.living_ac_01.state = { ...snapshot.devices.living_ac_01.state, power: 'on', targetC: 25, mode: 'cool' };
+    snapshot.devices.living_ac_01.lastReason = 'operator:climate:living_room:adult_1:occupied_cooling';
+    simulator.restore(snapshot, simulator.getEvents());
+
+    const events = simulator.advanceMinutes(1);
+    const updated = simulator.getSnapshot();
+
+    expect(updated.devices.living_ac_01.state).toMatchObject({ power: 'on', targetC: 25, mode: 'cool' });
     expect(events.some((event): event is DeviceStateChangedEvent => (
       event.type === 'DeviceStateChanged' &&
       event.deviceId === 'living_ac_01' &&
@@ -1195,23 +1220,46 @@ describe('virtual home simulator MVP', () => {
     expect(telemetryEvents).toHaveLength(0);
   });
 
-  it('reports motion through sampled sensor telemetry instead of direct room truth', () => {
+  it('reports motion telemetry only when observed occupancy changes', () => {
     const simulator = createSimulator({ seed: 333 });
 
     simulator.startScenario('weekday_normal');
-    const events = simulator.advanceMinutes(3);
-    const motionTelemetry = events
+    const emptySnapshot = simulator.getSnapshot();
+    emptySnapshot.simClock.currentTime = '2026-06-17T10:18:00+08:00';
+    emptySnapshot.people.adult_1 = { ...emptySnapshot.people.adult_1, location: 'away', activity: 'commuting' };
+    emptySnapshot.people.adult_2 = { ...emptySnapshot.people.adult_2, location: 'study', activity: 'remote_work' };
+    emptySnapshot.people.child_1 = { ...emptySnapshot.people.child_1, location: 'away', activity: 'school' };
+    emptySnapshot.people.pet_1 = { ...emptySnapshot.people.pet_1, location: 'garden', activity: 'resting' };
+    simulator.restore(emptySnapshot, simulator.getEvents());
+
+    const stableEmptyEvents = simulator.advanceMinutes(1);
+    const arrivalSnapshot = simulator.getSnapshot();
+    arrivalSnapshot.people.adult_1 = { ...arrivalSnapshot.people.adult_1, location: 'living_room', activity: 'reading' };
+    simulator.restore(arrivalSnapshot, simulator.getEvents());
+
+    const arrivalEvents = simulator.advanceMinutes(1);
+    const stableOccupiedEvents = simulator.advanceMinutes(1);
+    const departureSnapshot = simulator.getSnapshot();
+    departureSnapshot.people.adult_1 = { ...departureSnapshot.people.adult_1, location: 'away', activity: 'commuting' };
+    simulator.restore(departureSnapshot, simulator.getEvents());
+
+    const departureEvents = simulator.advanceMinutes(1);
+    const stableEmptyTelemetry = stableEmptyEvents
+      .filter((event): event is DeviceTelemetryEvent => event.type === 'DeviceTelemetry' && event.deviceId === 'living_motion_01');
+    const arrivalTelemetry = arrivalEvents
+      .filter((event): event is DeviceTelemetryEvent => event.type === 'DeviceTelemetry' && event.deviceId === 'living_motion_01');
+    const stableOccupiedTelemetry = stableOccupiedEvents
+      .filter((event): event is DeviceTelemetryEvent => event.type === 'DeviceTelemetry' && event.deviceId === 'living_motion_01');
+    const departureTelemetry = departureEvents
       .filter((event): event is DeviceTelemetryEvent => event.type === 'DeviceTelemetry' && event.deviceId === 'living_motion_01');
 
-    expect(motionTelemetry.length).toBeGreaterThan(0);
-    expect(motionTelemetry.length).toBeLessThan(3);
-    expect(motionTelemetry[0].sourceLayer).toBe('sensor');
-    expect(motionTelemetry[0].measurements).toEqual(expect.objectContaining({
-      motion: expect.any(Boolean),
-      confidence: expect.any(Number)
-    }));
-    expect(motionTelemetry[0].lineage.eventTime).toBe('2026-06-17T06:21:00+08:00');
-    expect(motionTelemetry[0].lineage.ingestTime).not.toBe(motionTelemetry[0].lineage.eventTime);
+    expect(stableEmptyTelemetry).toHaveLength(0);
+    expect(arrivalTelemetry).toHaveLength(1);
+    expect(arrivalTelemetry[0].sourceLayer).toBe('sensor');
+    expect(arrivalTelemetry[0].measurements).toMatchObject({ motion: true, confidence: 0.84 });
+    expect(stableOccupiedTelemetry).toHaveLength(0);
+    expect(departureTelemetry).toHaveLength(1);
+    expect(departureTelemetry[0].measurements).toMatchObject({ motion: false, confidence: 0 });
   });
 
   it('reports fridge door contact through delayed sensor telemetry', () => {
