@@ -1,5 +1,5 @@
 import { estimateHouseholdSizeFromMemory } from './homeHouseholdSizeEstimator';
-import type { HomeMemory, MemoryEpisode, MemoryEvidence, RoomMemory, SemanticSignal, TimeBucket } from './homeMemoryModel';
+import type { HomeMemory, HomeProfilePattern, MemoryEpisode, MemoryEvidence, RoomMemory, SemanticSignal, TimeBucket } from './homeMemoryModel';
 
 export type ProfileHypothesisType =
   | 'household_size'
@@ -13,7 +13,39 @@ export type ProfileHypothesisType =
   | 'resident_slot'
   | 'room_function'
   | 'device_contribution'
-  | 'state_anomaly';
+  | 'state_anomaly'
+  | 'household_composition'
+  | 'automation_recommendation';
+
+export type ProfileClaimStatus = 'candidate' | 'likely' | 'strong' | 'rejected';
+export type ClaimEvidenceKind = 'fact' | 'episode' | 'feature' | 'pattern' | 'role_slot';
+export type ReasoningStepEffect = 'supports' | 'weakens' | 'rules_out';
+
+export interface ClaimScope {
+  dateRange: { from: string; to: string };
+  dayTypes?: Array<'weekday' | 'weekend'>;
+  timeBuckets?: TimeBucket[];
+  rooms?: string[];
+  devices?: string[];
+}
+
+export interface ClaimEvidence {
+  id: string;
+  kind: ClaimEvidenceKind;
+  refId: string;
+  summary: string;
+  weight: number;
+  evidenceIds: string[];
+}
+
+export interface ReasoningStep {
+  label: string;
+  rule: string;
+  inputs: string[];
+  output: string;
+  effect: ReasoningStepEffect;
+  evidenceIds: string[];
+}
 
 export interface ProfileHypothesis {
   id: string;
@@ -21,16 +53,25 @@ export interface ProfileHypothesis {
   label: string;
   summary: string;
   confidence: number;
+  status: ProfileClaimStatus;
+  scope: ClaimScope;
   updatedAt: string;
   subjectIds: string[];
   evidence: MemoryEvidence[];
   supportingEvidence: MemoryEvidence[];
   contradictingEvidence: MemoryEvidence[];
+  supports: ClaimEvidence[];
+  contradictions: ClaimEvidence[];
   missingEvidence: string[];
+  alternativeExplanations: string[];
+  reasoningSteps: ReasoningStep[];
 }
 
 const TIME_BUCKETS: TimeBucket[] = ['morning', 'daytime', 'evening', 'night'];
-type ProfileHypothesisInput = Omit<ProfileHypothesis, 'updatedAt' | 'supportingEvidence' | 'contradictingEvidence' | 'missingEvidence'> & Partial<Pick<ProfileHypothesis, 'supportingEvidence' | 'contradictingEvidence' | 'missingEvidence'>>;
+export type ProfileTraceFields = 'status' | 'scope' | 'supports' | 'contradictions' | 'alternativeExplanations' | 'reasoningSteps';
+export type ProfileHypothesisInput = Omit<ProfileHypothesis, 'updatedAt' | 'supportingEvidence' | 'contradictingEvidence' | 'missingEvidence' | ProfileTraceFields> &
+  { updatedAt?: string } &
+  Partial<Pick<ProfileHypothesis, 'supportingEvidence' | 'contradictingEvidence' | 'missingEvidence' | ProfileTraceFields>>;
 
 export function createHomeProfileHypotheses(memory: HomeMemory): ProfileHypothesis[] {
   if (memory.totalEvents === 0 || memory.recentEvents.length === 0) {
@@ -52,9 +93,14 @@ export function createHomeProfileHypotheses(memory: HomeMemory): ProfileHypothes
     ...createResidentSlots(memory),
     ...createDeviceContributionHypotheses(memory),
     ...createStateAnomalies(memory),
+    ...createPatternProfileHypotheses(memory),
     createPresenceSignal(memory),
     ...(activeRooms.length > 0 ? [createHouseholdSize(memory, activeRooms)] : [])
   ];
+}
+
+export function createProfileHypothesis(input: ProfileHypothesisInput): ProfileHypothesis {
+  return hypothesis(input);
 }
 
 function createDailyRhythms(memory: HomeMemory): ProfileHypothesis[] {
@@ -402,6 +448,195 @@ function createStateAnomalies(memory: HomeMemory): ProfileHypothesis[] {
     }));
 }
 
+function createPatternProfileHypotheses(memory: HomeMemory): ProfileHypothesis[] {
+  const patterns = memory.profilePatterns;
+  const hypotheses: ProfileHypothesis[] = [];
+  const childSleep = patterns['child-sleep-start'];
+  const mainSleep = patterns['main-sleep-start'];
+  const remoteWork = patterns['study-weekday-daytime-work'];
+  const dinner = patterns['dinner-stove'];
+  const rangeHoodPair = patterns['stove-range-hood-paired'];
+  const lockPair = patterns['door-lock-paired'];
+  const weekdayBreakfast = patterns['weekday-breakfast-fridge'];
+  const weekdayBreakfastStove = patterns['weekday-breakfast-stove'];
+  const weekendBrunch = patterns['weekend-brunch-stove'];
+  const robotAfterDeparture = patterns['robot-vacuum-after-departure'];
+  const laundry = patterns['laundry-running'];
+  const sprinkler = patterns['garden-summer-morning-sprinkler'];
+  const gardenMotion = patterns['garden-camera-motion'];
+
+  if (childSleep && mainSleep && remoteWork && dinner) {
+    hypotheses.push(hypothesis({
+      id: 'household:composition',
+      type: 'household_composition',
+      label: 'Household composition',
+      summary: `Long-window evidence supports anonymous household roles compatible with three resident-like human slots: a commuter-like adult slot, a daytime-home work/study slot with weekday daytime study/work evidence, and a child-bedroom sleep routine, plus a pet activity candidate from recurring garden motion. This does not confirm exact adult count, exact resident count, exact identities, or a senior resident.`,
+      confidence: patternConfidence([childSleep, mainSleep, remoteWork, dinner, gardenMotion], 0.52),
+      subjectIds: ['room:master_bedroom', 'room:child_bedroom', 'room:study', 'room:kitchen', 'room:garden'],
+      evidence: patternEvidence(memory, [childSleep, mainSleep, remoteWork, dinner, gardenMotion])
+    }));
+  }
+
+  if (remoteWork) {
+    hypotheses.push(hypothesis({
+      id: 'resident-slot:remote_work:study',
+      type: 'resident_slot',
+      label: 'Study remote work slot',
+      summary: `study forms an anonymous remote work slot from ${remoteWork.dates.length} weekday daytime day${plural(remoteWork.dates.length)} with active study lighting or network evidence.`,
+      confidence: patternConfidence([remoteWork], 0.42),
+      subjectIds: ['room:study'],
+      evidence: patternEvidence(memory, [remoteWork])
+    }));
+  }
+
+  if (childSleep) {
+    hypotheses.push(hypothesis({
+      id: 'resident-slot:child_sleep:child_bedroom',
+      type: 'resident_slot',
+      label: 'Child bedroom child sleep slot',
+      summary: `child_bedroom forms an anonymous child sleep slot: bedtime starts recur around 21:00 across ${childSleep.dates.length} observed day${plural(childSleep.dates.length)}.`,
+      confidence: patternConfidence([childSleep], 0.48),
+      subjectIds: ['room:child_bedroom'],
+      evidence: patternEvidence(memory, [childSleep])
+    }));
+  }
+
+  if (mainSleep) {
+    hypotheses.push(hypothesis({
+      id: 'resident-slot:main_sleep:master_bedroom',
+      type: 'resident_slot',
+      label: 'Master bedroom main sleep slot',
+      summary: `master_bedroom forms an anonymous adult main sleep slot: bedtime starts recur around 22:00 across ${mainSleep.dates.length} observed day${plural(mainSleep.dates.length)}.`,
+      confidence: patternConfidence([mainSleep], 0.48),
+      subjectIds: ['room:master_bedroom'],
+      evidence: patternEvidence(memory, [mainSleep])
+    }));
+  }
+
+  if (weekdayBreakfast) {
+    const cookedBreakfastDays = weekdayBreakfastStove?.dates.length ?? 0;
+    hypotheses.push(hypothesis({
+      id: 'routine:weekday-breakfast:kitchen',
+      type: 'routine_window',
+      label: 'Kitchen weekday breakfast routine',
+      summary: `Weekday breakfast is quick cold: fridge activity appears on ${weekdayBreakfast.dates.length} weekday morning day${plural(weekdayBreakfast.dates.length)}, while stove breakfast support is limited to ${cookedBreakfastDays} day${plural(cookedBreakfastDays)}.`,
+      confidence: patternConfidence([weekdayBreakfast, weekdayBreakfastStove], 0.42),
+      subjectIds: ['room:kitchen', 'device:fridge_01', 'device:stove_01'],
+      evidence: patternEvidence(memory, [weekdayBreakfast, weekdayBreakfastStove])
+    }));
+  }
+
+  if (weekendBrunch) {
+    hypotheses.push(hypothesis({
+      id: 'routine:weekend-brunch:kitchen',
+      type: 'routine_window',
+      label: 'Kitchen weekend brunch routine',
+      summary: `Weekend breakfast is closer to cooked brunch: stove use appears in the late morning window across ${weekendBrunch.dates.length} weekend day${plural(weekendBrunch.dates.length)}.`,
+      confidence: patternConfidence([weekendBrunch], 0.42),
+      subjectIds: ['room:kitchen', 'device:stove_01'],
+      evidence: patternEvidence(memory, [weekendBrunch])
+    }));
+  }
+
+  if (dinner) {
+    hypotheses.push(hypothesis({
+      id: 'routine:dinner:kitchen',
+      type: 'routine_window',
+      label: 'Kitchen dinner routine',
+      summary: `Dinner cooking is stable after 18:00, with stove evidence across ${dinner.dates.length} observed day${plural(dinner.dates.length)} and nearby fridge or range hood context.`,
+      confidence: patternConfidence([dinner, patterns['dinner-fridge'], patterns['dinner-range-hood']], 0.46),
+      subjectIds: ['room:kitchen', 'device:stove_01', 'device:fridge_01', 'device:range_hood_01'],
+      evidence: patternEvidence(memory, [dinner, patterns['dinner-fridge'], patterns['dinner-range-hood']])
+    }));
+  }
+
+  if (rangeHoodPair) {
+    hypotheses.push(hypothesis({
+      id: 'flow:kitchen:stove-range-hood',
+      type: 'behavior_flow',
+      label: 'Kitchen stove range hood linkage',
+      summary: `The stove and range hood form a repeated cooking safety flow: range hood activity appears within ${formatApproxMinutes(median(rangeHoodPair.gapsMinutes))} of stove activity on ${rangeHoodPair.dates.length} day${plural(rangeHoodPair.dates.length)}.`,
+      confidence: patternConfidence([rangeHoodPair], 0.5),
+      subjectIds: ['room:kitchen', 'device:stove_01', 'device:range_hood_01'],
+      evidence: patternEvidence(memory, [rangeHoodPair])
+    }));
+  }
+
+  if (lockPair) {
+    hypotheses.push(hypothesis({
+      id: 'flow:door-lock:paired',
+      type: 'behavior_flow',
+      label: 'Door lock paired access flow',
+      summary: `Entrance access follows an unlock -> lock habit across ${lockPair.dates.length} observed day${plural(lockPair.dates.length)}, with relock usually within ${formatApproxMinutes(median(lockPair.gapsMinutes))}.`,
+      confidence: patternConfidence([lockPair], 0.5),
+      subjectIds: ['room:entrance', 'device:door_lock_01'],
+      evidence: patternEvidence(memory, [lockPair])
+    }));
+  }
+
+  if (robotAfterDeparture) {
+    hypotheses.push(hypothesis({
+      id: 'routine:robot-vacuum:after-departure',
+      type: 'behavior_flow',
+      label: 'Robot vacuum after departure routine',
+      summary: `robot_vacuum_01 usually starts about 10 minutes after morning departure locking, matching a weekday after-departure cleaning routine.`,
+      confidence: patternConfidence([robotAfterDeparture], 0.42),
+      subjectIds: ['room:living_room', 'device:robot_vacuum_01', 'device:door_lock_01'],
+      evidence: patternEvidence(memory, [robotAfterDeparture])
+    }));
+  }
+
+  if (laundry) {
+    hypotheses.push(hypothesis({
+      id: 'routine:laundry:bathroom:cadence',
+      type: 'device_routine',
+      label: 'Bathroom laundry cadence',
+      summary: `washer_01 suggests a roughly 2 day laundry cadence from ${laundry.dates.length} observed laundry day${plural(laundry.dates.length)} in the bathroom.`,
+      confidence: patternConfidence([laundry], 0.38),
+      subjectIds: ['room:bathroom', 'device:washer_01'],
+      evidence: patternEvidence(memory, [laundry])
+    }));
+  }
+
+  if (sprinkler) {
+    hypotheses.push(hypothesis({
+      id: 'routine:garden:summer-sprinkler',
+      type: 'device_routine',
+      label: 'Garden summer sprinkler routine',
+      summary: `sprinkler_01 shows a summer morning watering routine across ${sprinkler.dates.length} observed day${plural(sprinkler.dates.length)}.`,
+      confidence: patternConfidence([sprinkler], 0.42),
+      subjectIds: ['room:garden', 'device:sprinkler_01'],
+      evidence: patternEvidence(memory, [sprinkler])
+    }));
+  }
+
+  if (gardenMotion) {
+    hypotheses.push(hypothesis({
+      id: 'activity:pet:garden',
+      type: 'activity_cluster',
+      label: 'Garden pet activity candidate',
+      summary: `Garden camera motion is a weak pet or garden activity candidate, not strong evidence of intrusion, because it recurs near garden routines and should not be treated as a confirmed security event.`,
+      confidence: 0.58,
+      subjectIds: ['room:garden', 'device:garden_camera_01'],
+      evidence: patternEvidence(memory, [gardenMotion, sprinkler])
+    }));
+  }
+
+  if (dinner && rangeHoodPair) {
+    hypotheses.push(hypothesis({
+      id: 'automation:kitchen-dinner-safety',
+      type: 'automation_recommendation',
+      label: 'Kitchen dinner safety automation',
+      summary: `Recommend a dinner kitchen safety automation as the primary high-value service opportunity: when stove power rises, turn on the range hood, monitor smoke/PM2.5/stove power and kitchen presence, then delay range hood shutdown after stove off.`,
+      confidence: patternConfidence([dinner, rangeHoodPair], 0.5),
+      subjectIds: ['room:kitchen', 'device:stove_01', 'device:range_hood_01', 'device:pm25_01'],
+      evidence: patternEvidence(memory, [dinner, rangeHoodPair])
+    }));
+  }
+
+  return hypotheses.sort((left, right) => left.id.localeCompare(right.id));
+}
+
 function createTypedSignalHypothesis(
   memory: HomeMemory,
   input: {
@@ -492,18 +727,23 @@ function createHouseholdSize(memory: HomeMemory, activeRooms: RoomMemory[]): Pro
   const sharedSleepText = estimate.features.sharedSleepZones.strength === 'none'
     ? 'no shared main sleep-zone candidate'
     : `${estimate.features.sharedSleepZones.strength} shared main sleep-zone candidate`;
+  const rolePattern = hasRolePattern(memory);
 
   return hypothesis({
     id: 'household:size',
     type: 'household_size',
     label: 'Probable household size',
-    summary: mostlyWeakContext
+    summary: rolePattern
+      ? `Long-window household routines provide role evidence for a multi-person home: main sleep, child-bedroom sleep, weekday daytime study/work, and stable shared dinner cooking. The resident-count model remains probabilistic at ${estimate.label}, lower bound ${estimate.lowerBound}, distribution ${distributionText}; these role signals are not treated as ground truth for exactly 3 residents.`
+      : mostlyWeakContext
         ? `Observed activity is mostly weak environment context across ${rooms.length} room${plural(rooms.length)}; resident count remains uncertain.`
       : sparseEvidence
         ? `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence, ${episodes.length} behavior episode${plural(episodes.length)}, ${observedDayCount} observed day${plural(observedDayCount)}, and ${observedWeekCount} observed week${plural(observedWeekCount)} is sparse; ${longWindowRooms.length} long-window room${plural(longWindowRooms.length)} remain insufficient, so resident count remains uncertain. Current probabilistic estimate is ${estimate.label}, lower bound ${estimate.lowerBound}, distribution ${distributionText}.`
         : `Meaningful activity across ${activeRoomCount} active room${plural(activeRoomCount)} with ${formatWeight(meaningfulWeight)} weighted evidence, ${episodes.length} behavior episode${plural(episodes.length)}, ${observedDayCount} observed day${plural(observedDayCount)}, and ${observedWeekCount} observed week${plural(observedWeekCount)} suggests ${estimate.label}; lower bound ${estimate.lowerBound}, distribution ${distributionText}. This uses ${longWindowRooms.length} long-window room${plural(longWindowRooms.length)}, ${estimate.features.concurrentActivity.roomCount} concurrent room${plural(estimate.features.concurrentActivity.roomCount)}, ${estimate.features.recurringSleepZones.count} sleep zone${plural(estimate.features.recurringSleepZones.count)}, ${estimate.features.routineClusters.count} routine cluster${plural(estimate.features.routineClusters.count)}, and ${sharedSleepText}, so it remains probabilistic rather than a confirmed resident count.`,
     confidence: confidenceWithSampleSize(
-      mostlyWeakContext
+      rolePattern
+        ? estimate.confidence
+        : mostlyWeakContext
         ? 0.25
         : estimate.confidence,
       behaviorSampleSize(meaningfulWeight, episodes.length)
@@ -513,15 +753,183 @@ function createHouseholdSize(memory: HomeMemory, activeRooms: RoomMemory[]): Pro
   });
 }
 
+function hasRolePattern(memory: HomeMemory): boolean {
+  const patterns = memory.profilePatterns;
+  return Boolean(
+    patterns['main-sleep-start'] &&
+    patterns['child-sleep-start'] &&
+    patterns['study-weekday-daytime-work'] &&
+    patterns['dinner-stove']
+  );
+}
+
 function hypothesis(input: ProfileHypothesisInput): ProfileHypothesis {
+  const confidence = clamp(input.confidence);
+  const supportingEvidence = input.supportingEvidence ?? input.evidence;
+  const contradictingEvidence = input.contradictingEvidence ?? [];
+  const missingEvidence = input.missingEvidence ?? missingEvidenceForHypothesis(input);
+  const supports = input.supports ?? claimEvidenceForEvidence(supportingEvidence, 'fact');
+  const contradictions = input.contradictions ?? claimEvidenceForEvidence(contradictingEvidence, 'fact');
+  const status = input.status ?? statusForHypothesis(input.type, confidence);
+  const alternativeExplanations = input.alternativeExplanations ?? alternativeExplanationsForHypothesis(input);
+
   return {
     ...input,
-    supportingEvidence: input.supportingEvidence ?? input.evidence,
-    contradictingEvidence: input.contradictingEvidence ?? [],
-    missingEvidence: input.missingEvidence ?? missingEvidenceForHypothesis(input),
-    confidence: clamp(input.confidence),
-    updatedAt: input.evidence[0].simTime
+    confidence,
+    status,
+    scope: input.scope ?? scopeForEvidence(input.evidence),
+    supportingEvidence,
+    contradictingEvidence,
+    supports,
+    contradictions,
+    missingEvidence,
+    alternativeExplanations,
+    reasoningSteps: input.reasoningSteps ?? reasoningStepsForHypothesis(input, status, supports, contradictions, missingEvidence, alternativeExplanations),
+    updatedAt: input.updatedAt ?? input.evidence[0]?.simTime ?? ''
   };
+}
+
+function statusForHypothesis(type: ProfileHypothesisType, confidence: number): ProfileClaimStatus {
+  if (confidence < 0.65) {
+    return 'candidate';
+  }
+  if (isHighLevelHypothesis(type)) {
+    return 'likely';
+  }
+  return confidence >= 0.9 ? 'strong' : 'likely';
+}
+
+function isHighLevelHypothesis(type: ProfileHypothesisType): boolean {
+  return type === 'household_size' || type === 'household_composition' || type === 'resident_slot';
+}
+
+function scopeForEvidence(evidence: MemoryEvidence[]): ClaimScope {
+  const dates = sortedUnique(evidence.map((item) => item.simTime.slice(0, 10)).filter(Boolean));
+  const dayTypes = sortedUnique(evidence.map((item) => dayTypeForDate(item.simTime)).filter((item): item is 'weekday' | 'weekend' => Boolean(item))) as Array<'weekday' | 'weekend'>;
+  const timeBuckets = sortedUnique(evidence.map((item) => item.timeBucket)) as TimeBucket[];
+  const rooms = sortedUnique(evidence.map((item) => item.roomId));
+  const devices = sortedUnique(evidence.map((item) => item.deviceId));
+
+  return {
+    dateRange: {
+      from: dates[0] ?? 'unknown',
+      to: dates[dates.length - 1] ?? 'unknown'
+    },
+    ...(dayTypes.length > 0 ? { dayTypes } : {}),
+    ...(timeBuckets.length > 0 ? { timeBuckets } : {}),
+    ...(rooms.length > 0 ? { rooms } : {}),
+    ...(devices.length > 0 ? { devices } : {})
+  };
+}
+
+function dayTypeForDate(simTime: string): 'weekday' | 'weekend' | undefined {
+  const date = new Date(`${simTime.slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return undefined;
+  }
+  const day = date.getDay();
+  return day === 0 || day === 6 ? 'weekend' : 'weekday';
+}
+
+function claimEvidenceForEvidence(evidence: MemoryEvidence[], kind: ClaimEvidenceKind): ClaimEvidence[] {
+  return evidence.slice(0, 8).map((item) => ({
+    id: `claim-evidence:${item.id}`,
+    kind,
+    refId: item.id,
+    summary: `${item.deviceId}.${item.field} changed to ${formatEvidenceValue(item.value)} in ${item.roomId} at ${item.simTime}.`,
+    weight: Math.max(0.01, item.profileWeight),
+    evidenceIds: [item.id]
+  }));
+}
+
+function alternativeExplanationsForHypothesis(input: Pick<ProfileHypothesisInput, 'type'>): string[] {
+  switch (input.type) {
+    case 'household_size':
+      return [
+        'Anonymous role slots may belong to fewer residents than the observed routines suggest.',
+        'No direct people-count evidence is available from the device events.'
+      ];
+    case 'household_composition':
+      return [
+        'The observed routines may be produced by different combinations of anonymous residents.',
+        'Garden motion supports only a weak pet or outdoor-activity candidate.'
+      ];
+    case 'resident_slot':
+      return [
+        'The same resident may account for multiple compatible routines.',
+        'Room activity and device usage do not identify a person by themselves.'
+      ];
+    case 'room_function':
+      return ['A room function can reflect shared or occasional usage rather than a dedicated role.'];
+    case 'routine_window':
+    case 'behavior_flow':
+    case 'activity_cluster':
+      return ['Device automation or shared household usage may explain part of this repeated pattern.'];
+    case 'state_anomaly':
+      return ['Sensor drift, missing nearby events, or a short baseline may explain the anomaly.'];
+    default:
+      return ['Additional observations may change this interpretation.'];
+  }
+}
+
+function reasoningStepsForHypothesis(
+  input: Pick<ProfileHypothesisInput, 'id' | 'type' | 'confidence'>,
+  status: ProfileClaimStatus,
+  supports: ClaimEvidence[],
+  contradictions: ClaimEvidence[],
+  missingEvidence: string[],
+  alternativeExplanations: string[]
+): ReasoningStep[] {
+  const supportEvidenceIds = supports.flatMap((support) => support.evidenceIds);
+  const contradictionEvidenceIds = contradictions.flatMap((contradiction) => contradiction.evidenceIds);
+  const steps: ReasoningStep[] = [
+    {
+      label: 'Supporting evidence aggregation',
+      rule: 'A profile claim must cite supporting facts before it can be emitted.',
+      inputs: supports.length > 0 ? supports.map((support) => support.refId) : [input.id],
+      output: `${supports.length} supporting trace item${plural(supports.length)} attached to this ${input.type} claim.`,
+      effect: 'supports',
+      evidenceIds: supportEvidenceIds
+    }
+  ];
+
+  if (contradictions.length > 0) {
+    steps.push({
+      label: 'Contradiction check',
+      rule: 'Direct contradicting evidence weakens or rules out a profile claim.',
+      inputs: contradictions.map((contradiction) => contradiction.refId),
+      output: `${contradictions.length} contradicting trace item${plural(contradictions.length)} observed.`,
+      effect: status === 'rejected' ? 'rules_out' : 'weakens',
+      evidenceIds: contradictionEvidenceIds
+    });
+  }
+
+  steps.push({
+    label: 'Missing evidence and alternatives',
+    rule: 'High-level profile claims must keep identity, role, and count uncertainty explicit.',
+    inputs: [...missingEvidence, ...alternativeExplanations].slice(0, 6),
+    output: `${missingEvidence.length} missing-evidence item${plural(missingEvidence.length)} and ${alternativeExplanations.length} alternative explanation${plural(alternativeExplanations.length)} keep the claim calibrated.`,
+    effect: missingEvidence.length > 0 || alternativeExplanations.length > 0 ? 'weakens' : 'supports',
+    evidenceIds: []
+  });
+
+  steps.push({
+    label: 'Status calibration',
+    rule: 'Exact identity and household-size interpretations are not promoted to strong without direct evidence.',
+    inputs: [`confidence:${formatWeight(input.confidence)}`, `status:${status}`],
+    output: `The claim is emitted as ${status}.`,
+    effect: 'supports',
+    evidenceIds: supportEvidenceIds
+  });
+
+  return steps;
+}
+
+function formatEvidenceValue(value: MemoryEvidence['value']): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  return String(value);
 }
 
 function missingEvidenceForHypothesis(input: ProfileHypothesisInput): string[] {
@@ -636,6 +1044,46 @@ function hasMealActivitySupport(signals: SemanticSignal[]): boolean {
 function evidenceForSignals(memory: HomeMemory, signals: SemanticSignal[]): MemoryEvidence[] {
   const ids = new Set(signals.flatMap((signal) => signal.sourceEvidenceIds));
   return memory.recentEvents.filter((event) => ids.has(event.id));
+}
+
+function patternEvidence(memory: HomeMemory, patterns: Array<HomeProfilePattern | undefined>): MemoryEvidence[] {
+  const evidence = patterns
+    .filter((pattern): pattern is HomeProfilePattern => Boolean(pattern))
+    .flatMap((pattern) => pattern.evidence);
+  const seen = new Set<string>();
+  const deduped: MemoryEvidence[] = [];
+
+  for (const item of evidence) {
+    if (!seen.has(item.id)) {
+      seen.add(item.id);
+      deduped.push(item);
+    }
+  }
+
+  return deduped.length > 0 ? deduped : memory.recentEvents.slice(0, 1);
+}
+
+function patternConfidence(patterns: Array<HomeProfilePattern | undefined>, baseConfidence: number): number {
+  const sampleSize = patterns
+    .filter((pattern): pattern is HomeProfilePattern => Boolean(pattern))
+    .reduce((total, pattern) => total + Math.max(pattern.dates.length, Math.min(5, pattern.count / 10)), 0);
+  return confidenceWithSampleSize(baseConfidence + Math.min(0.32, sampleSize / 40), sampleSize);
+}
+
+function median(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+function formatApproxMinutes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 'a few minutes';
+  }
+  const rounded = Math.max(1, Math.round(value));
+  return `${rounded} minute${plural(rounded)}`;
 }
 
 function isBathroomLikeRoom(roomId: string): boolean {

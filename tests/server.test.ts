@@ -141,6 +141,47 @@ describe('server API', () => {
       }
     });
 
+    const conclusions = await server.inject({
+      method: 'GET',
+      url: '/api/memory/profile/conclusions?topic=presence&type=presence_signal&status=likely&includeEvidence=true'
+    });
+    expect(conclusions.statusCode).toBe(200);
+    expect(conclusions.json()).toMatchObject({
+      runId: expect.any(String),
+      items: expect.arrayContaining([
+        expect.objectContaining({
+          source: 'hypothesis',
+          topic: 'presence',
+          type: 'presence_signal',
+          status: 'likely',
+          evidence: expect.any(Array)
+        })
+      ])
+    });
+
+    const profileAnswer = await server.inject({
+      method: 'GET',
+      url: '/api/memory/profile/answer?question=%E5%AE%B6%E9%87%8C%E6%9C%89%E4%BA%BA%E5%90%97%EF%BC%9F'
+    });
+    expect(profileAnswer.statusCode).toBe(200);
+    expect(profileAnswer.json()).toMatchObject({
+      question: '家里有人吗？',
+      matchedQuery: {
+        topic: 'presence',
+        includeEvidence: true,
+        includeReasoning: true
+      },
+      answer: expect.any(String),
+      sourceConclusionIds: expect.any(Array),
+      evidenceIds: expect.any(Array)
+    });
+
+    const automationHypotheses = await server.inject({
+      method: 'GET',
+      url: '/api/memory/profile/hypotheses?type=automation_recommendation'
+    });
+    expect(automationHypotheses.statusCode).toBe(200);
+
     const schemaMappings = await server.inject({
       method: 'GET',
       url: '/api/memory/schema-mappings?includeLlmEnrichment=true'
@@ -1104,6 +1145,8 @@ describe('server API', () => {
       '/api/memory/episodes',
       '/api/memory/evidence',
       '/api/memory/profile/hypotheses',
+      '/api/memory/profile/conclusions',
+      '/api/memory/profile/answer',
       '/api/memory/schema-mappings',
       '/api/memory/semantic-candidates',
       '/api/memory/reliability',
@@ -1128,6 +1171,21 @@ describe('server API', () => {
       '/ws/device-events'
     ]));
     expect(document.paths['/api/control/advance'].post.requestBody.content['application/json'].schema.properties).toHaveProperty('idempotencyKey');
+    expect(document.paths['/api/memory/profile/conclusions'].get.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'topic' }),
+      expect.objectContaining({ name: 'status' }),
+      expect.objectContaining({ name: 'includeReasoning' })
+    ]));
+    expect(document.paths['/api/memory/profile/answer'].get.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'question' }),
+      expect.objectContaining({ name: 'includeEvidence' }),
+      expect.objectContaining({ name: 'includeReasoning' })
+    ]));
+    expect(document.components.schemas.MemoryHypothesis.properties.type.enum).toContain('household_composition');
+    expect(document.components.schemas.MemoryHypothesis.properties.type.enum).toContain('automation_recommendation');
+    expect(document.components.schemas.MemoryProfileConclusion.properties.type.enum).toContain('household_composition');
+    expect(document.components.schemas.MemoryProfileAnswer.properties).toHaveProperty('matchedQuery');
+    expect(document.components.schemas.MemoryProfileAnswer.properties).toHaveProperty('sourceConclusionIds');
     expect(document.components.schemas).toHaveProperty('ValidationError');
     expect(document.components.schemas).toHaveProperty('NotFoundError');
     expect(document.components.schemas).toHaveProperty('DeviceCapability');

@@ -29,11 +29,13 @@ import { buildDeviceReplayPage, projectDeviceValueEvents } from './deviceEventSt
 import { loadHomeDefinitionFromFile } from './homeDefinitionLoader';
 import {
   buildHomeMemoryFromEvents,
+  answerMemoryProfileQuestion,
   createHouseholdPortraitWithEnrichment,
   createMemorySummary,
   queryMemoryEntities,
   queryMemoryEpisodes,
   queryMemoryEvidence,
+  queryMemoryProfileConclusions,
   queryMemoryHypothesesWithEnrichment,
   planMemoryQuery,
   queryUnknownSchemaMappings,
@@ -83,6 +85,13 @@ const memoryPortraitQuerySchema = z.object({
 const memoryNaturalLanguageQuerySchema = z.object({
   runId: z.string().min(1).optional(),
   question: z.string().trim().min(1).max(500)
+});
+const memoryProfileAnswerQuerySchema = z.object({
+  runId: z.string().min(1).optional(),
+  question: z.string().trim().min(1).max(500),
+  includeEvidence: booleanQuerySchema,
+  includeReasoning: booleanQuerySchema,
+  limit: z.coerce.number().int().min(1).max(20).optional()
 });
 const memorySchemaMappingQuerySchema = z.object({
   runId: z.string().min(1).optional(),
@@ -134,7 +143,7 @@ const memoryLlmConfigBodySchema = z.object({
 const memoryLlmStreamQuerySchema = z.object({
   runId: z.string().min(1).optional(),
   purpose: z.enum(['hypothesis_explanation', 'reliability_review']).default('hypothesis_explanation'),
-  type: z.enum(['household_size', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster', 'routine_window', 'behavior_flow', 'resident_slot', 'room_function', 'device_contribution', 'state_anomaly']).optional()
+  type: z.enum(['household_size', 'household_composition', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster', 'routine_window', 'behavior_flow', 'resident_slot', 'room_function', 'device_contribution', 'state_anomaly', 'automation_recommendation']).optional()
 });
 const memoryEntityQuerySchema = z.object({
   runId: z.string().min(1).optional(),
@@ -165,10 +174,30 @@ const memoryEvidenceQuerySchema = z.object({
 });
 const memoryHypothesisQuerySchema = z.object({
   runId: z.string().min(1).optional(),
-  type: z.enum(['household_size', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster', 'routine_window', 'behavior_flow', 'resident_slot', 'room_function', 'device_contribution', 'state_anomaly']).optional(),
+  type: z.enum(['household_size', 'household_composition', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster', 'routine_window', 'behavior_flow', 'resident_slot', 'room_function', 'device_contribution', 'state_anomaly', 'automation_recommendation']).optional(),
   includeEvidence: booleanQuerySchema,
   includeLlmEnrichment: booleanQuerySchema,
   includeReliability: booleanQuerySchema
+});
+const memoryProfileConclusionQuerySchema = z.object({
+  runId: z.string().min(1).optional(),
+  id: z.string().min(1).optional(),
+  source: z.enum(['claim', 'hypothesis']).optional(),
+  topic: z.enum(['automation', 'device', 'household', 'pet', 'presence', 'resident', 'room', 'routine', 'uncertainty']).optional(),
+  type: z.enum(['household_size', 'household_composition', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster', 'routine_window', 'behavior_flow', 'resident_slot', 'room_function', 'device_contribution', 'state_anomaly', 'automation_recommendation']).optional(),
+  status: z.enum(['candidate', 'likely', 'strong', 'rejected']).optional(),
+  minConfidence: z.coerce.number().min(0).max(1).optional(),
+  maxConfidence: z.coerce.number().min(0).max(1).optional(),
+  includeEvidence: booleanQuerySchema,
+  includeReasoning: booleanQuerySchema,
+  limit: z.coerce.number().int().min(1).max(200).default(100)
+}).refine((value) => (
+  value.minConfidence === undefined ||
+  value.maxConfidence === undefined ||
+  value.minConfidence <= value.maxConfidence
+), {
+  path: ['minConfidence'],
+  message: 'minConfidence must be less than or equal to maxConfidence'
 });
 const auditQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(100)
@@ -548,6 +577,34 @@ export function createServer(options: ServerOptions): FastifyInstance {
         llmCache: homeMemoryLlmCacheStore,
         llmUsage: homeMemoryLlmUsage
       })
+    };
+  });
+
+  app.get('/api/memory/profile/conclusions', async (request, reply) => {
+    const result = memoryProfileConclusionQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const { memory, runId, snapshot } = getMemoryView(result.data.runId);
+    const { runId: _runId, ...query } = result.data;
+    recordAccess('/api/memory/profile/conclusions', 'ml-observation', runId, snapshot.simClock.sequence, query);
+    return {
+      runId,
+      items: queryMemoryProfileConclusions(memory, query)
+    };
+  });
+
+  app.get('/api/memory/profile/answer', async (request, reply) => {
+    const result = memoryProfileAnswerQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const { memory, runId, snapshot } = getMemoryView(result.data.runId);
+    const { runId: _runId, ...query } = result.data;
+    recordAccess('/api/memory/profile/answer', 'ml-observation', runId, snapshot.simClock.sequence, query);
+    return {
+      runId,
+      ...answerMemoryProfileQuestion(memory, query)
     };
   });
 

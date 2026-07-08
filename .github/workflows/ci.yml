@@ -26,6 +26,11 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Generate Home Memory test dataset
+        run: |
+          mkdir -p data
+          npm run memory:dataset -- --start-date 2026-07-01 --days 31 --seed 42 --output data/home-memory-days.json
+
       - name: Test
         run: npm test
 

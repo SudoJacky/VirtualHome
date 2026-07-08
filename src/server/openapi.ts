@@ -1193,12 +1193,32 @@ const memoryHypothesisReliabilitySchema: JsonSchema = {
   }
 };
 
+const profileHypothesisTypeSchema: JsonSchema = {
+  type: 'string',
+  enum: [
+    'household_size',
+    'household_composition',
+    'daily_rhythm',
+    'room_habit',
+    'device_routine',
+    'presence_signal',
+    'activity_cluster',
+    'routine_window',
+    'behavior_flow',
+    'resident_slot',
+    'room_function',
+    'device_contribution',
+    'state_anomaly',
+    'automation_recommendation'
+  ]
+};
+
 const memoryHypothesisSchema: JsonSchema = {
   type: 'object',
   required: ['id', 'type', 'label', 'summary', 'confidence', 'updatedAt', 'evidenceCount', 'subjectIds'],
   properties: {
     id: stringSchema,
-    type: { type: 'string', enum: ['household_size', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster', 'routine_window', 'behavior_flow', 'resident_slot', 'room_function', 'device_contribution', 'state_anomaly'] },
+    type: profileHypothesisTypeSchema,
     label: stringSchema,
     summary: stringSchema,
     confidence: { type: 'number', minimum: 0, maximum: 1 },
@@ -1224,6 +1244,86 @@ const memoryHypothesisSchema: JsonSchema = {
     llmReliabilityReviewErrors: {
       type: 'array',
       items: stringSchema
+    }
+  }
+};
+
+const memoryProfileConclusionSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'source', 'topic', 'type', 'label', 'conclusion', 'status', 'confidence', 'updatedAt', 'subjectIds', 'evidenceCount', 'supports', 'contradictions', 'missingEvidence', 'alternativeExplanations'],
+  properties: {
+    id: stringSchema,
+    source: { type: 'string', enum: ['claim', 'hypothesis'] },
+    topic: { type: 'string', enum: ['automation', 'device', 'household', 'pet', 'presence', 'resident', 'room', 'routine', 'uncertainty'] },
+    type: profileHypothesisTypeSchema,
+    label: stringSchema,
+    conclusion: stringSchema,
+    status: { type: 'string', enum: ['candidate', 'likely', 'strong', 'rejected'] },
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
+    updatedAt: stringSchema,
+    subjectIds: {
+      type: 'array',
+      items: stringSchema
+    },
+    evidenceCount: { type: 'integer', minimum: 0 },
+    supports: {
+      type: 'array',
+      items: { type: 'object', additionalProperties: true }
+    },
+    contradictions: {
+      type: 'array',
+      items: { type: 'object', additionalProperties: true }
+    },
+    missingEvidence: {
+      type: 'array',
+      items: stringSchema
+    },
+    alternativeExplanations: {
+      type: 'array',
+      items: stringSchema
+    },
+    evidence: {
+      type: 'array',
+      items: { $ref: '#/components/schemas/MemoryEvidence' }
+    },
+    reasoningSteps: {
+      type: 'array',
+      items: { type: 'object', additionalProperties: true }
+    }
+  }
+};
+
+const memoryProfileAnswerSchema: JsonSchema = {
+  type: 'object',
+  required: ['question', 'matchedQuery', 'answer', 'status', 'confidence', 'sourceConclusionIds', 'evidenceIds', 'missingEvidence', 'alternatives', 'conclusions'],
+  properties: {
+    question: stringSchema,
+    matchedQuery: {
+      type: 'object',
+      additionalProperties: true
+    },
+    answer: stringSchema,
+    status: { type: 'string', enum: ['candidate', 'likely', 'strong', 'rejected'] },
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
+    sourceConclusionIds: {
+      type: 'array',
+      items: stringSchema
+    },
+    evidenceIds: {
+      type: 'array',
+      items: stringSchema
+    },
+    missingEvidence: {
+      type: 'array',
+      items: stringSchema
+    },
+    alternatives: {
+      type: 'array',
+      items: stringSchema
+    },
+    conclusions: {
+      type: 'array',
+      items: { $ref: '#/components/schemas/MemoryProfileConclusion' }
     }
   }
 };
@@ -1879,11 +1979,85 @@ export function buildOpenApiDocument(): Record<string, unknown> {
               name: 'type',
               in: 'query',
               required: false,
-              schema: { type: 'string', enum: ['household_size', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster'] }
+              schema: profileHypothesisTypeSchema
             },
-            optionalBooleanParameter('includeEvidence')
+            optionalBooleanParameter('includeEvidence'),
+            optionalBooleanParameter('includeLlmEnrichment'),
+            optionalBooleanParameter('includeReliability')
           ],
           responses: okResponse(memoryListResponseSchema({ $ref: '#/components/schemas/MemoryHypothesis' }), true)
+        }
+      },
+      '/api/memory/profile/conclusions': {
+        get: {
+          summary: 'Query normalized profile conclusions with optional trace detail',
+          parameters: [
+            runIdParameter(),
+            optionalStringParameter('id'),
+            {
+              name: 'source',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', enum: ['claim', 'hypothesis'] }
+            },
+            {
+              name: 'topic',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', enum: ['automation', 'device', 'household', 'pet', 'presence', 'resident', 'room', 'routine', 'uncertainty'] }
+            },
+            {
+              name: 'type',
+              in: 'query',
+              required: false,
+              schema: profileHypothesisTypeSchema
+            },
+            {
+              name: 'status',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', enum: ['candidate', 'likely', 'strong', 'rejected'] }
+            },
+            {
+              name: 'minConfidence',
+              in: 'query',
+              required: false,
+              schema: { type: 'number', minimum: 0, maximum: 1 }
+            },
+            {
+              name: 'maxConfidence',
+              in: 'query',
+              required: false,
+              schema: { type: 'number', minimum: 0, maximum: 1 }
+            },
+            optionalBooleanParameter('includeEvidence'),
+            optionalBooleanParameter('includeReasoning'),
+            limitParameter(200)
+          ],
+          responses: okResponse(memoryListResponseSchema({ $ref: '#/components/schemas/MemoryProfileConclusion' }), true)
+        }
+      },
+      '/api/memory/profile/answer': {
+        get: {
+          summary: 'Answer a natural-language profile question from matched memory conclusions',
+          parameters: [
+            runIdParameter(),
+            {
+              name: 'question',
+              in: 'query',
+              required: true,
+              schema: { type: 'string', minLength: 1, maxLength: 500 }
+            },
+            optionalBooleanParameter('includeEvidence'),
+            optionalBooleanParameter('includeReasoning'),
+            {
+              name: 'limit',
+              in: 'query',
+              required: false,
+              schema: { type: 'integer', minimum: 1, maximum: 20 }
+            }
+          ],
+          responses: okResponse({ $ref: '#/components/schemas/MemoryProfileAnswer' }, true)
         }
       },
       '/api/memory/schema-mappings': {
@@ -2062,7 +2236,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
               name: 'type',
               in: 'query',
               required: false,
-              schema: { type: 'string', enum: ['household_size', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster', 'routine_window', 'behavior_flow', 'resident_slot', 'room_function', 'device_contribution', 'state_anomaly'] }
+              schema: profileHypothesisTypeSchema
             }
           ],
           responses: {
@@ -2270,6 +2444,8 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         TelemetrySummary: telemetrySummarySchema,
         MemoryEvidence: memoryEvidenceSchema,
         MemoryHypothesis: memoryHypothesisSchema,
+        MemoryProfileConclusion: memoryProfileConclusionSchema,
+        MemoryProfileAnswer: memoryProfileAnswerSchema,
         MemorySummary: memorySummarySchema,
         HouseholdPortrait: householdPortraitSchema,
         MemoryQueryPlan: memoryQueryPlanSchema,

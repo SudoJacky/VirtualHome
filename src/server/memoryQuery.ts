@@ -16,7 +16,8 @@ import {
   type UnknownSchemaCandidate
 } from '../sim/llm/homeMemoryEnrichment';
 import { createHomeMemory, reduceDeviceEvents, type ActivityEpisode, type HomeMemory, type MemoryEpisode, type MemoryEvidence } from '../web/homeMemoryModel';
-import { createHomeProfileHypotheses, type ProfileHypothesis, type ProfileHypothesisType } from '../web/homeProfiler';
+import { extractHomeProfileClaims, type HomeProfileClaim } from '../web/homeProfileClaims';
+import { createHomeProfileHypotheses, createProfileHypothesis, type ClaimEvidence, type ProfileClaimStatus, type ProfileHypothesis, type ProfileHypothesisType, type ReasoningStep } from '../web/homeProfiler';
 import { createHomeMemoryGraphModel } from '../web/homeMemoryGraphModel';
 import { projectDeviceValueEvents } from './deviceEventStream';
 
@@ -69,6 +70,74 @@ export interface MemoryHypothesisQuery {
   includeEvidence?: boolean;
   includeLlmEnrichment?: boolean;
   includeReliability?: boolean;
+}
+
+export type MemoryProfileConclusionSource = 'claim' | 'hypothesis';
+export type MemoryProfileConclusionTopic =
+  | 'automation'
+  | 'device'
+  | 'household'
+  | 'pet'
+  | 'presence'
+  | 'resident'
+  | 'room'
+  | 'routine'
+  | 'uncertainty';
+
+export interface MemoryProfileConclusionQuery {
+  id?: string;
+  source?: MemoryProfileConclusionSource;
+  topic?: MemoryProfileConclusionTopic;
+  type?: ProfileHypothesisType;
+  status?: ProfileClaimStatus;
+  minConfidence?: number;
+  maxConfidence?: number;
+  includeEvidence?: boolean;
+  includeReasoning?: boolean;
+  limit?: number;
+}
+
+export interface MemoryProfileConclusion {
+  id: string;
+  source: MemoryProfileConclusionSource;
+  topic: MemoryProfileConclusionTopic;
+  type: ProfileHypothesisType;
+  label: string;
+  conclusion: string;
+  status: ProfileClaimStatus;
+  confidence: number;
+  updatedAt: string;
+  subjectIds: string[];
+  evidenceCount: number;
+  supports: ClaimEvidence[];
+  contradictions: ClaimEvidence[];
+  missingEvidence: string[];
+  alternativeExplanations: string[];
+  evidence?: MemoryEvidence[];
+  reasoningSteps?: ReasoningStep[];
+}
+
+export interface MemoryProfileAnswerQuery {
+  question: string;
+  includeEvidence?: boolean;
+  includeReasoning?: boolean;
+  limit?: number;
+}
+
+export interface MemoryProfileAnswer {
+  question: string;
+  matchedQuery: MemoryProfileConclusionQuery & {
+    matchStrategy: 'deterministic_keyword' | 'fallback';
+    matchedTerms: string[];
+  };
+  answer: string;
+  status: ProfileClaimStatus;
+  confidence: number;
+  sourceConclusionIds: string[];
+  evidenceIds: string[];
+  missingEvidence: string[];
+  alternatives: string[];
+  conclusions: MemoryProfileConclusion[];
 }
 
 export interface MemoryHypothesisQueryOptions {
@@ -403,6 +472,57 @@ export function queryMemoryEvidence(memory: HomeMemory, query: MemoryEvidenceQue
     .filter((event) => !query.meaningfulOnly || event.profileWeight > 0)
     .sort((left, right) => right.sequence - left.sequence || right.id.localeCompare(left.id))
     .slice(0, query.limit ?? 50);
+}
+
+export function queryMemoryProfileConclusions(memory: HomeMemory, query: MemoryProfileConclusionQuery = {}): MemoryProfileConclusion[] {
+  const evidenceIndex = indexMemoryEvidence(memory);
+  const conclusions = [
+    ...extractHomeProfileClaims(memory).map((claim) => profileConclusionFromClaim(claim, evidenceIndex, query)),
+    ...createHomeProfileHypotheses(memory).map((hypothesis) => profileConclusionFromHypothesis(hypothesis, query))
+  ];
+
+  return conclusions
+    .filter((item) => !query.id || item.id === query.id)
+    .filter((item) => !query.source || item.source === query.source)
+    .filter((item) => !query.topic || item.topic === query.topic)
+    .filter((item) => !query.type || item.type === query.type)
+    .filter((item) => !query.status || item.status === query.status)
+    .filter((item) => query.minConfidence === undefined || item.confidence >= query.minConfidence)
+    .filter((item) => query.maxConfidence === undefined || item.confidence <= query.maxConfidence)
+    .sort((left, right) => right.confidence - left.confidence || left.topic.localeCompare(right.topic) || left.id.localeCompare(right.id))
+    .slice(0, query.limit ?? 100);
+}
+
+export function answerMemoryProfileQuestion(memory: HomeMemory, query: MemoryProfileAnswerQuery): MemoryProfileAnswer {
+  const matchedQuery = matchProfileQuestion(query.question);
+  const conclusionQuery: MemoryProfileAnswer['matchedQuery'] = {
+    ...matchedQuery,
+    includeEvidence: query.includeEvidence ?? true,
+    includeReasoning: query.includeReasoning ?? true,
+    limit: query.limit ?? 5
+  };
+  const conclusions = rankProfileAnswerConclusions(queryMemoryProfileConclusions(memory, conclusionQuery), conclusionQuery);
+  const sourceConclusionIds = conclusions.map((conclusion) => conclusion.id);
+  const evidenceIds = unique(conclusions.flatMap((conclusion) => [
+    ...conclusion.supports.flatMap((support) => support.evidenceIds),
+    ...conclusion.contradictions.flatMap((contradiction) => contradiction.evidenceIds)
+  ]));
+  const missingEvidence = unique(conclusions.flatMap((conclusion) => conclusion.missingEvidence));
+  const alternatives = unique(conclusions.flatMap((conclusion) => conclusion.alternativeExplanations));
+  const primary = conclusions[0];
+
+  return {
+    question: query.question,
+    matchedQuery: conclusionQuery,
+    answer: createProfileAnswerText(query.question, conclusionQuery, conclusions, missingEvidence, alternatives),
+    status: primary?.status ?? 'rejected',
+    confidence: primary?.confidence ?? 0,
+    sourceConclusionIds,
+    evidenceIds,
+    missingEvidence,
+    alternatives,
+    conclusions
+  };
 }
 
 export function queryMemoryHypotheses(memory: HomeMemory, query: MemoryHypothesisQuery, options: MemoryHypothesisQueryOptions = {}): unknown[] {
@@ -1118,7 +1238,7 @@ const HOUSEHOLD_PORTRAIT_SECTIONS: Array<{
   {
     id: 'household_composition',
     label: 'Household composition',
-    types: ['household_size', 'resident_slot'],
+    types: ['household_composition', 'household_size', 'resident_slot'],
     emptySummary: 'Household composition is not yet supported by enough profile evidence.'
   },
   {
@@ -1136,7 +1256,7 @@ const HOUSEHOLD_PORTRAIT_SECTIONS: Array<{
   {
     id: 'routine_patterns',
     label: 'Routine patterns',
-    types: ['routine_window', 'activity_cluster', 'device_routine'],
+    types: ['automation_recommendation', 'routine_window', 'activity_cluster', 'device_routine'],
     emptySummary: 'Routine patterns are not yet supported by enough profile evidence.'
   },
   {
@@ -1231,7 +1351,7 @@ function createPortraitSummaryHypothesis(
   const evidence = unique(portrait.sections.flatMap((section) => section.evidenceIds))
     .map((evidenceId) => evidenceIndex.get(evidenceId))
     .filter((entry): entry is MemoryEvidence => Boolean(entry));
-  return {
+  return createProfileHypothesis({
     id: `portrait:${summaryPeriod}-summary`,
     type: 'daily_rhythm',
     label: `${summaryPeriod} household portrait summary`,
@@ -1243,7 +1363,7 @@ function createPortraitSummaryHypothesis(
     supportingEvidence: evidence,
     contradictingEvidence: [],
     missingEvidence: [...portrait.evidenceQuality.missingEvidence]
-  };
+  });
 }
 
 function createPortraitSummaryPrompt(
@@ -1317,7 +1437,7 @@ function createQueryPlanningHypothesis(memory: HomeMemory, question: string, exe
   const evidence = execution.evidenceIds
     .map((evidenceId) => evidenceIndex.get(evidenceId))
     .filter((entry): entry is MemoryEvidence => Boolean(entry));
-  return {
+  return createProfileHypothesis({
     id: `query-plan:${normalizeQueryId(question)}`,
     type: 'daily_rhythm',
     label: 'Memory query plan',
@@ -1329,7 +1449,7 @@ function createQueryPlanningHypothesis(memory: HomeMemory, question: string, exe
     supportingEvidence: evidence,
     contradictingEvidence: [],
     missingEvidence: evidence.length > 0 ? [] : ['No matching memory evidence was found for this question.']
-  };
+  });
 }
 
 function createQueryPlanningPrompt(question: string, execution: MemoryQueryPlanExecution): string {
@@ -1387,6 +1507,213 @@ function toHypothesisSummary(hypothesis: ProfileHypothesis): Pick<ProfileHypothe
     subjectIds: hypothesis.subjectIds,
     evidenceCount: hypothesis.evidence.length
   };
+}
+
+function profileConclusionFromClaim(
+  claim: HomeProfileClaim,
+  evidenceIndex: Map<string, MemoryEvidence>,
+  query: Pick<MemoryProfileConclusionQuery, 'includeEvidence' | 'includeReasoning'>
+): MemoryProfileConclusion {
+  const evidenceIds = unique([
+    ...claim.supports.flatMap((support) => support.evidenceIds),
+    ...claim.contradictions.flatMap((contradiction) => contradiction.evidenceIds)
+  ]);
+  const evidence = evidenceIds
+    .map((evidenceId) => evidenceIndex.get(evidenceId))
+    .filter((entry): entry is MemoryEvidence => Boolean(entry));
+
+  return {
+    id: claim.id,
+    source: 'claim',
+    topic: topicForProfileConclusion(claim.id, claim.type, claim.conclusion),
+    type: claim.type,
+    label: claim.label,
+    conclusion: claim.conclusion,
+    status: claim.status,
+    confidence: claim.confidence,
+    updatedAt: claim.scope.dateRange.to,
+    subjectIds: [],
+    evidenceCount: evidenceIds.length,
+    supports: claim.supports,
+    contradictions: claim.contradictions,
+    missingEvidence: [...claim.missingEvidence],
+    alternativeExplanations: [...claim.alternativeExplanations],
+    ...(query.includeEvidence ? { evidence } : {}),
+    ...(query.includeReasoning ? { reasoningSteps: [...claim.reasoningSteps] } : {})
+  };
+}
+
+function profileConclusionFromHypothesis(
+  hypothesis: ProfileHypothesis,
+  query: Pick<MemoryProfileConclusionQuery, 'includeEvidence' | 'includeReasoning'>
+): MemoryProfileConclusion {
+  return {
+    id: hypothesis.id,
+    source: 'hypothesis',
+    topic: topicForProfileConclusion(hypothesis.id, hypothesis.type, hypothesis.summary),
+    type: hypothesis.type,
+    label: hypothesis.label,
+    conclusion: hypothesis.summary,
+    status: hypothesis.status,
+    confidence: hypothesis.confidence,
+    updatedAt: hypothesis.updatedAt,
+    subjectIds: [...hypothesis.subjectIds],
+    evidenceCount: hypothesis.evidence.length,
+    supports: hypothesis.supports,
+    contradictions: hypothesis.contradictions,
+    missingEvidence: [...hypothesis.missingEvidence],
+    alternativeExplanations: [...hypothesis.alternativeExplanations],
+    ...(query.includeEvidence ? { evidence: hypothesis.evidence.slice(0, 20) } : {}),
+    ...(query.includeReasoning ? { reasoningSteps: [...hypothesis.reasoningSteps] } : {})
+  };
+}
+
+function topicForProfileConclusion(id: string, type: ProfileHypothesisType, text: string): MemoryProfileConclusionTopic {
+  const searchable = `${id} ${type} ${text}`.toLowerCase();
+  if (type === 'automation_recommendation') {
+    return 'automation';
+  }
+  if (type === 'household_size' || type === 'household_composition' || id.includes(':household:') || id.startsWith('household:')) {
+    return 'household';
+  }
+  if (type === 'resident_slot') {
+    return 'resident';
+  }
+  if (type === 'presence_signal') {
+    return 'presence';
+  }
+  if (type === 'room_function' || type === 'room_habit') {
+    return 'room';
+  }
+  if (type === 'device_contribution') {
+    return 'device';
+  }
+  if (type === 'state_anomaly') {
+    return 'uncertainty';
+  }
+  if (searchable.includes('pet')) {
+    return 'pet';
+  }
+  return 'routine';
+}
+
+function matchProfileQuestion(question: string): MemoryProfileAnswer['matchedQuery'] {
+  const normalized = question.toLowerCase();
+  const rules: Array<{
+    topic: MemoryProfileConclusionTopic;
+    type?: ProfileHypothesisType;
+    terms: string[];
+  }> = [
+    {
+      topic: 'pet',
+      terms: ['宠物', '狗', '猫', 'pet', 'dog', 'cat']
+    },
+    {
+      topic: 'automation',
+      type: 'automation_recommendation',
+      terms: ['自动化', '推荐', '场景', 'automation', '厨房安全', '油烟', '炉灶', 'stove', 'range hood']
+    },
+    {
+      topic: 'household',
+      terms: ['几个人', '多少人', '家庭组成', '居民数量', '住户', '家庭成员', 'resident', 'household composition', 'household size']
+    },
+    {
+      topic: 'presence',
+      type: 'presence_signal',
+      terms: ['有人', '在家', 'presence', 'occupied', 'occupancy']
+    },
+    {
+      topic: 'room',
+      terms: ['房间', '空间', 'room']
+    },
+    {
+      topic: 'device',
+      terms: ['设备', 'device']
+    }
+  ];
+
+  for (const rule of rules) {
+    const matchedTerms = rule.terms.filter((term) => normalized.includes(term.toLowerCase()));
+    if (matchedTerms.length > 0) {
+      return {
+        topic: rule.topic,
+        ...(rule.type ? { type: rule.type } : {}),
+        includeEvidence: true,
+        includeReasoning: true,
+        matchStrategy: 'deterministic_keyword',
+        matchedTerms
+      };
+    }
+  }
+
+  return {
+    topic: 'household',
+    includeEvidence: true,
+    includeReasoning: true,
+    matchStrategy: 'fallback',
+    matchedTerms: []
+  };
+}
+
+function createProfileAnswerText(
+  question: string,
+  matchedQuery: MemoryProfileAnswer['matchedQuery'],
+  conclusions: MemoryProfileConclusion[],
+  missingEvidence: string[],
+  alternatives: string[]
+): string {
+  if (conclusions.length === 0) {
+    return `没有找到足够的 Home Memory 结论来回答“${question}”。当前匹配到 ${matchedQuery.topic} 主题，但缺少可支持的画像结论。`;
+  }
+
+  const conclusionText = conclusions
+    .slice(0, 3)
+    .map((conclusion) => conclusion.conclusion)
+    .join(' ');
+  const primary = conclusions[0];
+  const uncertaintyText = missingEvidence.length > 0
+    ? ` 缺失证据：${missingEvidence.slice(0, 2).join('；')}。`
+    : '';
+  const alternativeText = alternatives.length > 0
+    ? ` 其他可能解释：${alternatives.slice(0, 2).join('；')}。`
+    : '';
+
+  if (primary.status === 'candidate') {
+    return `有弱候选，但不能确认。${conclusionText}${uncertaintyText}${alternativeText}`;
+  }
+  if (primary.status === 'rejected') {
+    return `当前结论不支持这个判断。${conclusionText}${uncertaintyText}${alternativeText}`;
+  }
+  return `根据当前 Home Memory，可以给出 ${primary.status} 级别的回答：${conclusionText}${uncertaintyText}${alternativeText}`;
+}
+
+function rankProfileAnswerConclusions(
+  conclusions: MemoryProfileConclusion[],
+  query: Pick<MemoryProfileConclusionQuery, 'topic'>
+): MemoryProfileConclusion[] {
+  return conclusions.slice().sort((left, right) => (
+    answerTypePriority(left, query) - answerTypePriority(right, query) ||
+    right.confidence - left.confidence ||
+    left.id.localeCompare(right.id)
+  ));
+}
+
+function answerTypePriority(conclusion: MemoryProfileConclusion, query: Pick<MemoryProfileConclusionQuery, 'topic'>): number {
+  if (query.topic === 'household') {
+    if (conclusion.type === 'household_composition') {
+      return 0;
+    }
+    if (conclusion.type === 'household_size') {
+      return 1;
+    }
+  }
+  if (query.topic === 'automation' && conclusion.type === 'automation_recommendation') {
+    return 0;
+  }
+  if (query.topic === 'pet' && conclusion.id.includes('pet')) {
+    return 0;
+  }
+  return 10;
 }
 
 function createHypothesisReliability(hypothesis: ProfileHypothesis): {
@@ -1480,7 +1807,7 @@ function createSemanticCandidateHypothesis(memory: HomeMemory, window: SemanticC
   const evidence = window.evidenceIds
     .map((evidenceId) => evidenceIndex.get(evidenceId))
     .filter((entry): entry is MemoryEvidence => Boolean(entry));
-  return {
+  return createProfileHypothesis({
     id: window.id,
     type: 'activity_cluster',
     label: `${window.roomId} semantic candidate`,
@@ -1492,7 +1819,7 @@ function createSemanticCandidateHypothesis(memory: HomeMemory, window: SemanticC
     supportingEvidence: evidence,
     contradictingEvidence: [],
     missingEvidence: ['More repeated evidence is needed before adding a deterministic semantic rule.']
-  };
+  });
 }
 
 function createSemanticCandidatePrompt(window: SemanticCandidateWindow): string {

@@ -184,6 +184,21 @@ export interface WeeklyProfileSummary {
   lastSeenAt: string;
 }
 
+export interface HomeProfilePattern {
+  id: string;
+  count: number;
+  dates: string[];
+  weekdayCount: number;
+  weekendCount: number;
+  minutes: number[];
+  gapsMinutes: number[];
+  firstSimTime: string;
+  lastSimTime: string;
+  evidence: MemoryEvidence[];
+}
+
+export type HomeProfilePatterns = Record<string, HomeProfilePattern>;
+
 export interface DeviceMemory {
   deviceId: string;
   roomId: string;
@@ -230,6 +245,7 @@ export interface HomeMemory {
   dailySummaryCount: number;
   weeklySummaries: Record<string, WeeklyProfileSummary>;
   weeklySummaryCount: number;
+  profilePatterns: HomeProfilePatterns;
   semanticSignals: SemanticSignal[];
   semanticSignalCount: number;
   semanticSignalCountsByType: SemanticSignalCounts;
@@ -260,6 +276,7 @@ export function createHomeMemory(): HomeMemory {
     dailySummaryCount: 0,
     weeklySummaries: {},
     weeklySummaryCount: 0,
+    profilePatterns: {},
     semanticSignals: [],
     semanticSignalCount: 0,
     semanticSignalCountsByType: emptySemanticSignalCounts(),
@@ -308,6 +325,7 @@ export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): 
   const weeklySummaries = updateWeeklySummaries(baseMemory.weeklySummaries, event, evidence, fieldId, timeBucket, episodeMemory.startedEpisode);
   const semanticSignals = semanticSignalsForEvidence(event, evidence);
   const activityEpisodes = updateActivityEpisodes(baseMemory, semanticSignals);
+  const profilePatterns = updateProfilePatterns(baseMemory.profilePatterns, event, evidence);
 
   const nextMemory: HomeMemory = {
     ...baseMemory,
@@ -335,6 +353,7 @@ export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): 
     dailySummaryCount: Object.keys(dailySummaries).length,
     weeklySummaries,
     weeklySummaryCount: Object.keys(weeklySummaries).length,
+    profilePatterns,
     semanticSignals: appendManyBounded(baseMemory.semanticSignals, semanticSignals, SEMANTIC_SIGNAL_LIMIT),
     semanticSignalCount: baseMemory.semanticSignalCount + semanticSignals.length,
     semanticSignalCountsByType: incrementSemanticSignalCounts(baseMemory.semanticSignalCountsByType, semanticSignals),
@@ -974,6 +993,228 @@ function updateWeeklySummary(
   };
 }
 
+function updateProfilePatterns(
+  patterns: HomeProfilePatterns,
+  event: DeviceValueEvent,
+  evidence: MemoryEvidence
+): HomeProfilePatterns {
+  const field = normalize(event.field);
+  const deviceType = normalize(event.deviceType);
+  const roomId = normalize(event.roomId);
+  const date = getSummaryDate(event);
+  const minute = minuteOfDay(event.simTime);
+  const weekend = isWeekendDate(date);
+  let next = patterns;
+
+  const add = (id: string, gapsMinutes: number[] = []) => {
+    next = addProfilePattern(next, id, evidence, date, minute, weekend, gapsMinutes);
+  };
+
+  if (deviceType.includes('lock') && field === 'locked' && event.value === false) {
+    add('door-lock-unlock');
+  }
+
+  if (deviceType.includes('lock') && field === 'locked' && event.value === true) {
+    const lastUnlock = latestPatternEvidence(next['door-lock-unlock'], date);
+    add('door-lock-lock');
+    if (lastUnlock) {
+      const gap = minutesBetweenSimTimes(lastUnlock.simTime, event.simTime);
+      if (gap >= 0 && gap <= 15) {
+        add('door-lock-paired', [gap]);
+      }
+    }
+  }
+
+  if (roomId.includes('kitchen') && deviceType.includes('fridge') && isContactLikeField(field) && isActiveValue(event.value)) {
+    if (!weekend && minute >= 6 * 60 && minute <= 7 * 60 + 45) {
+      add('weekday-breakfast-fridge');
+    }
+    if (minute >= 18 * 60 && minute <= 20 * 60 + 30) {
+      add('dinner-fridge');
+    }
+  }
+
+  if (roomId.includes('kitchen') && deviceType.includes('stove') && isPowerLikeField(field) && isActiveValue(event.value)) {
+    add('stove-active');
+    if (!weekend && minute >= 6 * 60 && minute <= 7 * 60 + 45) {
+      add('weekday-breakfast-stove');
+    }
+    if (weekend && minute >= 8 * 60 && minute <= 13 * 60) {
+      add('weekend-brunch-stove');
+    }
+    if (minute >= 18 * 60 && minute <= 20 * 60 + 30) {
+      add('dinner-stove');
+    }
+    const lastHood = latestPatternEvidence(next['range-hood-on'], date);
+    if (lastHood) {
+      const gap = Math.abs(minutesBetweenSimTimes(lastHood.simTime, event.simTime));
+      if (gap <= 5) {
+        add('stove-range-hood-paired', [gap]);
+      }
+    }
+  }
+
+  if (deviceType.includes('rangehood') && field === 'power' && isActiveValue(event.value)) {
+    add('range-hood-on');
+    if (minute >= 18 * 60 && minute <= 20 * 60 + 30) {
+      add('dinner-range-hood');
+    }
+    const lastStove = latestPatternEvidence(next['stove-active'], date);
+    if (lastStove) {
+      const gap = Math.abs(minutesBetweenSimTimes(lastStove.simTime, event.simTime));
+      if (gap <= 5) {
+        add('stove-range-hood-paired', [gap]);
+      }
+    }
+  }
+
+  if (deviceType.includes('sleep') && isInBedField(field) && event.value === true) {
+    if (roomId.includes('child') && minute >= 20 * 60 + 30 && minute <= 22 * 60) {
+      add('child-sleep-start');
+    }
+    if ((roomId.includes('master') || roomId.includes('main')) && (minute >= 22 * 60 || minute <= 60)) {
+      add('main-sleep-start');
+    }
+  }
+
+  if (!weekend && roomId.includes('study') && minute >= 8 * 60 && minute <= 17 * 60 && isStudyWorkDeviceSignal(deviceType, field, event.value)) {
+    add('study-weekday-daytime-work');
+  }
+
+  if (deviceType.includes('robotvacuum') && field === 'status' && normalize(String(event.value)) === 'cleaning') {
+    const lastLock = latestPatternEvidence(next['door-lock-lock'], date);
+    if (lastLock) {
+      const gap = minutesBetweenSimTimes(lastLock.simTime, event.simTime);
+      if (gap >= 0 && gap <= 45) {
+        add('robot-vacuum-after-departure', [gap]);
+      }
+    }
+  }
+
+  if (deviceType.includes('washer') && ((field === 'status' && normalize(String(event.value)) === 'running') || (isPowerLikeField(field) && isActiveValue(event.value)))) {
+    add('laundry-running');
+  }
+
+  if (deviceType.includes('sprinkler') && field.includes('valve') && isActiveValue(event.value) && minute >= 5 * 60 && minute <= 7 * 60) {
+    add('garden-summer-morning-sprinkler');
+  }
+
+  if (roomId.includes('garden') && deviceType.includes('camera') && field === 'motion' && event.value === true) {
+    add('garden-camera-motion');
+  }
+
+  if (roomId.includes('living') && deviceType.includes('tv') && field === 'power' && isActiveValue(event.value) && (minute >= 17 * 60 || weekend)) {
+    add('living-evening-media');
+  }
+
+  return next;
+}
+
+function addProfilePattern(
+  patterns: HomeProfilePatterns,
+  id: string,
+  evidence: MemoryEvidence,
+  date: string,
+  minute: number,
+  weekend: boolean,
+  gapsMinutes: number[]
+): HomeProfilePatterns {
+  const current = patterns[id];
+  const nextPattern: HomeProfilePattern = current
+    ? {
+      ...current,
+      count: current.count + 1,
+      dates: unique([...current.dates, date]).sort((left, right) => left.localeCompare(right)),
+      weekdayCount: current.weekdayCount + (weekend ? 0 : 1),
+      weekendCount: current.weekendCount + (weekend ? 1 : 0),
+      minutes: appendNumberBounded(current.minutes, minute, 120),
+      gapsMinutes: appendManyNumbersBounded(current.gapsMinutes, gapsMinutes, 120),
+      lastSimTime: evidence.simTime,
+      evidence: appendBounded(current.evidence, evidence, 20)
+    }
+    : {
+      id,
+      count: 1,
+      dates: [date],
+      weekdayCount: weekend ? 0 : 1,
+      weekendCount: weekend ? 1 : 0,
+      minutes: [minute],
+      gapsMinutes,
+      firstSimTime: evidence.simTime,
+      lastSimTime: evidence.simTime,
+      evidence: [evidence]
+    };
+
+  return {
+    ...patterns,
+    [id]: nextPattern
+  };
+}
+
+function latestPatternEvidence(pattern: HomeProfilePattern | undefined, date: string): MemoryEvidence | null {
+  return pattern?.evidence.find((candidate) => getEvidenceDate(candidate) === date) ?? null;
+}
+
+function getEvidenceDate(evidence: MemoryEvidence): string {
+  return /^(\d{4}-\d{2}-\d{2})T/.exec(evidence.simTime)?.[1] ?? evidence.ts.slice(0, 10);
+}
+
+function isWeekendDate(date: string): boolean {
+  const day = new Date(`${date}T00:00:00.000Z`).getUTCDay();
+  return day === 0 || day === 6;
+}
+
+function minuteOfDay(simTime: string): number {
+  const match = /T(\d{2}):(\d{2})/.exec(simTime);
+  if (!match) {
+    return 0;
+  }
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function minutesBetweenSimTimes(start: string, end: string): number {
+  const startMs = Date.parse(start);
+  const endMs = Date.parse(end);
+  if (Number.isNaN(startMs) || Number.isNaN(endMs)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return (endMs - startMs) / 60000;
+}
+
+function isContactLikeField(field: string): boolean {
+  return field === 'dooropen' || field === 'contactopen' || field === 'contact' || field === 'open';
+}
+
+function isPowerLikeField(field: string): boolean {
+  return field === 'power' || field === 'powerw' || field === 'wattage' || field === 'current';
+}
+
+function isInBedField(field: string): boolean {
+  return field === 'inbed' || field === 'asleep' || field === 'sleeping';
+}
+
+function isStudyWorkDeviceSignal(deviceType: string, field: string, value: DeviceEventValue): boolean {
+  if (!isActiveValue(value)) {
+    return false;
+  }
+  return (
+    deviceType.includes('light') ||
+    deviceType.includes('router') ||
+    deviceType.includes('computer') ||
+    deviceType.includes('desk') ||
+    field === 'online' ||
+    field.includes('latency')
+  );
+}
+
+function appendNumberBounded(items: number[], item: number, limit: number): number[] {
+  return [item, ...items].slice(0, limit);
+}
+
+function appendManyNumbersBounded(items: number[], nextItems: number[], limit: number): number[] {
+  return [...nextItems, ...items].slice(0, limit);
+}
+
 function createEpisode(
   event: DeviceValueEvent,
   evidence: MemoryEvidence,
@@ -1114,7 +1355,10 @@ function isContactEpisodeField(field: string): boolean {
 
 function isAccessSignal(roomId: string, deviceType: string, field: string, value: DeviceEventValue): boolean {
   if (deviceType.includes('lock') || field === 'lock') {
-    return typeof value === 'string' && (normalize(value) === 'unlocked' || normalize(value) === 'open');
+    return (
+      (typeof value === 'string' && (normalize(value) === 'unlocked' || normalize(value) === 'open')) ||
+      (field === 'locked' && value === false)
+    );
   }
   return (
     isContactEpisodeField(field) &&
