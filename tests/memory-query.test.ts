@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { DeviceValueEvent } from '../src/web/deviceEventSocket';
 import { createHomeMemory, reduceDeviceEvents } from '../src/web/homeMemoryModel';
@@ -24,7 +25,86 @@ function deviceEvent(overrides: Partial<DeviceValueEvent> = {}): DeviceValueEven
   };
 }
 
+function homeMemoryDays(): ReturnType<typeof createHomeMemory> {
+  const dataset = JSON.parse(readFileSync('data/home-memory-days.json', 'utf8')) as { events: DeviceValueEvent[] };
+  return reduceDeviceEvents(createHomeMemory(), dataset.events);
+}
+
 describe('memory query', () => {
+  it('queries profile conclusions by topic, status, confidence, and optional trace detail', () => {
+    const memory = homeMemoryDays();
+
+    const householdConclusions = memoryQuery.queryMemoryProfileConclusions(memory, {
+      topic: 'household',
+      status: 'likely',
+      minConfidence: 0.8,
+      includeEvidence: true,
+      includeReasoning: true
+    });
+
+    expect(householdConclusions.some((item) => (
+      item.id === 'household:composition' &&
+      item.source === 'hypothesis' &&
+      item.topic === 'household' &&
+      item.type === 'household_composition' &&
+      item.status === 'likely' &&
+      item.confidence >= 0.8 &&
+      item.conclusion.includes('three resident-like human slots') &&
+      (item.evidence?.length ?? 0) > 0 &&
+      item.missingEvidence.length > 0 &&
+      item.alternativeExplanations.length > 0 &&
+      (item.reasoningSteps?.length ?? 0) > 0
+    ))).toBe(true);
+
+    const automationConclusions = memoryQuery.queryMemoryProfileConclusions(memory, {
+      topic: 'automation',
+      type: 'automation_recommendation',
+      status: 'likely'
+    });
+
+    expect(automationConclusions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'automation:kitchen-dinner-safety',
+        source: 'hypothesis',
+        topic: 'automation',
+        type: 'automation_recommendation',
+        conclusion: expect.stringContaining('dinner kitchen safety automation')
+      })
+    ]));
+    expect(automationConclusions[0]).not.toHaveProperty('evidence');
+    expect(automationConclusions[0]).not.toHaveProperty('reasoningSteps');
+  }, 60_000);
+
+  it('answers natural-language profile questions from matched conclusions and trace data', () => {
+    const memory = homeMemoryDays();
+
+    const petAnswer = memoryQuery.answerMemoryProfileQuestion(memory, {
+      question: '家里可能有宠物吗？'
+    });
+
+    expect(petAnswer.matchedQuery).toMatchObject({
+      topic: 'pet',
+      includeEvidence: true,
+      includeReasoning: true
+    });
+    expect(petAnswer.status).toBe('candidate');
+    expect(petAnswer.confidence).toBeGreaterThan(0.5);
+    expect(petAnswer.answer).toMatch(/弱候选|不能确认/);
+    expect(petAnswer.sourceConclusionIds).toContain('activity:pet:garden');
+    expect(petAnswer.evidenceIds.length).toBeGreaterThan(0);
+    expect(petAnswer.missingEvidence.length).toBeGreaterThan(0);
+    expect(petAnswer.alternatives.length).toBeGreaterThan(0);
+
+    const householdAnswer = memoryQuery.answerMemoryProfileQuestion(memory, {
+      question: '家里可能有几个人？'
+    });
+
+    expect(householdAnswer.matchedQuery.topic).toBe('household');
+    expect(householdAnswer.answer).toMatch(/three resident-like human slots/i);
+    expect(householdAnswer.answer).toMatch(/不确认|not confirm|not confirmed/i);
+    expect(householdAnswer.sourceConclusionIds).toContain('household:composition');
+  }, 60_000);
+
   it('includes derived household activity episodes in memory summary', () => {
     const memory = reduceDeviceEvents(createHomeMemory(), [
       deviceEvent({

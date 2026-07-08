@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DeviceValueEvent } from '../src/web/deviceEventSocket';
 import { createHomeMemory, reduceDeviceEvents } from '../src/web/homeMemoryModel';
-import type { ProfileHypothesis } from '../src/web/homeProfiler';
+import { createProfileHypothesis, type ProfileHypothesis } from '../src/web/homeProfiler';
 import {
   createDeviceEvidenceGraphHighlight,
   createFocusedNodeGraphHighlight,
@@ -108,7 +108,7 @@ function multiRoomMemory() {
 
 function hypotheses(): ProfileHypothesis[] {
   return [
-    {
+    createProfileHypothesis({
       id: 'presence:recent-activity',
       type: 'presence_signal',
       label: 'Recent presence signal',
@@ -120,8 +120,8 @@ function hypotheses(): ProfileHypothesis[] {
       supportingEvidence: [],
       contradictingEvidence: [],
       missingEvidence: []
-    },
-    {
+    }),
+    createProfileHypothesis({
       id: 'room:kitchen:habit',
       type: 'room_habit',
       label: 'Kitchen habit',
@@ -133,7 +133,7 @@ function hypotheses(): ProfileHypothesis[] {
       supportingEvidence: [],
       contradictingEvidence: [],
       missingEvidence: []
-    }
+    })
   ];
 }
 

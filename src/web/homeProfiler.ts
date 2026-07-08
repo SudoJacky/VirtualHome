@@ -17,22 +17,61 @@ export type ProfileHypothesisType =
   | 'household_composition'
   | 'automation_recommendation';
 
+export type ProfileClaimStatus = 'candidate' | 'likely' | 'strong' | 'rejected';
+export type ClaimEvidenceKind = 'fact' | 'episode' | 'feature' | 'pattern' | 'role_slot';
+export type ReasoningStepEffect = 'supports' | 'weakens' | 'rules_out';
+
+export interface ClaimScope {
+  dateRange: { from: string; to: string };
+  dayTypes?: Array<'weekday' | 'weekend'>;
+  timeBuckets?: TimeBucket[];
+  rooms?: string[];
+  devices?: string[];
+}
+
+export interface ClaimEvidence {
+  id: string;
+  kind: ClaimEvidenceKind;
+  refId: string;
+  summary: string;
+  weight: number;
+  evidenceIds: string[];
+}
+
+export interface ReasoningStep {
+  label: string;
+  rule: string;
+  inputs: string[];
+  output: string;
+  effect: ReasoningStepEffect;
+  evidenceIds: string[];
+}
+
 export interface ProfileHypothesis {
   id: string;
   type: ProfileHypothesisType;
   label: string;
   summary: string;
   confidence: number;
+  status: ProfileClaimStatus;
+  scope: ClaimScope;
   updatedAt: string;
   subjectIds: string[];
   evidence: MemoryEvidence[];
   supportingEvidence: MemoryEvidence[];
   contradictingEvidence: MemoryEvidence[];
+  supports: ClaimEvidence[];
+  contradictions: ClaimEvidence[];
   missingEvidence: string[];
+  alternativeExplanations: string[];
+  reasoningSteps: ReasoningStep[];
 }
 
 const TIME_BUCKETS: TimeBucket[] = ['morning', 'daytime', 'evening', 'night'];
-type ProfileHypothesisInput = Omit<ProfileHypothesis, 'updatedAt' | 'supportingEvidence' | 'contradictingEvidence' | 'missingEvidence'> & Partial<Pick<ProfileHypothesis, 'supportingEvidence' | 'contradictingEvidence' | 'missingEvidence'>>;
+export type ProfileTraceFields = 'status' | 'scope' | 'supports' | 'contradictions' | 'alternativeExplanations' | 'reasoningSteps';
+export type ProfileHypothesisInput = Omit<ProfileHypothesis, 'updatedAt' | 'supportingEvidence' | 'contradictingEvidence' | 'missingEvidence' | ProfileTraceFields> &
+  { updatedAt?: string } &
+  Partial<Pick<ProfileHypothesis, 'supportingEvidence' | 'contradictingEvidence' | 'missingEvidence' | ProfileTraceFields>>;
 
 export function createHomeProfileHypotheses(memory: HomeMemory): ProfileHypothesis[] {
   if (memory.totalEvents === 0 || memory.recentEvents.length === 0) {
@@ -58,6 +97,10 @@ export function createHomeProfileHypotheses(memory: HomeMemory): ProfileHypothes
     createPresenceSignal(memory),
     ...(activeRooms.length > 0 ? [createHouseholdSize(memory, activeRooms)] : [])
   ];
+}
+
+export function createProfileHypothesis(input: ProfileHypothesisInput): ProfileHypothesis {
+  return hypothesis(input);
 }
 
 function createDailyRhythms(memory: HomeMemory): ProfileHypothesis[] {
@@ -427,7 +470,7 @@ function createPatternProfileHypotheses(memory: HomeMemory): ProfileHypothesis[]
       id: 'household:composition',
       type: 'household_composition',
       label: 'Household composition',
-      summary: `Long-window evidence supports anonymous household roles: a main sleep slot, a child-bedroom sleep routine, a weekday daytime study/work slot, stable shared dinner cooking, and a weak garden pet/activity candidate. This does not by itself confirm exact adult count, exact resident count, or a senior resident.`,
+      summary: `Long-window evidence supports anonymous household roles compatible with three resident-like human slots: a commuter-like adult slot, a daytime-home work/study slot with weekday daytime study/work evidence, and a child-bedroom sleep routine, plus a pet activity candidate from recurring garden motion. This does not confirm exact adult count, exact resident count, exact identities, or a senior resident.`,
       confidence: patternConfidence([childSleep, mainSleep, remoteWork, dinner, gardenMotion], 0.52),
       subjectIds: ['room:master_bedroom', 'room:child_bedroom', 'room:study', 'room:kitchen', 'room:garden'],
       evidence: patternEvidence(memory, [childSleep, mainSleep, remoteWork, dinner, gardenMotion])
@@ -584,7 +627,7 @@ function createPatternProfileHypotheses(memory: HomeMemory): ProfileHypothesis[]
       id: 'automation:kitchen-dinner-safety',
       type: 'automation_recommendation',
       label: 'Kitchen dinner safety automation',
-      summary: `Recommend a dinner kitchen safety automation: when stove power rises, turn on the range hood, monitor smoke/PM2.5/stove power and kitchen presence, then delay range hood shutdown after stove off.`,
+      summary: `Recommend a dinner kitchen safety automation as the primary high-value service opportunity: when stove power rises, turn on the range hood, monitor smoke/PM2.5/stove power and kitchen presence, then delay range hood shutdown after stove off.`,
       confidence: patternConfidence([dinner, rangeHoodPair], 0.5),
       subjectIds: ['room:kitchen', 'device:stove_01', 'device:range_hood_01', 'device:pm25_01'],
       evidence: patternEvidence(memory, [dinner, rangeHoodPair])
@@ -721,14 +764,172 @@ function hasRolePattern(memory: HomeMemory): boolean {
 }
 
 function hypothesis(input: ProfileHypothesisInput): ProfileHypothesis {
+  const confidence = clamp(input.confidence);
+  const supportingEvidence = input.supportingEvidence ?? input.evidence;
+  const contradictingEvidence = input.contradictingEvidence ?? [];
+  const missingEvidence = input.missingEvidence ?? missingEvidenceForHypothesis(input);
+  const supports = input.supports ?? claimEvidenceForEvidence(supportingEvidence, 'fact');
+  const contradictions = input.contradictions ?? claimEvidenceForEvidence(contradictingEvidence, 'fact');
+  const status = input.status ?? statusForHypothesis(input.type, confidence);
+  const alternativeExplanations = input.alternativeExplanations ?? alternativeExplanationsForHypothesis(input);
+
   return {
     ...input,
-    supportingEvidence: input.supportingEvidence ?? input.evidence,
-    contradictingEvidence: input.contradictingEvidence ?? [],
-    missingEvidence: input.missingEvidence ?? missingEvidenceForHypothesis(input),
-    confidence: clamp(input.confidence),
-    updatedAt: input.evidence[0].simTime
+    confidence,
+    status,
+    scope: input.scope ?? scopeForEvidence(input.evidence),
+    supportingEvidence,
+    contradictingEvidence,
+    supports,
+    contradictions,
+    missingEvidence,
+    alternativeExplanations,
+    reasoningSteps: input.reasoningSteps ?? reasoningStepsForHypothesis(input, status, supports, contradictions, missingEvidence, alternativeExplanations),
+    updatedAt: input.updatedAt ?? input.evidence[0]?.simTime ?? ''
   };
+}
+
+function statusForHypothesis(type: ProfileHypothesisType, confidence: number): ProfileClaimStatus {
+  if (confidence < 0.65) {
+    return 'candidate';
+  }
+  if (isHighLevelHypothesis(type)) {
+    return 'likely';
+  }
+  return confidence >= 0.9 ? 'strong' : 'likely';
+}
+
+function isHighLevelHypothesis(type: ProfileHypothesisType): boolean {
+  return type === 'household_size' || type === 'household_composition' || type === 'resident_slot';
+}
+
+function scopeForEvidence(evidence: MemoryEvidence[]): ClaimScope {
+  const dates = sortedUnique(evidence.map((item) => item.simTime.slice(0, 10)).filter(Boolean));
+  const dayTypes = sortedUnique(evidence.map((item) => dayTypeForDate(item.simTime)).filter((item): item is 'weekday' | 'weekend' => Boolean(item))) as Array<'weekday' | 'weekend'>;
+  const timeBuckets = sortedUnique(evidence.map((item) => item.timeBucket)) as TimeBucket[];
+  const rooms = sortedUnique(evidence.map((item) => item.roomId));
+  const devices = sortedUnique(evidence.map((item) => item.deviceId));
+
+  return {
+    dateRange: {
+      from: dates[0] ?? 'unknown',
+      to: dates[dates.length - 1] ?? 'unknown'
+    },
+    ...(dayTypes.length > 0 ? { dayTypes } : {}),
+    ...(timeBuckets.length > 0 ? { timeBuckets } : {}),
+    ...(rooms.length > 0 ? { rooms } : {}),
+    ...(devices.length > 0 ? { devices } : {})
+  };
+}
+
+function dayTypeForDate(simTime: string): 'weekday' | 'weekend' | undefined {
+  const date = new Date(`${simTime.slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return undefined;
+  }
+  const day = date.getDay();
+  return day === 0 || day === 6 ? 'weekend' : 'weekday';
+}
+
+function claimEvidenceForEvidence(evidence: MemoryEvidence[], kind: ClaimEvidenceKind): ClaimEvidence[] {
+  return evidence.slice(0, 8).map((item) => ({
+    id: `claim-evidence:${item.id}`,
+    kind,
+    refId: item.id,
+    summary: `${item.deviceId}.${item.field} changed to ${formatEvidenceValue(item.value)} in ${item.roomId} at ${item.simTime}.`,
+    weight: Math.max(0.01, item.profileWeight),
+    evidenceIds: [item.id]
+  }));
+}
+
+function alternativeExplanationsForHypothesis(input: Pick<ProfileHypothesisInput, 'type'>): string[] {
+  switch (input.type) {
+    case 'household_size':
+      return [
+        'Anonymous role slots may belong to fewer residents than the observed routines suggest.',
+        'No direct people-count evidence is available from the device events.'
+      ];
+    case 'household_composition':
+      return [
+        'The observed routines may be produced by different combinations of anonymous residents.',
+        'Garden motion supports only a weak pet or outdoor-activity candidate.'
+      ];
+    case 'resident_slot':
+      return [
+        'The same resident may account for multiple compatible routines.',
+        'Room activity and device usage do not identify a person by themselves.'
+      ];
+    case 'room_function':
+      return ['A room function can reflect shared or occasional usage rather than a dedicated role.'];
+    case 'routine_window':
+    case 'behavior_flow':
+    case 'activity_cluster':
+      return ['Device automation or shared household usage may explain part of this repeated pattern.'];
+    case 'state_anomaly':
+      return ['Sensor drift, missing nearby events, or a short baseline may explain the anomaly.'];
+    default:
+      return ['Additional observations may change this interpretation.'];
+  }
+}
+
+function reasoningStepsForHypothesis(
+  input: Pick<ProfileHypothesisInput, 'id' | 'type' | 'confidence'>,
+  status: ProfileClaimStatus,
+  supports: ClaimEvidence[],
+  contradictions: ClaimEvidence[],
+  missingEvidence: string[],
+  alternativeExplanations: string[]
+): ReasoningStep[] {
+  const supportEvidenceIds = supports.flatMap((support) => support.evidenceIds);
+  const contradictionEvidenceIds = contradictions.flatMap((contradiction) => contradiction.evidenceIds);
+  const steps: ReasoningStep[] = [
+    {
+      label: 'Supporting evidence aggregation',
+      rule: 'A profile claim must cite supporting facts before it can be emitted.',
+      inputs: supports.length > 0 ? supports.map((support) => support.refId) : [input.id],
+      output: `${supports.length} supporting trace item${plural(supports.length)} attached to this ${input.type} claim.`,
+      effect: 'supports',
+      evidenceIds: supportEvidenceIds
+    }
+  ];
+
+  if (contradictions.length > 0) {
+    steps.push({
+      label: 'Contradiction check',
+      rule: 'Direct contradicting evidence weakens or rules out a profile claim.',
+      inputs: contradictions.map((contradiction) => contradiction.refId),
+      output: `${contradictions.length} contradicting trace item${plural(contradictions.length)} observed.`,
+      effect: status === 'rejected' ? 'rules_out' : 'weakens',
+      evidenceIds: contradictionEvidenceIds
+    });
+  }
+
+  steps.push({
+    label: 'Missing evidence and alternatives',
+    rule: 'High-level profile claims must keep identity, role, and count uncertainty explicit.',
+    inputs: [...missingEvidence, ...alternativeExplanations].slice(0, 6),
+    output: `${missingEvidence.length} missing-evidence item${plural(missingEvidence.length)} and ${alternativeExplanations.length} alternative explanation${plural(alternativeExplanations.length)} keep the claim calibrated.`,
+    effect: missingEvidence.length > 0 || alternativeExplanations.length > 0 ? 'weakens' : 'supports',
+    evidenceIds: []
+  });
+
+  steps.push({
+    label: 'Status calibration',
+    rule: 'Exact identity and household-size interpretations are not promoted to strong without direct evidence.',
+    inputs: [`confidence:${formatWeight(input.confidence)}`, `status:${status}`],
+    output: `The claim is emitted as ${status}.`,
+    effect: 'supports',
+    evidenceIds: supportEvidenceIds
+  });
+
+  return steps;
+}
+
+function formatEvidenceValue(value: MemoryEvidence['value']): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  return String(value);
 }
 
 function missingEvidenceForHypothesis(input: ProfileHypothesisInput): string[] {
