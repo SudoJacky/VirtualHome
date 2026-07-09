@@ -34,4 +34,12 @@ describe('package scripts', () => {
 
     expect(packageJson.scripts?.['memory:dataset']).toBe('tsx src/sim/evaluation/homeMemoryDataset.ts');
   });
+
+  it('defines a Home Memory rebuild command for persistent stores', () => {
+    const packageJson = JSON.parse(readFileSync(path.resolve('package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+
+    expect(packageJson.scripts?.['memory:rebuild']).toBe('tsx src/sim/evaluation/homeMemoryRebuild.ts');
+  });
 });

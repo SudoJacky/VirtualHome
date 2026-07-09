@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { WebSocket } from '@fastify/websocket';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from '../src/server/app';
+import { DeviceEventDatabase } from '../src/server/deviceEventStore';
 import { getHomeDefinition } from '../src/sim/catalog';
 import { resolveHomeMemoryLlmConfig } from '../src/sim/llm/homeMemoryEnrichment';
 import { deviceCapabilities } from '../src/shared/deviceRegistry';
@@ -246,6 +247,351 @@ describe('server API', () => {
     });
 
     await server.close();
+  });
+
+  it('exposes Home Memory materialization and Agent Profile CRUD APIs', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-profile-api-'));
+    dirs.push(dir);
+    const server = createServer({
+      databasePath: path.join(dir, 'twin.db'),
+      homeMemoryDatabasePath: path.join(dir, 'home-memory.db'),
+      agentProfileDatabasePath: path.join(dir, 'agent-profile.db'),
+      autoTick: false
+    });
+
+    const start = await server.inject({
+      method: 'POST',
+      url: '/api/scenarios/weekday_normal/start'
+    });
+    expect(start.statusCode).toBe(200);
+    const runId = start.json().snapshot.runId as string;
+
+    await server.inject({
+      method: 'POST',
+      url: '/api/control/advance',
+      payload: { minutes: 30 }
+    });
+
+    const materialized = await server.inject({
+      method: 'POST',
+      url: '/api/home-memory/materializations',
+      payload: { runId }
+    });
+    expect(materialized.statusCode).toBe(200);
+    expect(materialized.json()).toMatchObject({
+      homeId: 'default_home',
+      runId,
+      coveredSequence: expect.any(Number)
+    });
+
+    const persistedHypotheses = await server.inject({
+      method: 'GET',
+      url: `/api/home-memory/profile/hypotheses?runId=${runId}&limit=20`
+    });
+    expect(persistedHypotheses.statusCode).toBe(200);
+    expect(persistedHypotheses.json().items.length).toBeGreaterThan(0);
+
+    const firstHypothesis = persistedHypotheses.json().items[0] as { id: string; summary: string };
+    const created = await server.inject({
+      method: 'POST',
+      url: '/api/agent-profile/entries',
+      payload: {
+        homeId: 'default_home',
+        subjectType: 'household',
+        subjectId: 'household',
+        entryType: 'conclusion',
+        title: 'Persisted morning routine',
+        summary: 'The household has a queryable morning routine candidate.',
+        content: {
+          claim: 'The household has a queryable morning routine candidate.',
+          reasoning: 'Created from a persisted Home Memory hypothesis.'
+        },
+        index: {
+          claimType: 'routine',
+          predicate: 'morning_activity'
+        },
+        timeWindows: [{
+          dayType: 'weekday',
+          timeStart: '07:00',
+          timeEnd: '10:00',
+          timezone: 'Asia/Singapore',
+          recurrence: 'weekly'
+        }],
+        sources: [{
+          sourceType: 'home_memory_hypothesis',
+          sourceId: firstHypothesis.id,
+          homeId: 'default_home',
+          runId,
+          quoteOrObservation: firstHypothesis.summary,
+          weight: 0.8
+        }],
+        confidence: 0.6,
+        stability: 'working',
+        createdBy: 'agent'
+      }
+    });
+    expect(created.statusCode).toBe(200);
+
+    const query = await server.inject({
+      method: 'POST',
+      url: '/api/agent-profile/query',
+      payload: {
+        homeId: 'default_home',
+        structured: {
+          claimTypes: ['routine'],
+          predicates: ['morning_activity'],
+          dayType: 'weekday',
+          time: '08:30',
+          statuses: ['candidate', 'active']
+        },
+        text: 'morning routine',
+        includeSources: true
+      }
+    });
+    expect(query.statusCode).toBe(200);
+    expect(query.json().items[0]).toMatchObject({
+      entryId: created.json().id,
+      matchChannels: expect.arrayContaining(['structured', 'fts']),
+      sources: [expect.objectContaining({ sourceType: 'home_memory_hypothesis' })]
+    });
+
+    const patched = await server.inject({
+      method: 'PATCH',
+      url: `/api/agent-profile/entries/${created.json().id}`,
+      payload: {
+        summary: 'Updated queryable morning routine candidate.',
+        content: {
+          claim: 'Updated queryable morning routine candidate.',
+          reasoning: 'Patch keeps sources separate from content updates.'
+        },
+        actor: 'agent',
+        reason: 'Refine summary.'
+      }
+    });
+    expect(patched.statusCode).toBe(200);
+    expect(patched.json().summary).toBe('Updated queryable morning routine candidate.');
+
+    const sourceAdded = await server.inject({
+      method: 'POST',
+      url: `/api/agent-profile/entries/${created.json().id}/sources`,
+      payload: {
+        source: {
+          sourceType: 'user_statement',
+          sourceId: 'message_1',
+          homeId: 'default_home',
+          quoteOrObservation: 'User asked the agent to remember morning routines.',
+          weight: 0.5
+        },
+        actor: 'agent',
+        reason: 'Attach explicit user provenance.'
+      }
+    });
+    expect(sourceAdded.statusCode).toBe(200);
+    expect(sourceAdded.json()).toMatchObject({ sourceId: 'message_1' });
+
+    const search = await server.inject({
+      method: 'GET',
+      url: '/api/agent-profile/search?homeId=default_home&q=updated%20morning&includeSources=true'
+    });
+    expect(search.statusCode).toBe(200);
+    expect(search.json().items[0]).toMatchObject({
+      entryId: created.json().id,
+      matchChannels: ['fts'],
+      sources: expect.arrayContaining([
+        expect.objectContaining({ sourceId: 'message_1' })
+      ])
+    });
+
+    const archived = await server.inject({
+      method: 'POST',
+      url: `/api/agent-profile/entries/${created.json().id}/status`,
+      payload: {
+        status: 'archived',
+        actor: 'agent',
+        reason: 'Test cleanup.'
+      }
+    });
+    expect(archived.statusCode).toBe(200);
+    expect(archived.json().status).toBe('archived');
+
+    const deleted = await server.inject({
+      method: 'DELETE',
+      url: `/api/agent-profile/entries/${created.json().id}`
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toEqual({ deleted: true });
+
+    await server.close();
+  });
+
+  it('exposes Device Event query APIs and validates Agent Profile device_event_query sources', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'virtualhome-device-event-api-'));
+    dirs.push(dir);
+    const deviceEventsDatabasePath = path.join(dir, 'device-events.db');
+    const deviceDb = new DeviceEventDatabase(deviceEventsDatabasePath);
+    try {
+      deviceDb.rebuildFromEvents({
+        inputPath: 'test-input.json',
+        inputSha256: 'sha256-test',
+        schemaVersion: 1,
+        events: [{
+          id: 'value_001',
+          sourceEventId: 'source_001',
+          sourceEventType: 'DeviceTelemetry',
+          runId: 'run_a',
+          sequence: 1,
+          ts: '2026-06-22T00:00:00.000Z',
+          simTime: '2026-06-22T08:00:00',
+          homeId: 'home_001',
+          roomId: 'kitchen',
+          deviceId: 'coffee_maker_01',
+          deviceType: 'coffee_maker',
+          field: 'powerW',
+          value: 850
+        }, {
+          id: 'value_002',
+          sourceEventId: 'source_002',
+          sourceEventType: 'DeviceTelemetry',
+          runId: 'run_a',
+          sequence: 2,
+          ts: '2026-06-22T00:05:00.000Z',
+          simTime: '2026-06-22T08:05:00',
+          homeId: 'home_001',
+          roomId: 'kitchen',
+          deviceId: 'kitchen_motion_01',
+          deviceType: 'motion_sensor',
+          field: 'motion',
+          value: true
+        }]
+      });
+      deviceDb.recordQueryAudit({
+        id: 'query_breakfast_window',
+        homeId: 'home_001',
+        runId: 'run_a',
+        query: { roomId: 'kitchen', fromSimTime: '2026-06-22T07:30:00', toSimTime: '2026-06-22T08:30:00' },
+        resultCount: 2,
+        summary: 'Breakfast window query.',
+        createdBy: 'agent'
+      });
+    } finally {
+      deviceDb.close();
+    }
+
+    const server = createServer({
+      databasePath: path.join(dir, 'twin.db'),
+      deviceEventsDatabasePath,
+      homeMemoryDatabasePath: path.join(dir, 'home-memory.db'),
+      agentProfileDatabasePath: path.join(dir, 'agent-profile.db'),
+      autoTick: false
+    });
+    try {
+      const list = await server.inject({
+        method: 'GET',
+        url: '/api/device-events?homeId=home_001&runId=run_a&roomId=kitchen&q=coffee%20850'
+      });
+      expect(list.statusCode).toBe(200);
+      expect(list.json().items).toEqual([
+        expect.objectContaining({ id: 'value_001', value: 850 })
+      ]);
+
+      const aroundSource = await server.inject({
+        method: 'GET',
+        url: '/api/device-events/around-source?sourceEventId=source_002&windowMinutes=10'
+      });
+      expect(aroundSource.statusCode).toBe(200);
+      expect(aroundSource.json().items.map((item: { id: string }) => item.id)).toEqual(['value_001', 'value_002']);
+
+      const aggregate = await server.inject({
+        method: 'GET',
+        url: '/api/device-events/aggregate?homeId=home_001&runId=run_a&groupBy=deviceType'
+      });
+      expect(aggregate.statusCode).toBe(200);
+      expect(aggregate.json().items).toEqual([
+        { key: 'coffee_maker', count: 1 },
+        { key: 'motion_sensor', count: 1 }
+      ]);
+
+      const queryAudit = await server.inject({
+        method: 'GET',
+        url: '/api/device-event-queries/query_breakfast_window'
+      });
+      expect(queryAudit.statusCode).toBe(200);
+      expect(queryAudit.json()).toMatchObject({ id: 'query_breakfast_window', resultCount: 2 });
+
+      const created = await server.inject({
+        method: 'POST',
+        url: '/api/agent-profile/entries',
+        payload: {
+          homeId: 'home_001',
+          subjectType: 'household',
+          subjectId: 'household',
+          entryType: 'conclusion',
+          title: 'Breakfast query conclusion',
+          summary: 'Kitchen evidence supports a breakfast window.',
+          content: { claim: 'Kitchen evidence supports a breakfast window.' },
+          index: {
+            claimType: 'routine',
+            predicate: 'breakfast_window'
+          },
+          timeWindows: [{
+            dayType: 'weekday',
+            timeStart: '07:30',
+            timeEnd: '08:30',
+            timezone: 'Asia/Singapore',
+            recurrence: 'weekly'
+          }],
+          sources: [{
+            sourceType: 'device_event_query',
+            sourceId: 'query_breakfast_window',
+            homeId: 'home_001',
+            runId: 'run_a',
+            quoteOrObservation: 'Queried kitchen events around breakfast time.',
+            weight: 0.8
+          }],
+          confidence: 0.7,
+          stability: 'working',
+          createdBy: 'agent'
+        }
+      });
+      expect(created.statusCode).toBe(200);
+
+      const rejected = await server.inject({
+        method: 'POST',
+        url: '/api/agent-profile/entries',
+        payload: {
+          homeId: 'home_001',
+          subjectType: 'household',
+          subjectId: 'household',
+          entryType: 'conclusion',
+          title: 'Missing query source',
+          summary: 'This source should be rejected.',
+          content: { claim: 'This source should be rejected.' },
+          index: {
+            claimType: 'routine',
+            predicate: 'missing_query_source'
+          },
+          timeWindows: [{
+            dayType: 'weekday',
+            timeStart: '07:30',
+            timeEnd: '08:30',
+            timezone: 'Asia/Singapore',
+            recurrence: 'weekly'
+          }],
+          sources: [{
+            sourceType: 'device_event_query',
+            sourceId: 'missing_query',
+            homeId: 'home_001',
+            runId: 'run_a'
+          }],
+          confidence: 0.7,
+          stability: 'working',
+          createdBy: 'agent'
+        }
+      });
+      expect(rejected.statusCode).toBe(400);
+    } finally {
+      await server.close();
+    }
   });
 
   it('uses configured LLM provider for opt-in memory hypothesis enrichment', async () => {
@@ -1157,6 +1503,16 @@ describe('server API', () => {
       '/api/memory/llm/config',
       '/api/memory/llm/stream',
       '/api/memory/llm/metrics',
+      '/api/home-memory/materializations',
+      '/api/home-memory/evidence',
+      '/api/home-memory/profile/hypotheses',
+      '/api/home-memory/materializations/{runId}',
+      '/api/agent-profile/entries',
+      '/api/agent-profile/entries/{id}',
+      '/api/agent-profile/entries/{id}/sources',
+      '/api/agent-profile/entries/{id}/status',
+      '/api/agent-profile/query',
+      '/api/agent-profile/search',
       '/api/device-twins',
       '/api/device-capabilities',
       '/api/home-definition',
@@ -1181,9 +1537,16 @@ describe('server API', () => {
       expect.objectContaining({ name: 'includeEvidence' }),
       expect.objectContaining({ name: 'includeReasoning' })
     ]));
+    expect(document.paths['/api/home-memory/materializations'].post.requestBody).toBeDefined();
+    expect(document.paths['/api/agent-profile/entries'].post.requestBody).toBeDefined();
+    expect(document.paths['/api/agent-profile/entries/{id}'].patch.requestBody).toBeDefined();
+    expect(document.paths['/api/agent-profile/entries/{id}/sources'].post.requestBody).toBeDefined();
+    expect(document.paths['/api/agent-profile/query'].post.requestBody).toBeDefined();
     expect(document.components.schemas.MemoryHypothesis.properties.type.enum).toContain('household_composition');
     expect(document.components.schemas.MemoryHypothesis.properties.type.enum).toContain('automation_recommendation');
     expect(document.components.schemas.MemoryProfileConclusion.properties.type.enum).toContain('household_composition');
+    expect(document.components.schemas).toHaveProperty('HomeMemoryMaterialization');
+    expect(document.components.schemas).toHaveProperty('AgentProfileEntry');
     expect(document.components.schemas.MemoryProfileAnswer.properties).toHaveProperty('matchedQuery');
     expect(document.components.schemas.MemoryProfileAnswer.properties).toHaveProperty('sourceConclusionIds');
     expect(document.components.schemas).toHaveProperty('ValidationError');
