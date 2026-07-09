@@ -16,6 +16,9 @@ export function resolveServerRuntimeOptions(root: string, env: NodeJS.ProcessEnv
     homeMemoryLlm,
     serverOptions: {
       databasePath: resolvePath(root, env.VIRTUALHOME_DATABASE_PATH ?? path.join('data', 'virtualhome.db')),
+      deviceEventsDatabasePath: resolvePath(root, env.VIRTUALHOME_DEVICE_EVENTS_DATABASE_PATH ?? path.join('data', 'device-events.db')),
+      homeMemoryDatabasePath: resolvePath(root, env.VIRTUALHOME_HOME_MEMORY_DATABASE_PATH ?? path.join('data', 'home-memory.db')),
+      agentProfileDatabasePath: resolvePath(root, env.VIRTUALHOME_AGENT_PROFILE_DATABASE_PATH ?? path.join('data', 'agent-profile.db')),
       homeDefinitionPath: env.VIRTUALHOME_HOME_DEFINITION,
       homeMemoryLlm,
       telemetryRetentionEvents,

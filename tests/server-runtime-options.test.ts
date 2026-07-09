@@ -8,11 +8,17 @@ describe('server runtime options', () => {
     const options = resolveServerRuntimeOptions(root, {
       PORT: '4327',
       VIRTUALHOME_DATABASE_PATH: 'output/playwright/verification.db',
+      VIRTUALHOME_DEVICE_EVENTS_DATABASE_PATH: 'output/playwright/device-events.db',
+      VIRTUALHOME_HOME_MEMORY_DATABASE_PATH: 'output/playwright/home-memory.db',
+      VIRTUALHOME_AGENT_PROFILE_DATABASE_PATH: 'output/playwright/agent-profile.db',
       VIRTUALHOME_TELEMETRY_RETENTION_EVENTS: '250'
     });
 
     expect(options.port).toBe(4327);
     expect(options.serverOptions.databasePath).toBe(path.join(root, 'output/playwright/verification.db'));
+    expect(options.serverOptions.deviceEventsDatabasePath).toBe(path.join(root, 'output/playwright/device-events.db'));
+    expect(options.serverOptions.homeMemoryDatabasePath).toBe(path.join(root, 'output/playwright/home-memory.db'));
+    expect(options.serverOptions.agentProfileDatabasePath).toBe(path.join(root, 'output/playwright/agent-profile.db'));
     expect(options.serverOptions.telemetryRetentionEvents).toBe(250);
   });
 

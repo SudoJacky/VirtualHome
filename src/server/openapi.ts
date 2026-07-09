@@ -630,6 +630,35 @@ const deviceValueEventSchema: JsonSchema = {
   }
 };
 
+const storedDeviceEventSchema: JsonSchema = {
+  allOf: [
+    { $ref: '#/components/schemas/DeviceValueEvent' },
+    {
+      type: 'object',
+      required: ['importId', 'payload'],
+      properties: {
+        importId: stringSchema,
+        payload: { $ref: '#/components/schemas/DeviceValueEvent' }
+      }
+    }
+  ]
+};
+
+const deviceEventQueryAuditSchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'homeId', 'query', 'resultCount', 'createdBy', 'createdAt'],
+  properties: {
+    id: stringSchema,
+    homeId: stringSchema,
+    runId: { anyOf: [stringSchema, { type: 'null' }] },
+    query: { type: 'object', additionalProperties: true },
+    resultCount: { type: 'integer', minimum: 0 },
+    summary: { anyOf: [stringSchema, { type: 'null' }] },
+    createdBy: { type: 'string', enum: ['agent', 'system', 'human_reviewer'] },
+    createdAt: isoDateTimeSchema
+  }
+};
+
 const deviceSocketUpdateMessageSchema: JsonSchema = {
   type: 'object',
   required: ['type', 'runId', 'sequence', 'replayComplete', 'events'],
@@ -1806,6 +1835,84 @@ const memoryLlmMetricsSchema: JsonSchema = {
   }
 };
 
+const homeMemoryMaterializationSchema: JsonSchema = {
+  type: 'object',
+  required: ['homeId', 'runId', 'coveredSequence', 'reducerVersion', 'schemaVersion', 'materializedAt'],
+  properties: {
+    homeId: stringSchema,
+    runId: stringSchema,
+    coveredSequence: { type: 'integer', minimum: 0 },
+    reducerVersion: stringSchema,
+    schemaVersion: { type: 'integer', minimum: 1 },
+    materializedAt: isoDateTimeSchema
+  }
+};
+
+const agentProfileSourceSchema: JsonSchema = {
+  type: 'object',
+  required: ['sourceType', 'sourceId', 'homeId'],
+  properties: {
+    id: stringSchema,
+    entryId: stringSchema,
+    sourceType: {
+      type: 'string',
+      enum: ['home_memory_evidence', 'home_memory_hypothesis', 'home_memory_portrait_section', 'device_event_query', 'user_statement', 'agent_reasoning', 'manual_review']
+    },
+    sourceId: stringSchema,
+    homeId: stringSchema,
+    runId: stringSchema,
+    sequence: { type: 'integer' },
+    quoteOrObservation: stringSchema,
+    weight: { type: 'number', minimum: 0, maximum: 1 }
+  }
+};
+
+const agentProfileEntrySchema: JsonSchema = {
+  type: 'object',
+  required: ['id', 'homeId', 'subjectType', 'subjectId', 'entryType', 'title', 'summary', 'status', 'confidence', 'stability'],
+  properties: {
+    id: stringSchema,
+    homeId: stringSchema,
+    subjectType: { type: 'string' },
+    subjectId: stringSchema,
+    entryType: { type: 'string' },
+    title: stringSchema,
+    summary: stringSchema,
+    content: { type: 'object', additionalProperties: true },
+    status: { type: 'string', enum: ['candidate', 'active', 'rejected', 'superseded', 'archived'] },
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
+    stability: { type: 'string', enum: ['volatile', 'working', 'stable'] },
+    sources: {
+      type: 'array',
+      items: { $ref: '#/components/schemas/AgentProfileSource' }
+    }
+  }
+};
+
+const agentProfileQueryResultSchema: JsonSchema = {
+  type: 'object',
+  required: ['items'],
+  properties: {
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['entryId', 'summary', 'matchChannels', 'score', 'confidence', 'status', 'stability'],
+        properties: {
+          entryId: stringSchema,
+          summary: stringSchema,
+          matchChannels: { type: 'array', items: { type: 'string', enum: ['structured', 'fts'] } },
+          score: { type: 'number' },
+          confidence: { type: 'number', minimum: 0, maximum: 1 },
+          status: { type: 'string' },
+          stability: { type: 'string' },
+          sources: { type: 'array', items: { $ref: '#/components/schemas/AgentProfileSource' } }
+        }
+      }
+    }
+  }
+};
+
 const memoryListResponseSchema = (itemSchema: JsonSchema): JsonSchema => ({
   type: 'object',
   required: ['runId', 'items'],
@@ -2258,6 +2365,380 @@ export function buildOpenApiDocument(): Record<string, unknown> {
           responses: okResponse({ $ref: '#/components/schemas/MemoryLlmMetrics' }, true)
         }
       },
+      '/api/home-memory/materializations': {
+        get: {
+          summary: 'List materialized Home Memory runs',
+          parameters: [{
+            name: 'homeId',
+            in: 'query',
+            required: false,
+            schema: stringSchema
+          }],
+          responses: okResponse({
+            type: 'object',
+            required: ['items'],
+            properties: {
+              items: { type: 'array', items: { $ref: '#/components/schemas/HomeMemoryMaterialization' } }
+            }
+          }, true)
+        },
+        post: {
+          summary: 'Materialize a Home Memory run into the structured Home Memory database',
+          requestBody: jsonBody({
+            type: 'object',
+            properties: {
+              runId: stringSchema
+            }
+          }),
+          responses: okResponse({ $ref: '#/components/schemas/HomeMemoryMaterialization' }, true)
+        }
+      },
+      '/api/home-memory/evidence': {
+        get: {
+          summary: 'Read persisted Home Memory evidence',
+          parameters: [runIdParameter(), limitParameter(), {
+            name: 'homeId',
+            in: 'query',
+            required: false,
+            schema: stringSchema
+          }],
+          responses: okResponse(memoryListResponseSchema({ $ref: '#/components/schemas/MemoryEvidence' }), true)
+        }
+      },
+      '/api/home-memory/profile/hypotheses': {
+        get: {
+          summary: 'Read persisted Home Memory profile hypotheses',
+          parameters: [runIdParameter(), limitParameter(), {
+            name: 'homeId',
+            in: 'query',
+            required: false,
+            schema: stringSchema
+          }],
+          responses: okResponse(memoryListResponseSchema({ $ref: '#/components/schemas/MemoryHypothesis' }), true)
+        }
+      },
+      '/api/home-memory/materializations/{runId}': {
+        delete: {
+          summary: 'Delete a materialized Home Memory run',
+          parameters: [{
+            name: 'runId',
+            in: 'path',
+            required: true,
+            schema: stringSchema
+          }],
+          responses: okResponse({
+            type: 'object',
+            required: ['deleted'],
+            properties: { deleted: { type: 'boolean' } }
+          })
+        }
+      },
+      '/api/device-events': {
+        get: {
+          summary: 'Query imported device value events with structured filters and FTS',
+          parameters: deviceEventListParameters(),
+          responses: okResponse({
+            type: 'object',
+            required: ['items'],
+            properties: {
+              items: { type: 'array', items: { $ref: '#/components/schemas/StoredDeviceEvent' } }
+            }
+          }, true)
+        }
+      },
+      '/api/device-events/around': {
+        get: {
+          summary: 'Query device value events around a sequence number',
+          parameters: [{
+            name: 'homeId',
+            in: 'query',
+            required: true,
+            schema: stringSchema
+          }, {
+            name: 'runId',
+            in: 'query',
+            required: true,
+            schema: stringSchema
+          }, {
+            name: 'sequence',
+            in: 'query',
+            required: true,
+            schema: { type: 'integer', minimum: 0 }
+          }, {
+            name: 'window',
+            in: 'query',
+            required: false,
+            schema: { type: 'integer', minimum: 1, maximum: 1000, default: 25 }
+          }, limitParameter()],
+          responses: okResponse({
+            type: 'object',
+            required: ['items'],
+            properties: {
+              items: { type: 'array', items: { $ref: '#/components/schemas/StoredDeviceEvent' } }
+            }
+          }, true)
+        }
+      },
+      '/api/device-events/around-source': {
+        get: {
+          summary: 'Query source device event rows and nearby events by sourceEventId',
+          parameters: [{
+            name: 'sourceEventId',
+            in: 'query',
+            required: true,
+            schema: stringSchema
+          }, {
+            name: 'homeId',
+            in: 'query',
+            required: false,
+            schema: stringSchema
+          }, runIdParameter(), {
+            name: 'windowMinutes',
+            in: 'query',
+            required: false,
+            schema: { type: 'number', minimum: 1, maximum: 1440, default: 30 }
+          }, limitParameter()],
+          responses: okResponse({
+            type: 'object',
+            required: ['source', 'items'],
+            properties: {
+              source: { anyOf: [{ $ref: '#/components/schemas/StoredDeviceEvent' }, { type: 'null' }] },
+              items: { type: 'array', items: { $ref: '#/components/schemas/StoredDeviceEvent' } }
+            }
+          }, true)
+        }
+      },
+      '/api/device-events/aggregate': {
+        get: {
+          summary: 'Aggregate imported device value events',
+          parameters: [...deviceEventListParameters(), {
+            name: 'groupBy',
+            in: 'query',
+            required: true,
+            schema: { type: 'string', enum: ['roomId', 'deviceId', 'deviceType', 'field', 'sourceEventType'] }
+          }],
+          responses: okResponse({
+            type: 'object',
+            required: ['items'],
+            properties: {
+              items: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  required: ['key', 'count'],
+                  properties: {
+                    key: stringSchema,
+                    count: { type: 'integer', minimum: 0 }
+                  }
+                }
+              }
+            }
+          }, true)
+        }
+      },
+      '/api/device-events/source/{sourceEventId}': {
+        get: {
+          summary: 'Find imported device value events by sourceEventId',
+          parameters: [{
+            name: 'sourceEventId',
+            in: 'path',
+            required: true,
+            schema: stringSchema
+          }, {
+            name: 'homeId',
+            in: 'query',
+            required: false,
+            schema: stringSchema
+          }, runIdParameter(), limitParameter()],
+          responses: okResponse({
+            type: 'object',
+            required: ['items'],
+            properties: {
+              items: { type: 'array', items: { $ref: '#/components/schemas/StoredDeviceEvent' } }
+            }
+          }, true)
+        }
+      },
+      '/api/device-events/{id}': {
+        get: {
+          summary: 'Get one imported device value event',
+          parameters: [{
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: stringSchema
+          }],
+          responses: okResponse({ $ref: '#/components/schemas/StoredDeviceEvent' }, true)
+        }
+      },
+      '/api/device-event-queries/{id}': {
+        get: {
+          summary: 'Get a Device Event query audit record',
+          parameters: [{
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: stringSchema
+          }],
+          responses: okResponse({ $ref: '#/components/schemas/DeviceEventQueryAudit' }, true)
+        }
+      },
+      '/api/agent-profile/entries': {
+        get: {
+          summary: 'List Agent Profile entries',
+          parameters: [{
+            name: 'homeId',
+            in: 'query',
+            required: false,
+            schema: stringSchema
+          }, {
+            name: 'status',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', enum: ['candidate', 'active', 'rejected', 'superseded', 'archived'] }
+          }, limitParameter()],
+          responses: okResponse({
+            type: 'object',
+            required: ['items'],
+            properties: { items: { type: 'array', items: { $ref: '#/components/schemas/AgentProfileEntry' } } }
+          }, true)
+        },
+        post: {
+          summary: 'Create an Agent Profile entry with required provenance',
+          requestBody: jsonBody({ $ref: '#/components/schemas/AgentProfileEntry' }),
+          responses: okResponse({ $ref: '#/components/schemas/AgentProfileEntry' }, true)
+        }
+      },
+      '/api/agent-profile/entries/{id}': {
+        get: {
+          summary: 'Get an Agent Profile entry',
+          parameters: [{
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: stringSchema
+          }],
+          responses: okResponse({ $ref: '#/components/schemas/AgentProfileEntry' }, true)
+        },
+        patch: {
+          summary: 'Update Agent Profile entry content and indexes without replacing sources',
+          parameters: [{
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: stringSchema
+          }],
+          requestBody: jsonBody({
+            type: 'object',
+            required: ['reason'],
+            properties: {
+              title: stringSchema,
+              summary: stringSchema,
+              content: { type: 'object', additionalProperties: true },
+              index: { type: 'object', additionalProperties: true },
+              timeWindows: { type: 'array', items: { type: 'object', additionalProperties: true } },
+              actor: { type: 'string', enum: ['agent', 'user', 'system', 'human_reviewer'] },
+              reason: stringSchema
+            }
+          }),
+          responses: okResponse({ $ref: '#/components/schemas/AgentProfileEntry' }, true)
+        },
+        delete: {
+          summary: 'Delete an Agent Profile entry',
+          parameters: [{
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: stringSchema
+          }],
+          responses: okResponse({
+            type: 'object',
+            required: ['deleted'],
+            properties: { deleted: { type: 'boolean' } }
+          })
+        }
+      },
+      '/api/agent-profile/entries/{id}/sources': {
+        post: {
+          summary: 'Append provenance to an Agent Profile entry',
+          parameters: [{
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: stringSchema
+          }],
+          requestBody: jsonBody({
+            type: 'object',
+            required: ['source', 'reason'],
+            properties: {
+              source: { $ref: '#/components/schemas/AgentProfileSource' },
+              actor: { type: 'string', enum: ['agent', 'user', 'system', 'human_reviewer'] },
+              reason: stringSchema
+            }
+          }),
+          responses: okResponse({ $ref: '#/components/schemas/AgentProfileSource' }, true)
+        }
+      },
+      '/api/agent-profile/entries/{id}/status': {
+        post: {
+          summary: 'Change Agent Profile entry status',
+          parameters: [{
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: stringSchema
+          }],
+          requestBody: jsonBody({
+            type: 'object',
+            required: ['status', 'reason'],
+            properties: {
+              status: { type: 'string', enum: ['candidate', 'active', 'rejected', 'superseded', 'archived'] },
+              actor: { type: 'string', enum: ['agent', 'user', 'system', 'human_reviewer'] },
+              reason: stringSchema
+            }
+          }),
+          responses: okResponse({ $ref: '#/components/schemas/AgentProfileEntry' }, true)
+        }
+      },
+      '/api/agent-profile/query': {
+        post: {
+          summary: 'Query Agent Profile entries through structured facets and FTS',
+          requestBody: jsonBody({
+            type: 'object',
+            required: ['homeId'],
+            properties: {
+              homeId: stringSchema,
+              structured: { type: 'object', additionalProperties: true },
+              text: stringSchema,
+              limit: { type: 'integer', minimum: 1, maximum: 100 },
+              includeSources: { type: 'boolean' }
+            }
+          }),
+          responses: okResponse({ $ref: '#/components/schemas/AgentProfileQueryResult' }, true)
+        }
+      },
+      '/api/agent-profile/search': {
+        get: {
+          summary: 'Search Agent Profile entries with FTS',
+          parameters: [{
+            name: 'homeId',
+            in: 'query',
+            required: true,
+            schema: stringSchema
+          }, {
+            name: 'q',
+            in: 'query',
+            required: true,
+            schema: stringSchema
+          }, limitParameter(), {
+            name: 'includeSources',
+            in: 'query',
+            required: false,
+            schema: { type: 'boolean' }
+          }],
+          responses: okResponse({ $ref: '#/components/schemas/AgentProfileQueryResult' }, true)
+        }
+      },
       '/api/device-twins': {
         get: {
           summary: 'Get simulated device access records',
@@ -2456,11 +2937,17 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         HomeMemoryLlmBatchExecution: homeMemoryLlmBatchExecutionSchema,
         HomeMemoryLlmConfig: homeMemoryLlmConfigSchema,
         MemoryLlmMetrics: memoryLlmMetricsSchema,
+        HomeMemoryMaterialization: homeMemoryMaterializationSchema,
+        AgentProfileSource: agentProfileSourceSchema,
+        AgentProfileEntry: agentProfileEntrySchema,
+        AgentProfileQueryResult: agentProfileQueryResultSchema,
         AccessAuditRecord: accessAuditRecordSchema,
         UpdateResponse: updateResponseSchema,
         TwinSocketUpdateMessage: twinSocketUpdateMessageSchema,
         TwinSocketHeartbeatMessage: twinSocketHeartbeatMessageSchema,
         DeviceValueEvent: deviceValueEventSchema,
+        StoredDeviceEvent: storedDeviceEventSchema,
+        DeviceEventQueryAudit: deviceEventQueryAuditSchema,
         DeviceSocketUpdateMessage: deviceSocketUpdateMessageSchema,
         ValidationError: validationErrorSchema,
         NotFoundError: notFoundErrorSchema,
@@ -2603,6 +3090,39 @@ function optionalStringParameter(name: string): Record<string, unknown> {
     required: false,
     schema: stringSchema
   };
+}
+
+function deviceEventListParameters(): Record<string, unknown>[] {
+  return [
+    optionalStringParameter('homeId'),
+    runIdParameter(),
+    {
+      name: 'fromSequence',
+      in: 'query',
+      required: false,
+      schema: { type: 'integer', minimum: 0 }
+    },
+    {
+      name: 'toSequence',
+      in: 'query',
+      required: false,
+      schema: { type: 'integer', minimum: 0 }
+    },
+    optionalStringParameter('fromSimTime'),
+    optionalStringParameter('toSimTime'),
+    optionalStringParameter('roomId'),
+    optionalStringParameter('deviceId'),
+    optionalStringParameter('deviceType'),
+    optionalStringParameter('field'),
+    {
+      name: 'sourceEventType',
+      in: 'query',
+      required: false,
+      schema: { type: 'string', enum: ['DeviceTelemetry', 'DeviceStateChanged'] }
+    },
+    optionalStringParameter('q'),
+    limitParameter(1000)
+  ];
 }
 
 function optionalBooleanParameter(name: string): Record<string, unknown> {

@@ -4,7 +4,12 @@ import { pathToFileURL } from 'node:url';
 import { createSimulator } from '../engine';
 import { advanceInventoryOneDay } from '../world/inventory';
 import { projectDeviceValueEvents, type DeviceValueEvent } from '../../server/deviceEventStream';
+import { AgentProfileDatabase, type AgentProfileClaimType, type AgentProfileStatus } from '../../server/agentProfileStore';
+import { HomeMemoryDatabase } from '../../server/homeMemoryStore';
+import { createHouseholdPortrait } from '../../server/memoryQuery';
 import type { TwinEvent, TwinSnapshot } from '../../shared/types';
+import { createHomeMemory, reduceDeviceEvents } from '../../web/homeMemoryModel';
+import { createHomeProfileHypotheses, type ProfileHypothesis } from '../../web/homeProfiler';
 import { parseEvaluationCliArgs, type SimulationEvaluationOptions } from './runEvaluation';
 
 export interface HomeMemoryDeviceEventDataset {
@@ -132,18 +137,33 @@ export function createHomeMemoryDeviceEventDatasetCliReport(args: string[]): str
 }
 
 export function writeHomeMemoryDeviceEventDatasetCliReport(args: string[]): string {
-  const { evaluationArgs, outputPath } = parseHomeMemoryDatasetCliArgs(args);
-  const report = `${JSON.stringify(createHomeMemoryDeviceEventDataset(parseEvaluationCliArgs(evaluationArgs)), null, 2)}\n`;
+  const { evaluationArgs, outputPath, homeMemoryDatabasePath, agentProfileDatabasePath } = parseHomeMemoryDatasetCliArgs(args);
+  const dataset = createHomeMemoryDeviceEventDataset(parseEvaluationCliArgs(evaluationArgs));
+  const report = `${JSON.stringify(dataset, null, 2)}\n`;
+  const materializationMessages = materializeHomeMemoryDataset(dataset, {
+    homeMemoryDatabasePath,
+    agentProfileDatabasePath
+  });
   if (!outputPath) {
-    return report;
+    return materializationMessages.length > 0 ? `${report}${materializationMessages.join('\n')}\n` : report;
   }
   writeFileSync(outputPath, report, 'utf8');
-  return `Wrote Home Memory device-event dataset to ${outputPath}\n`;
+  return [
+    `Wrote Home Memory device-event dataset to ${outputPath}`,
+    ...materializationMessages
+  ].join('\n') + '\n';
 }
 
-function parseHomeMemoryDatasetCliArgs(args: string[]): { evaluationArgs: string[]; outputPath?: string } {
+function parseHomeMemoryDatasetCliArgs(args: string[]): {
+  evaluationArgs: string[];
+  outputPath?: string;
+  homeMemoryDatabasePath?: string;
+  agentProfileDatabasePath?: string;
+} {
   const evaluationArgs: string[] = [];
   let outputPath: string | undefined;
+  let homeMemoryDatabasePath: string | undefined;
+  let agentProfileDatabasePath: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '--output') {
@@ -155,9 +175,134 @@ function parseHomeMemoryDatasetCliArgs(args: string[]): { evaluationArgs: string
       outputPath = arg.slice('--output='.length);
       continue;
     }
+    if (arg === '--home-memory-db') {
+      homeMemoryDatabasePath = args[index + 1];
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--home-memory-db=')) {
+      homeMemoryDatabasePath = arg.slice('--home-memory-db='.length);
+      continue;
+    }
+    if (arg === '--agent-profile-db') {
+      agentProfileDatabasePath = args[index + 1];
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--agent-profile-db=')) {
+      agentProfileDatabasePath = arg.slice('--agent-profile-db='.length);
+      continue;
+    }
     evaluationArgs.push(arg);
   }
-  return { evaluationArgs, outputPath };
+  return { evaluationArgs, outputPath, homeMemoryDatabasePath, agentProfileDatabasePath };
+}
+
+function materializeHomeMemoryDataset(
+  dataset: HomeMemoryDeviceEventDataset,
+  options: { homeMemoryDatabasePath?: string; agentProfileDatabasePath?: string }
+): string[] {
+  if (!options.homeMemoryDatabasePath && !options.agentProfileDatabasePath) {
+    return [];
+  }
+  const memory = reduceDeviceEvents(createHomeMemory(), dataset.events);
+  const hypotheses = createHomeProfileHypotheses(memory);
+  const portrait = createHouseholdPortrait(memory);
+  const messages: string[] = [];
+
+  if (options.homeMemoryDatabasePath) {
+    const homeMemoryDb = new HomeMemoryDatabase(options.homeMemoryDatabasePath);
+    try {
+      homeMemoryDb.materializeMemory({
+        memory,
+        hypotheses,
+        portrait,
+        coveredSequence: dataset.metadata.sequenceRange.to,
+        reducerVersion: 'home-memory-dataset-cli',
+        schemaVersion: dataset.metadata.schemaVersion
+      });
+    } finally {
+      homeMemoryDb.close();
+    }
+    messages.push(`Materialized Home Memory to ${options.homeMemoryDatabasePath}`);
+  }
+
+  if (options.agentProfileDatabasePath) {
+    const agentProfileDb = new AgentProfileDatabase(options.agentProfileDatabasePath);
+    try {
+      for (const hypothesis of uniqueHypotheses(hypotheses).slice(0, 20)) {
+        agentProfileDb.createEntry({
+          id: `entry_${dataset.metadata.runId}_${stableId(hypothesis.id)}`,
+          homeId: memory.homeId ?? hypothesis.evidence[0]?.homeId ?? 'unknown_home',
+          subjectType: 'household',
+          subjectId: 'household',
+          entryType: 'conclusion',
+          title: hypothesis.label,
+          summary: hypothesis.summary,
+          content: {
+            claim: hypothesis.summary,
+            hypothesisId: hypothesis.id,
+            hypothesisType: hypothesis.type,
+            missingEvidence: hypothesis.missingEvidence,
+            alternatives: hypothesis.alternativeExplanations
+          },
+          index: {
+            claimType: claimTypeForHypothesis(hypothesis),
+            predicate: predicateForHypothesis(hypothesis)
+          },
+          sources: [{
+            sourceType: 'home_memory_hypothesis',
+            sourceId: hypothesis.id,
+            homeId: memory.homeId ?? hypothesis.evidence[0]?.homeId ?? 'unknown_home',
+            runId: memory.runId ?? dataset.metadata.runId,
+            quoteOrObservation: hypothesis.summary,
+            weight: Math.min(1, Math.max(0, hypothesis.confidence))
+          }],
+          status: agentStatusForHypothesis(hypothesis),
+          confidence: hypothesis.confidence,
+          stability: hypothesis.confidence >= 0.8 ? 'working' : 'volatile',
+          createdBy: 'system'
+        });
+      }
+    } finally {
+      agentProfileDb.close();
+    }
+    messages.push(`Wrote Agent Profile conclusions to ${options.agentProfileDatabasePath}`);
+  }
+
+  return messages;
+}
+
+function claimTypeForHypothesis(hypothesis: ProfileHypothesis): AgentProfileClaimType {
+  if (hypothesis.type.includes('routine') || hypothesis.type === 'daily_rhythm' || hypothesis.type === 'activity_cluster') {
+    return 'habit';
+  }
+  if (hypothesis.type === 'automation_recommendation') {
+    return 'risk';
+  }
+  if (hypothesis.type === 'state_anomaly') {
+    return 'uncertainty';
+  }
+  return 'identity';
+}
+
+function predicateForHypothesis(hypothesis: ProfileHypothesis): string {
+  return hypothesis.type.replace(/[^a-z0-9_]+/gi, '_').toLowerCase();
+}
+
+function agentStatusForHypothesis(hypothesis: ProfileHypothesis): AgentProfileStatus {
+  if (hypothesis.status === 'rejected') {
+    return 'rejected';
+  }
+  return hypothesis.status === 'strong' || hypothesis.status === 'likely' ? 'active' : 'candidate';
+}
+
+function stableId(value: string): string {
+  return value.replace(/[^a-z0-9_]+/gi, '_').replace(/^_+|_+$/g, '').slice(0, 120) || 'hypothesis';
+}
+
+function uniqueHypotheses(hypotheses: ProfileHypothesis[]): ProfileHypothesis[] {
+  return [...new Map(hypotheses.map((hypothesis) => [hypothesis.id, hypothesis])).values()];
 }
 
 function resolveHomeMemoryDatasetOptions(options: SimulationEvaluationOptions): ResolvedHomeMemoryDeviceEventDatasetOptions {

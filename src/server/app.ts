@@ -24,9 +24,12 @@ import { getDeviceCapability, getDeviceCapabilityMetadata } from '../shared/devi
 import { getDeviceSupportedCommands } from '../shared/deviceInstanceCapabilities';
 import type { HomeDefinition, StaticScenarioId, TwinEvent, TwinSnapshot } from '../shared/types';
 import { createHomeProfileHypotheses, type ProfileHypothesis } from '../web/homeProfiler';
+import { AgentProfileDatabase, type AgentProfileCreateEntryInput, type AgentProfileSourceInput } from './agentProfileStore';
 import { createDeviceAccessRecords } from './deviceAccess';
 import { buildDeviceReplayPage, projectDeviceValueEvents } from './deviceEventStream';
+import { DeviceEventDatabase, type DeviceEventAggregateGroupBy } from './deviceEventStore';
 import { loadHomeDefinitionFromFile } from './homeDefinitionLoader';
+import { HomeMemoryDatabase } from './homeMemoryStore';
 import {
   buildHomeMemoryFromEvents,
   answerMemoryProfileQuestion,
@@ -43,6 +46,7 @@ import {
   createMemoryReliabilityReport,
   createHomeMemoryLlmBatchPlan,
   executeHomeMemoryLlmBatch,
+  createHouseholdPortrait,
   type HomeMemoryLlmCacheStore,
   type HomeMemoryLlmUsageTracker
 } from './memoryQuery';
@@ -53,6 +57,9 @@ import { summarizeTelemetry } from './telemetrySummary';
 
 export interface ServerOptions {
   databasePath: string;
+  homeMemoryDatabasePath?: string;
+  agentProfileDatabasePath?: string;
+  deviceEventsDatabasePath?: string;
   autoTick?: boolean;
   tickMs?: number;
   heartbeatMs?: number;
@@ -144,6 +151,147 @@ const memoryLlmStreamQuerySchema = z.object({
   runId: z.string().min(1).optional(),
   purpose: z.enum(['hypothesis_explanation', 'reliability_review']).default('hypothesis_explanation'),
   type: z.enum(['household_size', 'household_composition', 'daily_rhythm', 'room_habit', 'device_routine', 'presence_signal', 'activity_cluster', 'routine_window', 'behavior_flow', 'resident_slot', 'room_function', 'device_contribution', 'state_anomaly', 'automation_recommendation']).optional()
+});
+const homeMemoryMaterializeBodySchema = z.object({
+  runId: z.string().min(1).optional()
+});
+const homeMemoryStoreQuerySchema = z.object({
+  homeId: z.string().min(1).optional(),
+  runId: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100)
+});
+const agentProfileSourceBodySchema = z.object({
+  sourceType: z.enum(['home_memory_evidence', 'home_memory_hypothesis', 'home_memory_portrait_section', 'device_event_query', 'user_statement', 'agent_reasoning', 'manual_review']),
+  sourceId: z.string().min(1),
+  homeId: z.string().min(1),
+  runId: z.string().min(1).nullable().optional(),
+  sequence: z.number().int().nullable().optional(),
+  quoteOrObservation: z.string().max(2000).optional(),
+  weight: z.number().min(0).max(1).optional()
+});
+const agentProfileEntryBodySchema = z.object({
+  id: z.string().min(1).optional(),
+  homeId: z.string().min(1),
+  subjectType: z.enum(['household', 'resident_slot', 'room', 'device', 'routine', 'preference', 'risk', 'unknown']),
+  subjectId: z.string().min(1),
+  entryType: z.enum(['conclusion', 'preference', 'hypothesis', 'note', 'task_memory', 'contradiction', 'question']),
+  title: z.string().min(1).max(300),
+  summary: z.string().min(1).max(2000),
+  content: z.record(z.string(), z.unknown()),
+  status: z.enum(['candidate', 'active', 'rejected', 'superseded', 'archived']).optional(),
+  confidence: z.number().min(0).max(1),
+  stability: z.enum(['volatile', 'working', 'stable']),
+  createdBy: z.enum(['agent', 'user', 'system', 'human_reviewer']).default('agent'),
+  index: z.object({
+    claimType: z.enum(['routine', 'preference', 'risk', 'habit', 'identity', 'constraint', 'capability', 'uncertainty']),
+    predicate: z.string().min(1),
+    objectType: z.string().nullable().optional(),
+    objectId: z.string().nullable().optional(),
+    objectValue: z.unknown().optional()
+  }).optional(),
+  timeWindows: z.array(z.object({
+    dayType: z.enum(['weekday', 'weekend', 'daily', 'specific_date', 'unknown']),
+    daysOfWeek: z.array(z.number().int().min(0).max(6)).optional(),
+    timeStart: z.string().nullable().optional(),
+    timeEnd: z.string().nullable().optional(),
+    timezone: z.string().min(1),
+    recurrence: z.enum(['daily', 'weekly', 'one_off', 'seasonal', 'unknown']),
+    validFrom: z.string().nullable().optional(),
+    validTo: z.string().nullable().optional()
+  })).optional(),
+  sources: z.array(agentProfileSourceBodySchema)
+});
+const agentProfileQueryBodySchema = z.object({
+  homeId: z.string().min(1),
+  structured: z.object({
+    claimTypes: z.array(z.enum(['routine', 'preference', 'risk', 'habit', 'identity', 'constraint', 'capability', 'uncertainty'])).optional(),
+    predicates: z.array(z.string().min(1)).optional(),
+    subjectType: z.enum(['household', 'resident_slot', 'room', 'device', 'routine', 'preference', 'risk', 'unknown']).optional(),
+    subjectId: z.string().min(1).optional(),
+    dayType: z.enum(['weekday', 'weekend', 'daily', 'specific_date', 'unknown']).optional(),
+    time: z.string().optional(),
+    statuses: z.array(z.enum(['candidate', 'active', 'rejected', 'superseded', 'archived'])).optional()
+  }).optional(),
+  text: z.string().optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+  includeSources: z.boolean().optional()
+});
+const agentProfileStatusBodySchema = z.object({
+  status: z.enum(['candidate', 'active', 'rejected', 'superseded', 'archived']),
+  actor: z.enum(['agent', 'user', 'system', 'human_reviewer']).default('agent'),
+  reason: z.string().min(1).max(1000)
+});
+const agentProfilePatchBodySchema = z.object({
+  title: z.string().min(1).max(300).optional(),
+  summary: z.string().min(1).max(2000).optional(),
+  content: z.record(z.string(), z.unknown()).optional(),
+  index: z.object({
+    claimType: z.enum(['routine', 'preference', 'risk', 'habit', 'identity', 'constraint', 'capability', 'uncertainty']),
+    predicate: z.string().min(1),
+    objectType: z.string().nullable().optional(),
+    objectId: z.string().nullable().optional(),
+    objectValue: z.unknown().optional()
+  }).nullable().optional(),
+  timeWindows: z.array(z.object({
+    dayType: z.enum(['weekday', 'weekend', 'daily', 'specific_date', 'unknown']),
+    daysOfWeek: z.array(z.number().int().min(0).max(6)).optional(),
+    timeStart: z.string().nullable().optional(),
+    timeEnd: z.string().nullable().optional(),
+    timezone: z.string().min(1),
+    recurrence: z.enum(['daily', 'weekly', 'one_off', 'seasonal', 'unknown']),
+    validFrom: z.string().nullable().optional(),
+    validTo: z.string().nullable().optional()
+  })).optional(),
+  actor: z.enum(['agent', 'user', 'system', 'human_reviewer']).default('agent'),
+  reason: z.string().min(1).max(1000)
+});
+const agentProfileAddSourceBodySchema = z.object({
+  source: agentProfileSourceBodySchema,
+  actor: z.enum(['agent', 'user', 'system', 'human_reviewer']).default('agent'),
+  reason: z.string().min(1).max(1000)
+});
+const agentProfileSearchQuerySchema = z.object({
+  homeId: z.string().min(1),
+  q: z.string().trim().min(1).max(500),
+  limit: z.coerce.number().int().min(1).max(100).default(10),
+  includeSources: booleanQuerySchema
+});
+const deviceEventListQuerySchema = z.object({
+  homeId: z.string().min(1).optional(),
+  runId: z.string().min(1).optional(),
+  fromSequence: z.coerce.number().int().optional(),
+  toSequence: z.coerce.number().int().optional(),
+  fromSimTime: z.string().min(1).optional(),
+  toSimTime: z.string().min(1).optional(),
+  roomId: z.string().min(1).optional(),
+  deviceId: z.string().min(1).optional(),
+  deviceType: z.string().min(1).optional(),
+  field: z.string().min(1).optional(),
+  sourceEventType: z.enum(['DeviceTelemetry', 'DeviceStateChanged']).optional(),
+  q: z.string().trim().min(1).max(500).optional(),
+  limit: z.coerce.number().int().min(1).max(1000).default(100)
+});
+const deviceEventSourceQuerySchema = z.object({
+  homeId: z.string().min(1).optional(),
+  runId: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(1000).default(100)
+});
+const deviceEventAroundQuerySchema = z.object({
+  homeId: z.string().min(1),
+  runId: z.string().min(1),
+  sequence: z.coerce.number().int(),
+  window: z.coerce.number().int().min(1).max(1000).default(25),
+  limit: z.coerce.number().int().min(1).max(1000).default(200)
+});
+const deviceEventAroundSourceQuerySchema = z.object({
+  sourceEventId: z.string().min(1),
+  homeId: z.string().min(1).optional(),
+  runId: z.string().min(1).optional(),
+  windowMinutes: z.coerce.number().min(1).max(24 * 60).default(30),
+  limit: z.coerce.number().int().min(1).max(1000).default(200)
+});
+const deviceEventAggregateQuerySchema = deviceEventListQuerySchema.extend({
+  groupBy: z.enum(['roomId', 'deviceId', 'deviceType', 'field', 'sourceEventType'])
 });
 const memoryEntityQuerySchema = z.object({
   runId: z.string().min(1).optional(),
@@ -287,6 +435,9 @@ export function createServer(options: ServerOptions): FastifyInstance {
     snapshotIntervalEvents: options.snapshotIntervalEvents,
     telemetryRetentionEvents: options.telemetryRetentionEvents
   });
+  const deviceEventDb = new DeviceEventDatabase(options.deviceEventsDatabasePath ?? path.join(path.dirname(options.databasePath), 'device-events.db'));
+  const homeMemoryDb = new HomeMemoryDatabase(options.homeMemoryDatabasePath ?? path.join(path.dirname(options.databasePath), 'home-memory.db'));
+  const agentProfileDb = new AgentProfileDatabase(options.agentProfileDatabasePath ?? path.join(path.dirname(options.databasePath), 'agent-profile.db'));
   const homeMemoryLlmCacheStore: HomeMemoryLlmCacheStore = {
     get(cacheKey) {
       const cached = homeMemoryLlmCache.get(cacheKey);
@@ -714,6 +865,252 @@ export function createServer(options: ServerOptions): FastifyInstance {
     });
   });
 
+  app.post('/api/home-memory/materializations', async (request, reply) => {
+    const result = homeMemoryMaterializeBodySchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    try {
+      const record = materializeHomeMemory(result.data.runId);
+      return record;
+    } catch (error) {
+      return sendOperationError(reply, 'HOME_MEMORY_MATERIALIZE_FAILED', error);
+    }
+  });
+
+  app.get('/api/home-memory/materializations', async (request, reply) => {
+    const result = homeMemoryStoreQuerySchema.pick({ homeId: true }).safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return { items: homeMemoryDb.listRuns(result.data.homeId) };
+  });
+
+  app.get('/api/home-memory/evidence', async (request, reply) => {
+    const result = homeMemoryStoreQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const { runId, snapshot } = getMemoryView(result.data.runId);
+    const homeId = result.data.homeId ?? snapshot.homeId;
+    return {
+      runId,
+      ...homeMemoryDb.listEvidence({ homeId, runId, limit: result.data.limit })
+    };
+  });
+
+  app.get('/api/home-memory/profile/hypotheses', async (request, reply) => {
+    const result = homeMemoryStoreQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const { runId, snapshot } = getMemoryView(result.data.runId);
+    const homeId = result.data.homeId ?? snapshot.homeId;
+    return {
+      runId,
+      ...homeMemoryDb.listProfileHypotheses({ homeId, runId, limit: result.data.limit })
+    };
+  });
+
+  app.delete('/api/home-memory/materializations/:runId', async (request) => {
+    const params = request.params as { runId: string };
+    const snapshot = simulator.getSnapshot();
+    return { deleted: homeMemoryDb.clearRun(snapshot.homeId, params.runId) };
+  });
+
+  app.get('/api/device-events', async (request, reply) => {
+    const result = deviceEventListQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return deviceEventDb.listEvents(result.data);
+  });
+
+  app.get('/api/device-events/around', async (request, reply) => {
+    const result = deviceEventAroundQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const window = result.data.window;
+    return deviceEventDb.listEvents({
+      homeId: result.data.homeId,
+      runId: result.data.runId,
+      fromSequence: result.data.sequence - window,
+      toSequence: result.data.sequence + window,
+      limit: result.data.limit
+    });
+  });
+
+  app.get('/api/device-events/around-source', async (request, reply) => {
+    const result = deviceEventAroundSourceQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return deviceEventDb.getEventsAroundSource(result.data);
+  });
+
+  app.get('/api/device-events/aggregate', async (request, reply) => {
+    const result = deviceEventAggregateQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return deviceEventDb.aggregateEvents({
+      ...result.data,
+      groupBy: result.data.groupBy as DeviceEventAggregateGroupBy
+    });
+  });
+
+  app.get('/api/device-events/source/:sourceEventId', async (request, reply) => {
+    const params = request.params as { sourceEventId: string };
+    const result = deviceEventSourceQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return deviceEventDb.getEventsBySourceEventId(params.sourceEventId, result.data);
+  });
+
+  app.get('/api/device-events/:id', async (request, reply) => {
+    const params = request.params as { id: string };
+    const event = deviceEventDb.getEvent(params.id);
+    if (!event) {
+      return reply.status(404).send({ error: 'Device event not found' });
+    }
+    return event;
+  });
+
+  app.get('/api/device-event-queries/:id', async (request, reply) => {
+    const params = request.params as { id: string };
+    const query = deviceEventDb.getQuery(params.id);
+    if (!query) {
+      return reply.status(404).send({ error: 'Device event query not found' });
+    }
+    return query;
+  });
+
+  app.post('/api/agent-profile/entries', async (request, reply) => {
+    const result = agentProfileEntryBodySchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const body = result.data as AgentProfileCreateEntryInput;
+    const invalidSource = findInvalidProfileSource(body.sources);
+    if (invalidSource) {
+      console.warn('[agent-profile] create_rejected_missing_source', JSON.stringify(invalidSource));
+      return reply.status(400).send({
+        error: {
+          code: 'MISSING_HOME_MEMORY_SOURCE',
+          message: 'Referenced Home Memory source does not exist',
+          source: invalidSource
+        }
+      });
+    }
+    try {
+      return agentProfileDb.createEntry(body);
+    } catch (error) {
+      return sendOperationError(reply, 'AGENT_PROFILE_CREATE_FAILED', error);
+    }
+  });
+
+  app.get('/api/agent-profile/entries/:id', async (request, reply) => {
+    const params = request.params as { id: string };
+    const entry = agentProfileDb.getEntry(params.id, { includeSources: true });
+    if (!entry) {
+      return sendNotFound(reply, 'Unknown agent profile entry');
+    }
+    return entry;
+  });
+
+  app.patch('/api/agent-profile/entries/:id', async (request, reply) => {
+    const params = request.params as { id: string };
+    const result = agentProfilePatchBodySchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    try {
+      return agentProfileDb.updateEntry(params.id, result.data);
+    } catch (error) {
+      return sendOperationError(reply, 'AGENT_PROFILE_UPDATE_FAILED', error);
+    }
+  });
+
+  app.get('/api/agent-profile/entries', async (request, reply) => {
+    const result = z.object({
+      homeId: z.string().min(1).optional(),
+      status: z.enum(['candidate', 'active', 'rejected', 'superseded', 'archived']).optional(),
+      limit: z.coerce.number().int().min(1).max(500).default(100)
+    }).safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return agentProfileDb.listEntries(result.data);
+  });
+
+  app.post('/api/agent-profile/query', async (request, reply) => {
+    const result = agentProfileQueryBodySchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return agentProfileDb.queryEntries(result.data);
+  });
+
+  app.get('/api/agent-profile/search', async (request, reply) => {
+    const result = agentProfileSearchQuerySchema.safeParse(request.query);
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    return agentProfileDb.queryEntries({
+      homeId: result.data.homeId,
+      text: result.data.q,
+      limit: result.data.limit,
+      includeSources: result.data.includeSources
+    });
+  });
+
+  app.post('/api/agent-profile/entries/:id/sources', async (request, reply) => {
+    const params = request.params as { id: string };
+    const result = agentProfileAddSourceBodySchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    const invalidSource = findInvalidProfileSource([result.data.source as AgentProfileSourceInput]);
+    if (invalidSource) {
+      console.warn('[agent-profile] source_add_rejected_missing_source', JSON.stringify(invalidSource));
+      return reply.status(400).send({
+        error: {
+          code: 'MISSING_HOME_MEMORY_SOURCE',
+          message: 'Referenced Home Memory source does not exist',
+          source: invalidSource
+        }
+      });
+    }
+    try {
+      return agentProfileDb.addSource(params.id, result.data.source as AgentProfileSourceInput, {
+        actor: result.data.actor,
+        reason: result.data.reason
+      });
+    } catch (error) {
+      return sendOperationError(reply, 'AGENT_PROFILE_SOURCE_ADD_FAILED', error);
+    }
+  });
+
+  app.post('/api/agent-profile/entries/:id/status', async (request, reply) => {
+    const params = request.params as { id: string };
+    const result = agentProfileStatusBodySchema.safeParse(request.body ?? {});
+    if (!result.success) {
+      return sendValidationError(reply, result.error);
+    }
+    try {
+      return agentProfileDb.updateEntryStatus(params.id, result.data);
+    } catch (error) {
+      return sendOperationError(reply, 'AGENT_PROFILE_STATUS_FAILED', error);
+    }
+  });
+
+  app.delete('/api/agent-profile/entries/:id', async (request) => {
+    const params = request.params as { id: string };
+    return { deleted: agentProfileDb.deleteEntry(params.id) };
+  });
+
   app.get('/api/memory/llm/config', async () => {
     logHomeMemoryLlm('debug', 'config_get', {
       enabled: homeMemoryLlm.provider.enabled,
@@ -893,6 +1290,49 @@ export function createServer(options: ServerOptions): FastifyInstance {
       runId,
       snapshot
     };
+  }
+
+  function materializeHomeMemory(queryRunId?: string): ReturnType<HomeMemoryDatabase['materializeMemory']> {
+    const { memory, runId, snapshot } = getMemoryView(queryRunId);
+    const hypotheses = createHomeProfileHypotheses(memory);
+    return homeMemoryDb.materializeMemory({
+      memory,
+      hypotheses,
+      portrait: createHouseholdPortrait(memory),
+      coveredSequence: runId === snapshot.runId ? snapshot.simClock.sequence : maxEventSequence(db.getEventsForRun(runId)),
+      reducerVersion: 'server-memory-query',
+      schemaVersion: 1
+    });
+  }
+
+  function findInvalidProfileSource(sources: AgentProfileSourceInput[]): AgentProfileSourceInput | null {
+    for (const source of sources) {
+      if (source.sourceType === 'device_event_query') {
+        if (!deviceEventDb.hasQuery(source.sourceId, source.homeId, source.runId)) {
+          console.warn('[agent-profile] source_validation_failed', JSON.stringify({
+            sourceType: source.sourceType,
+            sourceId: source.sourceId,
+            homeId: source.homeId,
+            runId: source.runId ?? null
+          }));
+          return source;
+        }
+        continue;
+      }
+      if (!source.sourceType.startsWith('home_memory_')) {
+        continue;
+      }
+      if (!homeMemoryDb.hasSource(source.sourceType, source.sourceId, source.homeId, source.runId)) {
+        console.warn('[agent-profile] source_validation_failed', JSON.stringify({
+          sourceType: source.sourceType,
+          sourceId: source.sourceId,
+          homeId: source.homeId,
+          runId: source.runId ?? null
+        }));
+        return source;
+      }
+    }
+    return null;
   }
 
   app.post('/api/scenarios/:id/start', async (request, reply) => {
@@ -1128,6 +1568,9 @@ export function createServer(options: ServerOptions): FastifyInstance {
     }
     deviceEventSockets.clear();
     db.close();
+    deviceEventDb.close();
+    homeMemoryDb.close();
+    agentProfileDb.close();
   });
 
   return app;
@@ -1222,6 +1665,15 @@ function sendNotFound(reply: FastifyReply, message: string): FastifyReply {
     error: {
       code: 'NOT_FOUND',
       message
+    }
+  });
+}
+
+function sendOperationError(reply: FastifyReply, code: string, error: unknown): FastifyReply {
+  return reply.status(400).send({
+    error: {
+      code,
+      message: error instanceof Error ? error.message : String(error)
     }
   });
 }
@@ -1334,4 +1786,8 @@ function stableJson(value: unknown): string {
       .join(',')}}`;
   }
   return JSON.stringify(value);
+}
+
+function maxEventSequence(events: TwinEvent[]): number {
+  return events.reduce((max, event) => Math.max(max, event.sequence), 0);
 }

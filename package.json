@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "server": "tsx src/server/index.ts",
+    "db:viewer": "tsx src/tools/dbViewer/server.ts",
     "evaluate": "tsx src/sim/evaluation/runEvaluation.ts",
     "dataset": "tsx src/sim/evaluation/runEvaluation.ts --dataset",
     "memory:dataset": "tsx src/sim/evaluation/homeMemoryDataset.ts",
+    "memory:rebuild": "tsx src/sim/evaluation/homeMemoryRebuild.ts",
     "build": "tsc -p tsconfig.json && vite build",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",

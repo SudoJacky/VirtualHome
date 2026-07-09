@@ -8,6 +8,8 @@ import { buildEvaluationReport, compareDownstreamUtilityGaps } from '../src/sim/
 import { createEvaluationCliOutput, createEvaluationCliReport, createTrainingDataset, parseEvaluationCliArgs, runSimulationEvaluation } from '../src/sim/evaluation/runEvaluation';
 import { createHomeMemoryDeviceEventDataset, createHomeMemoryDeviceEventDatasetCliReport, writeHomeMemoryDeviceEventDatasetCliReport } from '../src/sim/evaluation/homeMemoryDataset';
 import type { ActivityStartedEvent, ConversationOccurredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, PersonMovedEvent } from '../src/shared/types';
+import { AgentProfileDatabase } from '../src/server/agentProfileStore';
+import { HomeMemoryDatabase } from '../src/server/homeMemoryStore';
 
 describe('long horizon simulation evaluation', () => {
   it('generates a reproducible observation-only training dataset with separate truth labels', () => {
@@ -201,6 +203,51 @@ describe('long horizon simulation evaluation', () => {
         minutesPerDay: 60
       });
       expect(dataset.events.length).toBeGreaterThan(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('materializes Home Memory and Agent Profile conclusions when database paths are provided', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'virtualhome-memory-dataset-db-'));
+
+    try {
+      const outputPath = join(dir, 'home-memory.json');
+      const homeMemoryDatabasePath = join(dir, 'home-memory.db');
+      const agentProfileDatabasePath = join(dir, 'agent-profile.db');
+      const cliOutput = writeHomeMemoryDeviceEventDatasetCliReport([
+        '--start-date', '2026-07-14',
+        '--days', '1',
+        '--seed', '42',
+        '--minutes-per-day', '180',
+        '--output', outputPath,
+        '--home-memory-db', homeMemoryDatabasePath,
+        '--agent-profile-db', agentProfileDatabasePath
+      ]);
+      const dataset = JSON.parse(readFileSync(outputPath, 'utf8')) as { metadata: { runId: string }; events: Array<{ homeId: string }> };
+      const homeId = dataset.events[0]?.homeId ?? 'default_home';
+      const homeMemoryDb = new HomeMemoryDatabase(homeMemoryDatabasePath);
+      const agentProfileDb = new AgentProfileDatabase(agentProfileDatabasePath);
+
+      try {
+        expect(cliOutput).toContain('Materialized Home Memory to');
+        expect(homeMemoryDb.listProfileHypotheses({
+          homeId,
+          runId: dataset.metadata.runId,
+          limit: 20
+        }).items.length).toBeGreaterThan(0);
+        expect(agentProfileDb.queryEntries({
+          homeId,
+          structured: {
+            statuses: ['candidate', 'active']
+          },
+          limit: 20,
+          includeSources: true
+        }).items.some((item) => item.sources.some((source) => source.sourceType === 'home_memory_hypothesis'))).toBe(true);
+      } finally {
+        homeMemoryDb.close();
+        agentProfileDb.close();
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
