@@ -8,7 +8,8 @@ build/
 output/
 
 # Runtime data
-data/
+data/*
+!data/HOME_MEMORY_BENCHMARK_EVOLUTION.md
 *.db
 *.db-shm
 *.db-wal
