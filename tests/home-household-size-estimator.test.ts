@@ -187,21 +187,21 @@ describe('home household size estimator', () => {
       field: 'peopleCount',
       value: 3
     });
-    const trailingSystemEvents = Array.from({ length: 60 }, (_, index) => deviceEvent({
-      id: `trailing_battery_${index + 1}`,
-      sourceEventId: `source_trailing_battery_${index + 1}`,
+    const trailingEnvironmentEvents = Array.from({ length: 60 }, (_, index) => deviceEvent({
+      id: `trailing_temperature_${index + 1}`,
+      sourceEventId: `source_trailing_temperature_${index + 1}`,
       sequence: concurrentEvents.length + index + 2,
       simTime: `2026-06-22T19:${String(index % 60).padStart(2, '0')}:00`,
       roomId: 'utility',
       deviceId: `sensor_${index + 1}`,
       deviceType: 'temperature_sensor',
-      field: 'battery',
-      value: 90
+      field: 'temperature',
+      value: 22 + index * 0.01
     }));
     const memory = reduceDeviceEvents(createHomeMemory(), [
       ...concurrentEvents,
       directCountEvent,
-      ...trailingSystemEvents
+      ...trailingEnvironmentEvents
     ]);
 
     expect(memory.recentEvents).toHaveLength(50);
@@ -256,7 +256,7 @@ describe('home household size estimator', () => {
 
     expect(estimate.features.residentSlots).toEqual({
       count: 3,
-      slots: ['main_sleep_slot', 'remote_work_slot', 'shared_evening_slot']
+      slots: ['remote_work_slot', 'shared_evening_slot', 'sleep_slot:master_bedroom']
     });
     expect(estimate.evidence).toContain('3 resident slots');
     expect(estimate.distribution[2]).toBeGreaterThan(estimate.distribution[1]);

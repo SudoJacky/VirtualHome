@@ -51,10 +51,20 @@ describe('home memory database', () => {
         sourceEventId: 'source_stove_power',
         sequence: 2,
         simTime: '2026-06-22T08:05:00',
-        deviceId: 'stove_01',
+        deviceId: 'cooktop_custom',
         deviceType: 'stove',
         field: 'powerW',
         value: 900
+      }),
+      deviceEvent({
+        id: 'hood_power',
+        sourceEventId: 'source_hood_power',
+        sequence: 3,
+        simTime: '2026-06-22T08:07:00',
+        deviceId: 'ventilator_custom',
+        deviceType: 'range_hood',
+        field: 'power',
+        value: 'on'
       })
     ]);
     const hypotheses = createHomeProfileHypotheses(memory);
@@ -64,7 +74,7 @@ describe('home memory database', () => {
       memory,
       hypotheses,
       portrait,
-      coveredSequence: 2,
+      coveredSequence: 3,
       reducerVersion: 'test-reducer',
       schemaVersion: 1
     });
@@ -72,11 +82,32 @@ describe('home memory database', () => {
     expect(db.getRun('home_001', 'run_a')).toMatchObject({
       homeId: 'home_001',
       runId: 'run_a',
-      coveredSequence: 2,
+      coveredSequence: 3,
       reducerVersion: 'test-reducer'
     });
     expect(db.listEvidence({ homeId: 'home_001', runId: 'run_a', limit: 10 }).items.map((item) => item.id))
-      .toEqual(expect.arrayContaining(['kitchen_motion', 'stove_power']));
+      .toEqual(expect.arrayContaining(['kitchen_motion', 'stove_power', 'hood_power']));
+    expect(db.listEpisodeFacts({ homeId: 'home_001', runId: 'run_a' }).items)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'cooking_episode',
+          deviceIds: ['cooktop_custom', 'ventilator_custom']
+        })
+      ]));
+    expect(db.listDailyFeatures({ homeId: 'home_001', runId: 'run_a' }).items[0])
+      .toMatchObject({
+        date: '2026-06-22',
+        observationCount: 3
+      });
+    expect(db.listPatternCandidates({ homeId: 'home_001', runId: 'run_a' }).items)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: 'stove-range-hood-paired',
+          supportDays: 1,
+          opportunityDays: 1,
+          sourceDiversity: 2
+        })
+      ]));
     expect(db.listProfileHypotheses({ homeId: 'home_001', runId: 'run_a', limit: 50 }).items.length)
       .toBeGreaterThan(0);
     expect(db.listPortraitSections({ homeId: 'home_001', runId: 'run_a' }).items.map((item) => item.sectionId))

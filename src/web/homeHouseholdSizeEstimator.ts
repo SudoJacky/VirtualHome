@@ -96,6 +96,7 @@ const RESIDENT_COUNTS: ResidentCount[] = [1, 2, 3, 4, 5];
 export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSizeEstimate {
   const meaningfulEvents = householdSizeEvidence(memory.recentEvents);
   const episodes = behaviorEpisodes(memory);
+  const semanticEpisodeFacts = Object.values(memory.episodeFacts);
   const dailySummaries = Object.values(memory.dailySummaries);
   const weeklySummaries = Object.values(memory.weeklySummaries);
   const longWindowRooms = sortedUnique([
@@ -110,7 +111,9 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
     ...meaningfulRooms.map((room) => room.roomId),
     ...longWindowRooms
   ]);
-  const meaningfulEvidenceWeight = roundWeight(meaningfulRooms.reduce((total, room) => total + meaningfulWeightOfRoom(room), 0));
+  const meaningfulEvidenceWeight = semanticEpisodeFacts.length > 0
+    ? episodeDaySampleCount(memory)
+    : roundWeight(meaningfulRooms.reduce((total, room) => total + meaningfulWeightOfRoom(room), 0));
   const concurrentActivity = estimateConcurrentActivity(memory, episodes);
   const recurringSleepZones = estimateRecurringSleepZones(memory, meaningfulEvents, episodes);
   const routineClusters = estimateRoutineClusters(memory, meaningfulEvents, recurringSleepZones.rooms);
@@ -129,7 +132,9 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
     lowerBound,
     meaningfulRoomCount: meaningfulRoomIds.length,
     meaningfulEvidenceWeight,
-    behaviorEpisodeCount: episodes.length,
+    behaviorEpisodeCount: semanticEpisodeFacts.length > 0
+      ? semanticEpisodeFacts.length
+      : episodes.length,
     observedDayCount: dailySummaries.length,
     observedWeekCount: weeklySummaries.length,
     environmentContextRatio,
@@ -145,7 +150,9 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
   const estimate = mostLikelyResidentCount(distribution);
   const confidenceInput = {
     meaningfulEvidenceWeight,
-    behaviorEpisodeCount: episodes.length,
+    behaviorEpisodeCount: semanticEpisodeFacts.length > 0
+      ? semanticEpisodeFacts.length
+      : episodes.length,
     observedDayCount: dailySummaries.length,
     observedWeekCount: weeklySummaries.length,
     environmentContextRatio,
@@ -169,7 +176,9 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
       meaningfulRoomCount: meaningfulRoomIds.length,
       longWindowRoomCount: longWindowRooms.length,
       meaningfulEvidenceWeight,
-      behaviorEpisodeCount: episodes.length,
+      behaviorEpisodeCount: semanticEpisodeFacts.length > 0
+        ? semanticEpisodeFacts.length
+        : episodes.length,
       observedDayCount: dailySummaries.length,
       observedWeekCount: weeklySummaries.length,
       environmentContextRatio,
@@ -246,7 +255,10 @@ function estimateRecurringSleepZones(
       .map((episode) => episode.roomId),
     ...Object.values(memory.fields)
       .filter((field) => isSleepField(field.deviceType, field.field) && field.trueCount && field.trueCount > 0)
-      .map((field) => field.roomId)
+      .map((field) => field.roomId),
+    ...Object.values(memory.episodeFacts)
+      .filter((episode) => episode.kind === 'sleep_episode')
+      .flatMap((episode) => episode.roomIds)
   ]);
 
   return {
@@ -291,6 +303,12 @@ function estimateRoutineClusters(
   if (Object.values(memory.devices).some((device) => device.roomId === 'study' && device.profileEvidenceWeight > 0)) {
     clusters.add('study_or_work_activity');
   }
+  for (const episode of Object.values(memory.episodeFacts)) {
+    if (episode.kind === 'cooking_episode') clusters.add('meal_activity');
+    if (episode.kind === 'work_study_episode') clusters.add('study_or_work_activity');
+    if (episode.kind === 'media_episode') clusters.add('shared_evening_activity');
+    if (episode.kind === 'door_access_episode') clusters.add('entry_activity');
+  }
 
   return {
     count: clusters.size,
@@ -300,8 +318,11 @@ function estimateRoutineClusters(
 
 function estimateResidentSlots(memory: HomeMemory): HouseholdSizeEstimate['features']['residentSlots'] {
   const slots = new Set<string>();
+  const sleepRooms = sortedUnique(Object.values(memory.episodeFacts)
+    .filter((episode) => episode.kind === 'sleep_episode')
+    .flatMap((episode) => episode.roomIds));
   for (const signal of memory.semanticSignals) {
-    if (signal.type === 'sleep_signal') {
+    if (signal.type === 'sleep_signal' && sleepRooms.length === 0) {
       slots.add(signal.roomId.includes('child') ? 'child_sleep_slot' : 'main_sleep_slot');
     }
     if (signal.type === 'work_study_signal') {
@@ -313,6 +334,25 @@ function estimateResidentSlots(memory: HomeMemory): HouseholdSizeEstimate['featu
     if (signal.type === 'presence_signal' && signal.timeBucket === 'daytime') {
       slots.add('daytime_home_slot');
     }
+  }
+  for (const roomId of sleepRooms) {
+    slots.add(
+      (memory.patternCandidates['child-sleep-start']?.supportDays ?? 0) > 0 &&
+      Object.values(memory.episodeFacts).some((episode) => (
+        episode.kind === 'sleep_episode' &&
+        episode.roomIds.includes(roomId) &&
+        minuteOfDay(episode.startedSimTime) >= 20 * 60 + 30 &&
+        minuteOfDay(episode.startedSimTime) <= 22 * 60
+      ))
+        ? `early_sleep_slot:${roomId}`
+        : `sleep_slot:${roomId}`
+    );
+  }
+  if (Object.values(memory.episodeFacts).some((episode) => episode.kind === 'work_study_episode')) {
+    slots.add('remote_work_slot');
+  }
+  if (Object.values(memory.episodeFacts).some((episode) => episode.kind === 'media_episode')) {
+    slots.add('shared_evening_slot');
   }
 
   const sortedSlots = [...slots].sort((left, right) => left.localeCompare(right));
@@ -657,6 +697,14 @@ function householdSizeEvidence(events: MemoryEvidence[]): MemoryEvidence[] {
 
 function behaviorEpisodes(memory: HomeMemory): MemoryEpisode[] {
   return Object.values(memory.episodes);
+}
+
+function episodeDaySampleCount(memory: HomeMemory): number {
+  return new Set(Object.values(memory.episodeFacts).flatMap((episode) => (
+    episode.roomIds.map((roomId) => (
+      `${episode.kind}:${episode.startedSimTime.slice(0, 10)}:${roomId}`
+    ))
+  ))).size;
 }
 
 function meaningfulWeightOfRoom(room: RoomMemory): number {

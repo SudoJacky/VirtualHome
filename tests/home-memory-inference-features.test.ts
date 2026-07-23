@@ -25,7 +25,7 @@ describe('home memory inference features', () => {
       type: 'device_coupling',
       strength: 'strong'
     });
-    expect(byId.get('feature:child_bedroom_sleep_around_21')).toMatchObject({
+    expect(byId.get('feature:early_sleep_zone_around_21')).toMatchObject({
       type: 'recurring_time_window',
       strength: 'strong'
     });
@@ -50,8 +50,8 @@ describe('home memory inference features', () => {
     const serialized = JSON.stringify(features);
 
     expect(serialized).not.toMatch(/student|adult_|child_1|persona|three-person|three residents/i);
-    expect(features.find((feature) => feature.id === 'feature:child_bedroom_sleep_around_21')?.summary)
-      .toMatch(/child_bedroom.*21/i);
+    expect(features.find((feature) => feature.id === 'feature:early_sleep_zone_around_21')?.summary)
+      .toMatch(/early sleep-zone.*21/i);
   }, 60_000);
 
   it('recognizes stove and range-hood coupling without fixed device ids', () => {

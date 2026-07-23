@@ -1472,6 +1472,7 @@ function normalizeQueryId(question: string): string {
 
 function indexMemoryEvidence(memory: HomeMemory): Map<string, MemoryEvidence> {
   const evidence = [
+    ...Object.values(memory.evidenceFacts),
     ...memory.recentEvents,
     ...Object.values(memory.rooms).flatMap((room) => room.recentEvents),
     ...Object.values(memory.devices).flatMap((device) => device.recentEvents),

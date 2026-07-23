@@ -195,6 +195,51 @@ describe('household template compiler', () => {
     expect(events.every((event) => event.lineage && event.sourceLayer)).toBe(true);
   });
 
+  it('grounds generic meal and remote-work habits in template device events', () => {
+    const template = studioTemplate();
+    template.home.floors[0].fixtures.devices.push(
+      { id: 'cooktop_custom', roomId: 'galley_a', type: 'stove', name: 'Cooktop', metrics: ['power_w', 'level'] },
+      { id: 'ventilator_custom', roomId: 'galley_a', type: 'range_hood', name: 'Ventilator', metrics: ['power', 'speed'] },
+      { id: 'office_light_custom', roomId: 'office_a', type: 'light', name: 'Office Light', metrics: ['power', 'brightness'] },
+      { id: 'network_hub_custom', roomId: 'office_a', type: 'router', name: 'Network Hub', metrics: ['online', 'latency_ms'] }
+    );
+    template.habits.push({
+      id: 'remote_shift_admin',
+      repertoire: 'core_household',
+      activity: 'remote_work',
+      residentIds: ['resident_nurse'],
+      recurrence: 'daily',
+      window: { start: '11:00', end: '11:10' },
+      roomId: 'office_a'
+    });
+
+    const run = compileHouseholdRun(template, { date: '2026-07-15', seed: 42 });
+    const actions = run.lifePlan.steps.flatMap((step) => step.actions);
+
+    expect(actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'setDevice',
+        deviceId: 'cooktop_custom',
+        state: { powerW: 700, level: 4 }
+      }),
+      expect.objectContaining({
+        kind: 'setDevice',
+        deviceId: 'ventilator_custom',
+        state: { power: 'on', speed: 2 }
+      }),
+      expect.objectContaining({
+        kind: 'setDevice',
+        deviceId: 'office_light_custom',
+        state: { power: 'on', brightness: 70 }
+      }),
+      expect.objectContaining({
+        kind: 'setDevice',
+        deviceId: 'network_hub_custom',
+        state: { online: true, latencyMs: 24 }
+      })
+    ]));
+  });
+
   it('runs abnormalities and device lifecycles against template device IDs', () => {
     const template = studioTemplate();
     template.home.floors[0].fixtures.devices.push(

@@ -159,6 +159,74 @@ function compileRoomActivity(input: LifeEventCompileInput): ScenarioStep[] {
         reason: `habit:${input.habit.id}:food_prep_done`
       });
     }
+    const stove = input.devices.find((device) => device.type === 'stove');
+    if (stove) {
+      actions.push({
+        kind: 'setDevice',
+        deviceId: stove.id,
+        state: { powerW: 700, level: 4 },
+        reason: `habit:${input.habit.id}:cooking`
+      });
+      following.push({
+        kind: 'setDevice',
+        deviceId: stove.id,
+        state: { powerW: 0, level: 0 },
+        reason: `habit:${input.habit.id}:cooking_done`
+      });
+      const rangeHood = input.devices.find((device) => (
+        device.type === 'range_hood' && device.roomId === stove.roomId
+      ));
+      if (rangeHood) {
+        actions.push({
+          kind: 'setDevice',
+          deviceId: rangeHood.id,
+          state: { power: 'on', speed: 2 },
+          reason: `habit:${input.habit.id}:ventilation`
+        });
+        following.push({
+          kind: 'setDevice',
+          deviceId: rangeHood.id,
+          state: { power: 'off', speed: 0 },
+          reason: `habit:${input.habit.id}:ventilation_done`
+        });
+      }
+    }
+  }
+  if (input.habit.activity === 'remote_work') {
+    const workLight = input.devices.find((device) => (
+      device.type === 'light' && device.roomId === input.room.id
+    ));
+    if (workLight) {
+      actions.push({
+        kind: 'setDevice',
+        deviceId: workLight.id,
+        state: { power: 'on', brightness: 70 },
+        reason: `habit:${input.habit.id}:work_light`
+      });
+      following.push({
+        kind: 'setDevice',
+        deviceId: workLight.id,
+        state: { power: 'off', brightness: 0 },
+        reason: `habit:${input.habit.id}:work_light_done`
+      });
+    }
+    const router = input.devices.find((device) => (
+      device.type === 'router' && device.roomId === input.room.id
+    ));
+    if (router) {
+      actions.push({
+        kind: 'setDevice',
+        deviceId: router.id,
+        state: { online: true, latencyMs: 24 },
+        reason: `habit:${input.habit.id}:network_context`
+      });
+      following.push({
+        kind: 'setDevice',
+        deviceId: router.id,
+        state: { online: true, latencyMs: 18 },
+        reason: `habit:${input.habit.id}:network_context_done`
+      });
+    }
   }
   return pairedSteps(input.minute, actions, following);
 }

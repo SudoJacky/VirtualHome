@@ -5,6 +5,17 @@ import {
   type EvidenceCategory,
   type EvidenceStrength
 } from './homeEvidenceClassifier';
+import {
+  createHomeDerivedFeatureState,
+  refreshHomePatternCandidates,
+  reduceHomeObservationFeatures,
+  type HomeDerivedFeatureState
+} from './homeDerivedFeatureStore';
+import {
+  classifyHomeObservationField,
+  reconstructHomeObservations,
+  type HomeObservation
+} from './homeObservation';
 
 export type TimeBucket = 'morning' | 'daytime' | 'evening' | 'night';
 export type MemoryEpisodeKind = 'occupancy' | 'contact_activity' | 'device_usage' | 'appliance_usage';
@@ -230,7 +241,7 @@ export interface RoomMemory {
   profileEvidenceByCategory: ProfileEvidenceCategoryCounts;
 }
 
-export interface HomeMemory {
+export interface HomeMemory extends HomeDerivedFeatureState {
   homeId: string | null;
   runId: string | null;
   totalEvents: number;
@@ -250,6 +261,7 @@ export interface HomeMemory {
   semanticSignals: SemanticSignal[];
   semanticSignalCount: number;
   semanticSignalCountsByType: SemanticSignalCounts;
+  evidenceFacts: Record<string, MemoryEvidence>;
   recentEvents: MemoryEvidence[];
   profileEventCount: number;
   profileEvidenceWeight: number;
@@ -262,6 +274,7 @@ const SEMANTIC_SIGNAL_LIMIT = 80;
 
 export function createHomeMemory(): HomeMemory {
   return {
+    ...createHomeDerivedFeatureState(),
     homeId: null,
     runId: null,
     totalEvents: 0,
@@ -281,6 +294,7 @@ export function createHomeMemory(): HomeMemory {
     semanticSignals: [],
     semanticSignalCount: 0,
     semanticSignalCountsByType: emptySemanticSignalCounts(),
+    evidenceFacts: {},
     recentEvents: [],
     profileEventCount: 0,
     profileEvidenceWeight: 0,
@@ -308,35 +322,76 @@ export function getTimeBucket(simTime: string): TimeBucket {
 }
 
 export function reduceDeviceEvents(memory: HomeMemory, events: DeviceValueEvent[]): HomeMemory {
-  const sourceConfidences = indexSourceConfidences(events);
-  return events.reduce((current, event) => (
-    reduceDeviceEventWithConfidence(
-      current,
-      event,
-      sourceConfidences.get(event.sourceEventId)
-    )
-  ), memory);
-}
-
-function indexSourceConfidences(events: DeviceValueEvent[]): Map<string, number> {
-  const confidences = new Map<string, number>();
-  for (const event of events) {
-    if (normalize(event.field) !== 'confidence' || typeof event.value !== 'number') {
-      continue;
-    }
-    confidences.set(event.sourceEventId, normalizeSourceConfidence(event.value));
-  }
-  return confidences;
+  const reduced = reconstructHomeObservations(events).reduce(
+    (current, observation) => reduceHomeObservation(current, observation, false),
+    memory
+  );
+  return {
+    ...reduced,
+    patternCandidates: refreshHomePatternCandidates(reduced)
+  };
 }
 
 export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): HomeMemory {
-  return reduceDeviceEventWithConfidence(memory, event, undefined);
+  const observation = reconstructHomeObservations([event])[0];
+  return reduceHomeObservation(memory, observation);
+}
+
+function reduceHomeObservation(
+  memory: HomeMemory,
+  observation: HomeObservation,
+  refreshPatterns = true
+): HomeMemory {
+  const baseMemory = memory.runId !== null && memory.runId !== observation.runId
+    ? createHomeMemory()
+    : memory;
+  const reduced = observation.events.reduce((current, event) => (
+    reduceDeviceEventWithConfidence(
+      current,
+      event,
+      Object.keys(observation.quality).length > 0
+        ? observation.qualityMultiplier
+        : undefined,
+      classifyHomeObservationField(event.field) === 'primary'
+    )
+  ), baseMemory);
+  const observationEvidence = observation.events.flatMap((event) => {
+    if (classifyHomeObservationField(event.field) !== 'primary') {
+      return [];
+    }
+    const item = reduced.fields[getFieldId(event.deviceId, event.field)]?.recentEvents
+      .find((candidate) => candidate.id === event.id);
+    return item ? [item] : [];
+  });
+  const derived = reduceHomeObservationFeatures(
+    reduced,
+    observation,
+    observationEvidence.map((item) => ({
+      id: item.id,
+      profileWeight: item.profileWeight
+    })),
+    refreshPatterns
+  );
+  const referencedEvidenceIds = new Set(
+    Object.values(derived.episodeFacts).flatMap((episode) => episode.evidenceIds)
+  );
+  const evidenceFacts = observationEvidence.reduce((facts, item) => (
+    referencedEvidenceIds.has(item.id)
+      ? { ...facts, [item.id]: item }
+      : facts
+  ), reduced.evidenceFacts);
+  return {
+    ...reduced,
+    ...derived,
+    evidenceFacts
+  };
 }
 
 function reduceDeviceEventWithConfidence(
   memory: HomeMemory,
   event: DeviceValueEvent,
-  sourceConfidence: number | undefined
+  sourceConfidence: number | undefined,
+  behaviorEligible: boolean
 ): HomeMemory {
   const baseMemory = memory.runId !== null && memory.runId !== event.runId ? createHomeMemory() : memory;
   const timeBucket = getTimeBucket(event.simTime);
@@ -344,16 +399,43 @@ function reduceDeviceEventWithConfidence(
   const classification = classifyDeviceEvidence(event);
   const previousField = baseMemory.fields[fieldId];
   const change = analyzeFieldChange(previousField, event, classification, sourceConfidence);
-  const evidence = toEvidence(event, timeBucket, classification, change, sourceConfidence);
+  const classifiedEvidence = toEvidence(
+    event,
+    timeBucket,
+    classification,
+    change,
+    sourceConfidence
+  );
+  const evidence = behaviorEligible
+    ? classifiedEvidence
+    : {
+        ...classifiedEvidence,
+        profileWeight: 0,
+        evidenceReason: `${classifiedEvidence.evidenceReason} Retained as Observation metadata, not behavior evidence.`
+      };
   const fieldMemory = updateFieldMemory(baseMemory.fields[fieldId], event, evidence, fieldId);
   const deviceMemory = updateDeviceMemory(baseMemory.devices[event.deviceId], event, evidence, fieldId, timeBucket);
   const roomMemory = updateRoomMemory(baseMemory.rooms[event.roomId], event, evidence, fieldId, timeBucket);
-  const episodeMemory = updateEpisodeMemory(baseMemory, event, evidence, fieldId, timeBucket);
-  const dailySummaries = updateDailySummaries(baseMemory.dailySummaries, event, evidence, fieldId, timeBucket, episodeMemory.startedEpisode);
-  const weeklySummaries = updateWeeklySummaries(baseMemory.weeklySummaries, event, evidence, fieldId, timeBucket, episodeMemory.startedEpisode);
-  const semanticSignals = semanticSignalsForEvidence(event, evidence);
-  const activityEpisodes = updateActivityEpisodes(baseMemory, semanticSignals);
-  const profilePatterns = updateProfilePatterns(baseMemory.profilePatterns, event, evidence, previousField);
+  const episodeMemory = behaviorEligible
+    ? updateEpisodeMemory(baseMemory, event, evidence, fieldId, timeBucket)
+    : {
+        episodes: baseMemory.episodes,
+        activeEpisodeIds: baseMemory.activeEpisodeIds,
+        episodeCount: baseMemory.episodeCount
+      };
+  const dailySummaries = behaviorEligible
+    ? updateDailySummaries(baseMemory.dailySummaries, event, evidence, fieldId, timeBucket, episodeMemory.startedEpisode)
+    : baseMemory.dailySummaries;
+  const weeklySummaries = behaviorEligible
+    ? updateWeeklySummaries(baseMemory.weeklySummaries, event, evidence, fieldId, timeBucket, episodeMemory.startedEpisode)
+    : baseMemory.weeklySummaries;
+  const semanticSignals = behaviorEligible ? semanticSignalsForEvidence(event, evidence) : [];
+  const activityEpisodes = behaviorEligible
+    ? updateActivityEpisodes(baseMemory, semanticSignals)
+    : baseMemory.activityEpisodes;
+  const profilePatterns = behaviorEligible
+    ? updateProfilePatterns(baseMemory.profilePatterns, event, evidence, previousField)
+    : baseMemory.profilePatterns;
 
   const nextMemory: HomeMemory = {
     ...baseMemory,
@@ -385,10 +467,18 @@ function reduceDeviceEventWithConfidence(
     semanticSignals: appendManyBounded(baseMemory.semanticSignals, semanticSignals, SEMANTIC_SIGNAL_LIMIT),
     semanticSignalCount: baseMemory.semanticSignalCount + semanticSignals.length,
     semanticSignalCountsByType: incrementSemanticSignalCounts(baseMemory.semanticSignalCountsByType, semanticSignals),
-    recentEvents: appendBounded(baseMemory.recentEvents, evidence, ROOT_RECENT_LIMIT),
-    profileEventCount: incrementProfileEventCount(baseMemory.profileEventCount, evidence),
-    profileEvidenceWeight: roundWeight(baseMemory.profileEvidenceWeight + evidence.profileWeight),
-    profileEvidenceByCategory: incrementProfileEvidenceCategory(baseMemory.profileEvidenceByCategory, evidence)
+    recentEvents: behaviorEligible
+      ? appendBounded(baseMemory.recentEvents, evidence, ROOT_RECENT_LIMIT)
+      : baseMemory.recentEvents,
+    profileEventCount: behaviorEligible
+      ? incrementProfileEventCount(baseMemory.profileEventCount, evidence)
+      : baseMemory.profileEventCount,
+    profileEvidenceWeight: behaviorEligible
+      ? roundWeight(baseMemory.profileEvidenceWeight + evidence.profileWeight)
+      : baseMemory.profileEvidenceWeight,
+    profileEvidenceByCategory: behaviorEligible
+      ? incrementProfileEvidenceCategory(baseMemory.profileEvidenceByCategory, evidence)
+      : baseMemory.profileEvidenceByCategory
   };
   return {
     ...nextMemory,

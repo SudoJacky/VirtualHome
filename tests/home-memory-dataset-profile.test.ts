@@ -47,7 +47,7 @@ describe('home memory dataset profile extraction', () => {
       .toMatch(/three resident-like human slots/i);
     expect(portrait.sections.find((section) => section.id === 'household_composition')?.summary)
       .toMatch(/pet activity candidate/i);
-    expect(portrait.sections.find((section) => section.id === 'routine_patterns')?.summary)
-      .toMatch(/dinner kitchen safety automation/i);
+    expect(portrait.sections.find((section) => section.id === 'routine_patterns')?.hypothesisIds)
+      .toContain('automation:kitchen-dinner-safety');
   }, 60_000);
 });

@@ -38,28 +38,40 @@ export function extractHomeInferenceFeatures(
   episodes: HomeBehaviorEpisode[] = extractHomeBehaviorEpisodes(memory)
 ): HomeInferenceFeature[] {
   return [
-    doorPairingFeature(episodes),
-    stoveRangeHoodFeature(episodes),
-    childBedroomSleepFeature(memory, episodes),
+    doorPairingFeature(memory, episodes),
+    stoveRangeHoodFeature(memory, episodes),
+    earlySleepZoneFeature(memory, episodes),
     weekdayStudyFeature(memory, episodes)
   ].filter((feature): feature is HomeInferenceFeature => Boolean(feature));
 }
 
-function doorPairingFeature(episodes: HomeBehaviorEpisode[]): HomeInferenceFeature | null {
+function doorPairingFeature(
+  memory: HomeMemory,
+  episodes: HomeBehaviorEpisode[]
+): HomeInferenceFeature | null {
   const matches = episodes.filter((episode) => episode.kind === 'door_access_episode' && episode.features.hasUnlock === true && episode.features.hasLock === true);
   if (matches.length === 0) {
     return null;
   }
+  const candidate = memory.patternCandidates['door-lock-paired'];
 
   return featureFromEpisodes({
     id: 'feature:door_unlock_lock_pairing',
     type: 'sequence_chain',
     episodes: matches,
-    summary: `Door access episodes show unlock-to-lock pairing across ${observedDayCount(matches)} observed day${plural(observedDayCount(matches))}.`
+    supportCount: candidate?.supportDays,
+    confidence: candidate?.confidence,
+    evidenceIds: candidate?.evidenceIds,
+    summary: candidate
+      ? candidateSummary('Door unlock-to-lock pairing', candidate)
+      : `Door access episodes show unlock-to-lock pairing across ${observedDayCount(matches)} observed day${plural(observedDayCount(matches))}.`
   });
 }
 
-function stoveRangeHoodFeature(episodes: HomeBehaviorEpisode[]): HomeInferenceFeature | null {
+function stoveRangeHoodFeature(
+  memory: HomeMemory,
+  episodes: HomeBehaviorEpisode[]
+): HomeInferenceFeature | null {
   const matches = episodes.filter((episode) => (
     episode.kind === 'cooking_episode' &&
     episode.features.hasStove === true &&
@@ -68,29 +80,45 @@ function stoveRangeHoodFeature(episodes: HomeBehaviorEpisode[]): HomeInferenceFe
   if (matches.length === 0) {
     return null;
   }
+  const candidate = memory.patternCandidates['stove-range-hood-paired'];
 
   return featureFromEpisodes({
     id: 'feature:stove_range_hood_coupling',
     type: 'device_coupling',
     episodes: matches,
-    summary: `Kitchen cooking episodes couple a stove with a range hood across ${observedDayCount(matches)} observed day${plural(observedDayCount(matches))}.`
+    supportCount: candidate?.supportDays,
+    confidence: candidate?.confidence,
+    evidenceIds: candidate?.evidenceIds,
+    summary: candidate
+      ? candidateSummary('Cooking episodes couple stove and range-hood activity', candidate)
+      : `Cooking episodes couple a stove with a range hood across ${observedDayCount(matches)} observed day${plural(observedDayCount(matches))}.`
   });
 }
 
-function childBedroomSleepFeature(memory: HomeMemory, episodes: HomeBehaviorEpisode[]): HomeInferenceFeature | null {
-  const matches = episodes.filter((episode) => episode.kind === 'sleep_episode' && episode.roomIds.includes('child_bedroom'));
+function earlySleepZoneFeature(memory: HomeMemory, episodes: HomeBehaviorEpisode[]): HomeInferenceFeature | null {
+  const matches = episodes.filter((episode) => (
+    episode.kind === 'sleep_episode' &&
+    minuteOfDay(episode.startedAt) >= 20 * 60 + 30 &&
+    minuteOfDay(episode.startedAt) <= 22 * 60
+  ));
   if (matches.length === 0) {
     return null;
   }
   const medianStart = formatMinuteOfDay(median(matches.map((episode) => minuteOfDay(episode.startedAt))));
-  const observedDays = Math.max(observedDayCount(matches), patternDayCount(memory, 'child-sleep-start'));
+  const candidate = memory.patternCandidates['child-sleep-start'];
+  const observedDays = candidate?.supportDays ??
+    Math.max(observedDayCount(matches), patternDayCount(memory, 'child-sleep-start'));
 
   return featureFromEpisodes({
-    id: 'feature:child_bedroom_sleep_around_21',
+    id: 'feature:early_sleep_zone_around_21',
     type: 'recurring_time_window',
     episodes: matches,
     supportCount: observedDays,
-    summary: `child_bedroom sleep episodes start around ${medianStart} across ${observedDays} observed day${plural(observedDays)}.`
+    confidence: candidate?.confidence,
+    evidenceIds: candidate?.evidenceIds,
+    summary: candidate
+      ? candidateSummary(`An early sleep-zone routine starts around ${medianStart}`, candidate)
+      : `An early sleep-zone routine starts around ${medianStart} across ${observedDays} observed day${plural(observedDays)}.`
   });
 }
 
@@ -100,14 +128,20 @@ function weekdayStudyFeature(memory: HomeMemory, episodes: HomeBehaviorEpisode[]
     return null;
   }
   const medianStart = formatMinuteOfDay(median(matches.map((episode) => minuteOfDay(episode.startedAt))));
-  const observedDays = Math.max(observedDayCount(matches), patternDayCount(memory, 'study-weekday-daytime-work'));
+  const candidate = memory.patternCandidates['study-weekday-daytime-work'];
+  const observedDays = candidate?.supportDays ??
+    Math.max(observedDayCount(matches), patternDayCount(memory, 'study-weekday-daytime-work'));
 
   return featureFromEpisodes({
     id: 'feature:weekday_study_daytime_activity',
     type: 'recurring_time_window',
     episodes: matches,
     supportCount: observedDays,
-    summary: `Study-room weekday activity appears around ${medianStart} across ${observedDays} observed weekday${plural(observedDays)}.`
+    confidence: candidate?.confidence,
+    evidenceIds: candidate?.evidenceIds,
+    summary: candidate
+      ? candidateSummary(`Work-capable device activity appears around ${medianStart}`, candidate)
+      : `Work-capable device activity appears around ${medianStart} across ${observedDays} observed weekday${plural(observedDays)}.`
   });
 }
 
@@ -116,9 +150,13 @@ function featureFromEpisodes(input: {
   type: HomeInferenceFeatureType;
   episodes: HomeBehaviorEpisode[];
   supportCount?: number;
+  confidence?: number;
+  evidenceIds?: string[];
   summary: string;
 }): HomeInferenceFeature {
-  const evidenceIds = sortedUnique(input.episodes.flatMap((episode) => episode.evidenceIds));
+  const evidenceIds = sortedUnique(
+    input.evidenceIds ?? input.episodes.flatMap((episode) => episode.evidenceIds)
+  );
   const count = input.supportCount ?? input.episodes.length;
 
   return {
@@ -126,10 +164,18 @@ function featureFromEpisodes(input: {
     type: input.type,
     scope: scopeForEpisodes(input.episodes),
     strength: strengthForCount(count),
-    confidence: confidenceForCount(count),
+    confidence: input.confidence ?? confidenceForCount(count),
     evidenceIds,
     summary: input.summary
   };
+}
+
+function candidateSummary(
+  label: string,
+  candidate: HomeMemory['patternCandidates'][string]
+): string {
+  const lift = candidate.lift === null ? 'unknown lift' : `lift ${candidate.lift}`;
+  return `${label}; support ${candidate.supportDays}/${candidate.opportunityDays} observable days, ${lift}, ${candidate.contradictionCount} contradiction${plural(candidate.contradictionCount)}, weekly stability ${candidate.stabilityAcrossWeeks}.`;
 }
 
 function scopeForEpisodes(episodes: HomeBehaviorEpisode[]): HomeFeatureScope {

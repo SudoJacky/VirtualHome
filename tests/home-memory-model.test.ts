@@ -777,6 +777,8 @@ describe('home memory model', () => {
       evidenceCategory: 'system_status',
       profileEvidenceWeight: 0
     });
+    expect(memory.rooms.bathroom.profileEvidenceWeight).toBe(0);
+    expect(memory.devices.washer_01.profileEvidenceWeight).toBe(0);
     expect(memory.fields['living_motion_01:motion'].recentEvents[0]).toMatchObject({
       sourceConfidence: 0.2,
       profileWeight: 0.11
