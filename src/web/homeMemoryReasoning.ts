@@ -195,9 +195,11 @@ function createHouseholdSizeReasoning(memory: HomeMemory, hypothesis: ProfileHyp
     steps: [
       {
         label: 'Find concurrent lower bound',
-        detail: features.concurrentActivity.roomCount > 0
-          ? `${features.concurrentActivity.roomCount} active room${plural(features.concurrentActivity.roomCount)} co-occurred in window ${features.concurrentActivity.windowKey}, setting a lower bound of ${features.concurrentActivity.lowerBound}.`
-          : 'No concurrent meaningful activity window was observed, so the lower bound remains 1.'
+        detail: features.concurrentActivity.directOccupantCount
+          ? `Direct occupancy evidence observed ${features.concurrentActivity.directOccupantCount} occupant${plural(features.concurrentActivity.directOccupantCount)}, setting a lower bound of ${features.concurrentActivity.lowerBound}.`
+          : features.concurrentActivity.roomCount > 0
+            ? `${features.concurrentActivity.roomCount} room${plural(features.concurrentActivity.roomCount)} had overlapping occupancy episodes near ${features.concurrentActivity.windowKey}; this is a soft concurrency candidate and does not raise the hard lower bound.`
+            : 'No direct occupant count or overlapping occupancy episode was observed, so the lower bound remains 1.'
       },
       {
         label: 'Collect stable resident signals',
@@ -232,7 +234,7 @@ function createHouseholdSizeWhiteBoxTrace(memory: HomeMemory, hypothesis: Profil
         description: 'Device-observed facts are compressed into resident-count features before scoring candidates.',
         rows: [
           { label: 'Lower bound', value: String(estimate.lowerBound), note: lowerBoundNote(estimate) },
-          { label: 'Concurrent rooms', value: String(features.concurrentActivity.roomCount), note: features.concurrentActivity.windowKey ? `${formatList(features.concurrentActivity.rooms)} in ${features.concurrentActivity.windowKey}` : 'No simultaneous multi-room activity window yet.' },
+          { label: 'Concurrent rooms', value: String(features.concurrentActivity.roomCount), note: features.concurrentActivity.windowKey ? `${formatList(features.concurrentActivity.rooms)} overlap near ${features.concurrentActivity.windowKey}; direct count ${features.concurrentActivity.directOccupantCount ?? 'unavailable'}` : `No overlapping occupancy episode; direct count ${features.concurrentActivity.directOccupantCount ?? 'unavailable'}.` },
           { label: 'Sleep zones', value: String(features.recurringSleepZones.count), note: formatListOrNone(features.recurringSleepZones.rooms) },
           { label: 'Shared sleep candidate', value: features.sharedSleepZones.strength, note: sharedSleepNote(features.sharedSleepZones) },
           { label: 'Routine clusters', value: String(features.routineClusters.count), note: formatListOrNone(features.routineClusters.clusters.map((cluster) => cluster.replaceAll('_', ' '))) },
@@ -419,7 +421,7 @@ function compactSections(sections: WhiteBoxTraceSection[]): WhiteBoxTraceSection
 function lowerBoundNote(estimate: ReturnType<typeof estimateHouseholdSizeFromMemory>): string {
   const features = estimate.features;
   const parts = [
-    `concurrent lower bound ${features.concurrentActivity.lowerBound}`,
+    `direct occupancy lower bound ${features.concurrentActivity.lowerBound}`,
     `${features.recurringSleepZones.count} sleep zone${plural(features.recurringSleepZones.count)}`
   ];
   if (features.sharedSleepZones.strength === 'strong') {

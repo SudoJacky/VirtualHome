@@ -46,8 +46,28 @@ describe('home household size estimator', () => {
         value: true
       }),
       deviceEvent({
-        id: 'kitchen_stove_1',
+        id: 'kitchen_motion_1',
         sequence: 3,
+        simTime: '2026-06-23T18:01:00',
+        roomId: 'kitchen',
+        deviceId: 'kitchen_motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'living_people_count_1',
+        sequence: 4,
+        simTime: '2026-06-23T18:01:00',
+        roomId: 'living_room',
+        deviceId: 'living_presence_01',
+        deviceType: 'presence_sensor',
+        field: 'peopleCount',
+        value: 3
+      }),
+      deviceEvent({
+        id: 'kitchen_stove_1',
+        sequence: 5,
         simTime: '2026-06-23T18:02:00',
         roomId: 'kitchen',
         deviceId: 'stove_01',
@@ -56,8 +76,18 @@ describe('home household size estimator', () => {
         value: 840
       }),
       deviceEvent({
+        id: 'study_motion_1',
+        sequence: 6,
+        simTime: '2026-06-23T18:03:00',
+        roomId: 'study',
+        deviceId: 'study_motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
         id: 'study_co2_1',
-        sequence: 4,
+        sequence: 7,
         simTime: '2026-06-23T18:04:00',
         roomId: 'study',
         deviceId: 'study_co2_01',
@@ -67,7 +97,7 @@ describe('home household size estimator', () => {
       }),
       deviceEvent({
         id: 'living_motion_1',
-        sequence: 5,
+        sequence: 8,
         simTime: '2026-06-23T18:06:00',
         roomId: 'living_room',
         deviceId: 'living_motion_01',
@@ -77,7 +107,7 @@ describe('home household size estimator', () => {
       }),
       deviceEvent({
         id: 'bathroom_flow_1',
-        sequence: 6,
+        sequence: 9,
         simTime: '2026-06-24T07:15:00',
         roomId: 'bathroom',
         deviceId: 'bathroom_water_01',
@@ -93,6 +123,7 @@ describe('home household size estimator', () => {
     expect(estimate.estimate).toBe(3);
     expect(estimate.confidence).toBeGreaterThan(0.6);
     expect(estimate.features.concurrentActivity.lowerBound).toBe(3);
+    expect(estimate.features.concurrentActivity.directOccupantCount).toBe(3);
     expect(estimate.features.recurringSleepZones.rooms).toEqual(['child_bedroom', 'master_bedroom']);
     expect(estimate.features.routineClusters.clusters).toEqual(expect.arrayContaining([
       'meal_activity',
@@ -102,7 +133,8 @@ describe('home household size estimator', () => {
     ]));
     expect(estimate.distribution[3]).toBeGreaterThan(estimate.distribution[2]);
     expect(estimate.evidence).toEqual(expect.arrayContaining([
-      '3-room concurrent activity lower bound',
+      '3-person direct occupancy lower bound',
+      '3-room overlapping occupancy candidate',
       '2 recurring sleep zones',
       '6 routine clusters'
     ]));
@@ -130,6 +162,60 @@ describe('home household size estimator', () => {
     expect(estimate.features.environmentContextRatio).toBeGreaterThan(0.9);
     expect(estimate.distribution[1]).toBeGreaterThan(estimate.distribution[3]);
     expect(estimate.evidence).toContain('mostly weak environment context');
+  });
+
+  it('keeps concurrent activity after the root recent-event window rolls over', () => {
+    const concurrentEvents = ['kitchen', 'study', 'living_room'].map((roomId, index) => deviceEvent({
+      id: `concurrent_motion_${index + 1}`,
+      sourceEventId: `source_concurrent_motion_${index + 1}`,
+      sequence: index + 1,
+      simTime: `2026-06-22T18:0${index + 1}:00`,
+      roomId,
+      deviceId: `${roomId}_motion_01`,
+      deviceType: 'motion_sensor',
+      field: 'motion',
+      value: true
+    }));
+    const directCountEvent = deviceEvent({
+      id: 'direct_people_count',
+      sourceEventId: 'source_direct_people_count',
+      sequence: 4,
+      simTime: '2026-06-22T18:04:00',
+      roomId: 'living_room',
+      deviceId: 'living_presence_01',
+      deviceType: 'presence_sensor',
+      field: 'peopleCount',
+      value: 3
+    });
+    const trailingSystemEvents = Array.from({ length: 60 }, (_, index) => deviceEvent({
+      id: `trailing_battery_${index + 1}`,
+      sourceEventId: `source_trailing_battery_${index + 1}`,
+      sequence: concurrentEvents.length + index + 2,
+      simTime: `2026-06-22T19:${String(index % 60).padStart(2, '0')}:00`,
+      roomId: 'utility',
+      deviceId: `sensor_${index + 1}`,
+      deviceType: 'temperature_sensor',
+      field: 'battery',
+      value: 90
+    }));
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      ...concurrentEvents,
+      directCountEvent,
+      ...trailingSystemEvents
+    ]);
+
+    expect(memory.recentEvents).toHaveLength(50);
+    expect(memory.recentEvents.some((event) => event.id.startsWith('concurrent_motion_'))).toBe(false);
+
+    const estimate = estimateHouseholdSizeFromMemory(memory);
+
+    expect(estimate.features.concurrentActivity).toMatchObject({
+      lowerBound: 3,
+      directOccupantCount: 3,
+      roomCount: 3,
+      rooms: ['kitchen', 'living_room', 'study'],
+      windowKey: '2026-06-22:18:00'
+    });
   });
 
   it('uses semantic resident slots as household-size evidence', () => {

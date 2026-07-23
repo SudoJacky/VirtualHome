@@ -62,8 +62,8 @@ function doorPairingFeature(episodes: HomeBehaviorEpisode[]): HomeInferenceFeatu
 function stoveRangeHoodFeature(episodes: HomeBehaviorEpisode[]): HomeInferenceFeature | null {
   const matches = episodes.filter((episode) => (
     episode.kind === 'cooking_episode' &&
-    episode.deviceIds.includes('stove_01') &&
-    episode.deviceIds.includes('range_hood_01')
+    episode.features.hasStove === true &&
+    episode.features.hasRangeHood === true
   ));
   if (matches.length === 0) {
     return null;
@@ -73,7 +73,7 @@ function stoveRangeHoodFeature(episodes: HomeBehaviorEpisode[]): HomeInferenceFe
     id: 'feature:stove_range_hood_coupling',
     type: 'device_coupling',
     episodes: matches,
-    summary: `Kitchen cooking episodes couple stove_01 with range_hood_01 across ${observedDayCount(matches)} observed day${plural(observedDayCount(matches))}.`
+    summary: `Kitchen cooking episodes couple a stove with a range hood across ${observedDayCount(matches)} observed day${plural(observedDayCount(matches))}.`
   });
 }
 

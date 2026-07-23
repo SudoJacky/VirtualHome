@@ -48,6 +48,19 @@ describe('home evidence classifier', () => {
     });
   });
 
+  it('classifies boolean lock unlock as strong human activity evidence', () => {
+    expect(classifyDeviceEvidence(deviceEvent({
+      deviceId: 'front_lock_01',
+      deviceType: 'door_lock',
+      field: 'locked',
+      value: false
+    }))).toMatchObject({
+      category: 'human_activity',
+      strength: 'strong',
+      profileWeight: 1
+    });
+  });
+
   it('classifies motion detection as medium human activity evidence', () => {
     expect(classifyDeviceEvidence(deviceEvent({
       deviceId: 'bathroom_motion_01',
@@ -93,6 +106,26 @@ describe('home evidence classifier', () => {
       deviceType: 'temperature_sensor',
       field: 'battery',
       value: 88
+    }))).toMatchObject({
+      category: 'system_status',
+      strength: 'ignored',
+      profileWeight: 0
+    });
+  });
+
+  it.each([
+    ['confidence', 0.82],
+    ['remainingMin', 24],
+    ['lifecyclePhase', 'running'],
+    ['openMinutes', 8],
+    ['batteryPercent', 88],
+    ['latencyMs', 42]
+  ])('keeps %s as ignored metadata instead of profile evidence', (field, value) => {
+    expect(classifyDeviceEvidence(deviceEvent({
+      deviceId: 'appliance_01',
+      deviceType: 'washer',
+      field,
+      value
     }))).toMatchObject({
       category: 'system_status',
       strength: 'ignored',

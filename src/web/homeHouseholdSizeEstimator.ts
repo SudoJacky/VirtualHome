@@ -63,6 +63,7 @@ export interface HouseholdSizeEstimate {
     environmentContextRatio: number;
     concurrentActivity: {
       lowerBound: ResidentCount;
+      directOccupantCount: ResidentCount | null;
       roomCount: number;
       rooms: string[];
       windowKey: string | null;
@@ -110,7 +111,7 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
     ...longWindowRooms
   ]);
   const meaningfulEvidenceWeight = roundWeight(meaningfulRooms.reduce((total, room) => total + meaningfulWeightOfRoom(room), 0));
-  const concurrentActivity = estimateConcurrentActivity(meaningfulEvents);
+  const concurrentActivity = estimateConcurrentActivity(memory, episodes);
   const recurringSleepZones = estimateRecurringSleepZones(memory, meaningfulEvents, episodes);
   const routineClusters = estimateRoutineClusters(memory, meaningfulEvents, recurringSleepZones.rooms);
   const residentSlots = estimateResidentSlots(memory);
@@ -183,26 +184,36 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
   };
 }
 
-function estimateConcurrentActivity(events: MemoryEvidence[]): HouseholdSizeEstimate['features']['concurrentActivity'] {
-  const windows = new Map<string, Set<string>>();
-
-  for (const event of events) {
-    const minute = minuteOfDay(event.simTime);
-    const date = event.simTime.slice(0, 10);
-    const windowStart = Math.floor(minute / 10) * 10;
-    const windowKey = `${date}:${String(Math.floor(windowStart / 60)).padStart(2, '0')}:${String(windowStart % 60).padStart(2, '0')}`;
-    const rooms = windows.get(windowKey) ?? new Set<string>();
-    rooms.add(event.roomId);
-    windows.set(windowKey, rooms);
-  }
-
-  const strongest = [...windows.entries()]
-    .map(([windowKey, rooms]) => ({ windowKey, rooms: sortedUnique([...rooms]) }))
-    .sort((left, right) => right.rooms.length - left.rooms.length || left.windowKey.localeCompare(right.windowKey))[0];
+function estimateConcurrentActivity(
+  memory: HomeMemory,
+  episodes: MemoryEpisode[]
+): HouseholdSizeEstimate['features']['concurrentActivity'] {
+  const occupancyEpisodes = episodes.filter((episode) => episode.kind === 'occupancy');
+  const directCountValue = Math.max(
+    0,
+    ...Object.values(memory.fields)
+      .filter((field) => isDirectOccupantCountField(field.field))
+      .map(maxNumericValue)
+  );
+  const directOccupantCount = directCountValue > 0
+    ? clampResidentCount(directCountValue)
+    : null;
+  const strongest = sortedUnique(occupancyEpisodes.map((episode) => episode.startedSimTime))
+    .map((startedSimTime) => ({
+      startedSimTime,
+      rooms: sortedUnique(occupancyEpisodes
+        .filter((episode) => (
+          episode.startedSimTime <= startedSimTime &&
+          (episode.endedSimTime === undefined || episode.endedSimTime >= startedSimTime)
+        ))
+        .map((episode) => episode.roomId))
+    }))
+    .sort((left, right) => right.rooms.length - left.rooms.length || left.startedSimTime.localeCompare(right.startedSimTime))[0];
 
   if (!strongest) {
     return {
-      lowerBound: 1,
+      lowerBound: directOccupantCount ?? 1,
+      directOccupantCount,
       roomCount: 0,
       rooms: [],
       windowKey: null
@@ -210,11 +221,14 @@ function estimateConcurrentActivity(events: MemoryEvidence[]): HouseholdSizeEsti
   }
 
   const roomCount = strongest.rooms.length;
+  const minute = minuteOfDay(strongest.startedSimTime);
+  const windowStart = Math.floor(minute / 10) * 10;
   return {
-    lowerBound: clampResidentCount(roomCount),
+    lowerBound: directOccupantCount ?? 1,
+    directOccupantCount,
     roomCount,
     rooms: strongest.rooms,
-    windowKey: strongest.windowKey
+    windowKey: `${strongest.startedSimTime.slice(0, 10)}:${String(Math.floor(windowStart / 60)).padStart(2, '0')}:${String(windowStart % 60).padStart(2, '0')}`
   };
 }
 
@@ -594,8 +608,11 @@ function createEvidenceText(
   environmentContextRatio: number
 ): string[] {
   const evidence: string[] = [];
+  if (concurrentActivity.directOccupantCount && concurrentActivity.directOccupantCount > 1) {
+    evidence.push(`${concurrentActivity.directOccupantCount}-person direct occupancy lower bound`);
+  }
   if (concurrentActivity.roomCount > 1) {
-    evidence.push(`${concurrentActivity.roomCount}-room concurrent activity lower bound`);
+    evidence.push(`${concurrentActivity.roomCount}-room overlapping occupancy candidate`);
   }
   if (sleepZones.count > 0) {
     evidence.push(`${sleepZones.count} recurring sleep zone${sleepZones.count === 1 ? '' : 's'}`);
@@ -688,6 +705,16 @@ function isSharedOccupancyField(field: string): boolean {
     normalizedField.includes('sleepercount') ||
     normalizedField.includes('bedside') ||
     normalizedField.includes('side')
+  );
+}
+
+function isDirectOccupantCountField(field: string): boolean {
+  const normalizedField = normalize(field);
+  return (
+    normalizedField.includes('occupancycount') ||
+    normalizedField.includes('personcount') ||
+    normalizedField.includes('peoplecount') ||
+    normalizedField.includes('sleepercount')
   );
 }
 

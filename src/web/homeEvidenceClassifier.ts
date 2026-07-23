@@ -44,10 +44,24 @@ const ENVIRONMENT_FIELDS = new Set([
 const SYSTEM_FIELDS = new Set([
   'battery',
   'batterylevel',
+  'batterypercent',
+  'confidence',
+  'cycleminutes',
+  'delayedms',
+  'dropped',
+  'duplicated',
   'firmware',
   'health',
+  'heartbeat',
   'lastseen',
+  'latency',
+  'latencyms',
+  'lifecyclephase',
+  'noisy',
   'online',
+  'openminutes',
+  'outoforder',
+  'remainingmin',
   'rssi',
   'signal'
 ]);
@@ -74,7 +88,7 @@ export function classifyDeviceEvidence(event: Pick<DeviceValueEvent, 'deviceType
     };
   }
 
-  if (capability.type === 'access_control' && capability.active && isDoorUnlock(deviceType, field, event.value)) {
+  if (capability.type === 'access_control' && isDoorUnlock(deviceType, field, event.value)) {
     return {
       category: 'human_activity',
       strength: 'strong',
@@ -200,9 +214,12 @@ function isEnvironmentCapability(type: DeviceCapabilityType): boolean {
 
 function isDoorUnlock(deviceType: string, field: string, value: DeviceValueEvent['value']): boolean {
   return (
-    (deviceType.includes('lock') || field === 'lock' || field === 'state')
-    && typeof value === 'string'
-    && normalize(value) === 'unlocked'
+    (field === 'locked' && value === false) ||
+    (
+      (deviceType.includes('lock') || field === 'lock' || field === 'state') &&
+      typeof value === 'string' &&
+      normalize(value) === 'unlocked'
+    )
   );
 }
 
