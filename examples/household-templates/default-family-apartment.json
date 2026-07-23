@@ -1,0 +1,202 @@
+{
+  "schemaVersion": "virtualhome.household/v1",
+  "id": "default_family_apartment",
+  "version": "1.0.0",
+  "name": "Default Family Apartment",
+  "home": {
+    "building": {
+      "id": "default_family_home",
+      "name": "VirtualHome Family Apartment"
+    },
+    "floors": [
+      {
+        "id": "floor_1",
+        "name": "Main Floor",
+        "level": 1,
+        "rooms": [
+          { "id": "entrance", "name": "Entrance", "type": "entry", "connectedRooms": ["living_room", "garden"], "purposes": ["arrival", "departure"] },
+          { "id": "living_room", "name": "Living Room", "type": "living", "connectedRooms": ["entrance", "dining_room", "study", "master_bedroom", "child_bedroom", "garden"], "purposes": ["relaxing", "family_time", "pet_rest"] },
+          { "id": "kitchen", "name": "Kitchen", "type": "utility", "connectedRooms": ["dining_room", "bathroom"], "purposes": ["food_preparation"] },
+          { "id": "dining_room", "name": "Dining Room", "type": "living", "connectedRooms": ["living_room", "kitchen"], "purposes": ["dining"] },
+          { "id": "master_bedroom", "name": "Master Bedroom", "type": "bedroom", "connectedRooms": ["living_room", "bathroom"], "purposes": ["adult_sleeping"] },
+          { "id": "child_bedroom", "name": "Child Bedroom", "type": "bedroom", "connectedRooms": ["living_room"], "purposes": ["child_sleeping", "homework"] },
+          { "id": "study", "name": "Study", "type": "work", "connectedRooms": ["living_room"], "purposes": ["working", "focused_work"] },
+          { "id": "bathroom", "name": "Bathroom", "type": "utility", "connectedRooms": ["master_bedroom", "kitchen"], "purposes": ["hygiene", "laundry"] },
+          { "id": "garden", "name": "Garden", "type": "outdoor", "connectedRooms": ["entrance", "living_room"], "purposes": ["outdoor_activity", "pet_activity", "gardening"] }
+        ],
+        "fixtures": {
+          "devices": [
+            { "id": "door_lock_01", "roomId": "entrance", "type": "door_lock", "name": "Front Door Lock", "metrics": ["locked"] },
+            { "id": "entrance_motion_01", "roomId": "entrance", "type": "motion_sensor", "name": "Entrance Motion", "metrics": ["motion", "confidence"] },
+            { "id": "doorbell_camera_01", "roomId": "entrance", "type": "doorbell_camera", "name": "Doorbell Camera", "metrics": ["motion", "ringing", "battery_percent"] },
+            { "id": "package_sensor_01", "roomId": "entrance", "type": "package_sensor", "name": "Package Sensor", "metrics": ["package_present", "weight_kg"] },
+            { "id": "living_light_01", "roomId": "living_room", "type": "light", "name": "Living Room Light", "metrics": ["power", "brightness"] },
+            { "id": "tv_01", "roomId": "living_room", "type": "tv", "name": "Living Room TV", "metrics": ["power", "volume"] },
+            { "id": "living_motion_01", "roomId": "living_room", "type": "motion_sensor", "name": "Living Motion", "metrics": ["motion", "confidence"] },
+            { "id": "robot_vacuum_01", "roomId": "living_room", "type": "robot_vacuum", "name": "Robot Vacuum", "metrics": ["status", "battery_percent", "bin_full"] },
+            { "id": "living_curtain_01", "roomId": "living_room", "type": "curtain", "name": "Living Room Curtain", "metrics": ["position_percent"] },
+            { "id": "living_ac_01", "roomId": "living_room", "type": "air_conditioner", "name": "Living Room Air Conditioner", "metrics": ["power", "target_c", "mode"] },
+            { "id": "kitchen_light_01", "roomId": "kitchen", "type": "light", "name": "Kitchen Light", "metrics": ["power", "brightness"] },
+            { "id": "kitchen_temp_01", "roomId": "kitchen", "type": "temperature_humidity_sensor", "name": "Kitchen Climate", "metrics": ["temperature_c", "humidity_percent"] },
+            { "id": "fridge_01", "roomId": "kitchen", "type": "fridge", "name": "Fridge", "metrics": ["door_open", "power_w"] },
+            { "id": "stove_01", "roomId": "kitchen", "type": "stove", "name": "Induction Stove", "metrics": ["power_w", "level"] },
+            { "id": "range_hood_01", "roomId": "kitchen", "type": "range_hood", "name": "Range Hood", "metrics": ["speed"] },
+            { "id": "pm25_01", "roomId": "kitchen", "type": "air_quality_sensor", "name": "Kitchen Air Quality", "metrics": ["pm25", "co2"] },
+            { "id": "smoke_01", "roomId": "kitchen", "type": "smoke_sensor", "name": "Kitchen Smoke Sensor", "metrics": ["smoke_detected", "density"] },
+            { "id": "dishwasher_01", "roomId": "kitchen", "type": "dishwasher", "name": "Dishwasher", "metrics": ["status", "remaining_min", "power_w"] },
+            { "id": "dining_light_01", "roomId": "dining_room", "type": "light", "name": "Dining Light", "metrics": ["power", "brightness"] },
+            { "id": "master_sleep_01", "roomId": "master_bedroom", "type": "sleep_sensor", "name": "Master Sleep Sensor", "metrics": ["in_bed"] },
+            { "id": "master_light_01", "roomId": "master_bedroom", "type": "light", "name": "Master Bedroom Light", "metrics": ["power", "brightness"] },
+            { "id": "master_ac_01", "roomId": "master_bedroom", "type": "air_conditioner", "name": "Master Air Conditioner", "metrics": ["power", "target_c", "mode"] },
+            { "id": "child_sleep_01", "roomId": "child_bedroom", "type": "sleep_sensor", "name": "Child Sleep Sensor", "metrics": ["in_bed"] },
+            { "id": "child_light_01", "roomId": "child_bedroom", "type": "light", "name": "Child Bedroom Light", "metrics": ["power", "brightness"] },
+            { "id": "child_ac_01", "roomId": "child_bedroom", "type": "air_conditioner", "name": "Child Room Air Conditioner", "metrics": ["power", "target_c", "mode"] },
+            { "id": "study_light_01", "roomId": "study", "type": "light", "name": "Study Light", "metrics": ["power", "brightness"] },
+            { "id": "study_co2_01", "roomId": "study", "type": "air_quality_sensor", "name": "Study CO2", "metrics": ["co2"] },
+            { "id": "router_01", "roomId": "study", "type": "router", "name": "Home Router", "metrics": ["online", "latency_ms"] },
+            { "id": "bathroom_water_01", "roomId": "bathroom", "type": "water_flow_sensor", "name": "Bathroom Water Flow", "metrics": ["flow_l_min"] },
+            { "id": "water_leak_01", "roomId": "bathroom", "type": "water_leak_sensor", "name": "Bathroom Leak Sensor", "metrics": ["leak_detected"] },
+            { "id": "water_valve_01", "roomId": "bathroom", "type": "water_valve", "name": "Main Water Valve", "metrics": ["valve_open"] },
+            { "id": "washer_01", "roomId": "bathroom", "type": "washer", "name": "Washing Machine", "metrics": ["status", "remaining_min", "power_w"] },
+            { "id": "garden_soil_01", "roomId": "garden", "type": "soil_moisture_sensor", "name": "Garden Soil", "metrics": ["moisture_percent"] },
+            { "id": "garden_camera_01", "roomId": "garden", "type": "security_camera", "name": "Garden Camera", "metrics": ["motion", "recording"] },
+            { "id": "sprinkler_01", "roomId": "garden", "type": "sprinkler", "name": "Garden Sprinkler", "metrics": ["valve_open"] }
+          ]
+        }
+      }
+    ],
+    "topology": {
+      "connections": [
+        { "from": "entrance", "to": "living_room" },
+        { "from": "entrance", "to": "garden" },
+        { "from": "living_room", "to": "dining_room" },
+        { "from": "living_room", "to": "study" },
+        { "from": "living_room", "to": "master_bedroom" },
+        { "from": "living_room", "to": "child_bedroom" },
+        { "from": "living_room", "to": "garden" },
+        { "from": "dining_room", "to": "kitchen" },
+        { "from": "kitchen", "to": "bathroom" },
+        { "from": "bathroom", "to": "master_bedroom" }
+      ]
+    }
+  },
+  "residents": [
+    {
+      "id": "adult_1",
+      "kind": "human",
+      "role": "commuter adult",
+      "homeMember": true,
+      "profile": {
+        "role": "commuter",
+        "ageBand": "adult",
+        "chronotype": "early",
+        "sleepNeedHours": 7.5,
+        "mealRegularity": 0.82,
+        "chorePreference": 0.58,
+        "riskSensitivity": 0.78,
+        "sociability": 0.7,
+        "mobility": "active",
+        "primaryRooms": ["master_bedroom", "living_room", "kitchen"],
+        "deviceFamiliarity": { "door_lock_01": 0.95, "washer_01": 0.8, "robot_vacuum_01": 0.72 },
+        "careResponsibilities": ["child_1", "pet_1"]
+      }
+    },
+    {
+      "id": "adult_2",
+      "kind": "human",
+      "role": "hybrid work adult",
+      "homeMember": true,
+      "profile": {
+        "role": "remote_worker",
+        "ageBand": "adult",
+        "chronotype": "neutral",
+        "sleepNeedHours": 8,
+        "mealRegularity": 0.76,
+        "chorePreference": 0.67,
+        "riskSensitivity": 0.7,
+        "sociability": 0.74,
+        "mobility": "active",
+        "primaryRooms": ["master_bedroom", "study", "kitchen"],
+        "deviceFamiliarity": { "router_01": 0.96, "stove_01": 0.88, "dishwasher_01": 0.83 },
+        "careResponsibilities": ["child_1", "pet_1"]
+      }
+    },
+    {
+      "id": "child_1",
+      "kind": "human",
+      "role": "student",
+      "homeMember": true,
+      "profile": {
+        "role": "student",
+        "ageBand": "child",
+        "chronotype": "neutral",
+        "sleepNeedHours": 9.5,
+        "mealRegularity": 0.8,
+        "chorePreference": 0.32,
+        "riskSensitivity": 0.62,
+        "sociability": 0.82,
+        "mobility": "active",
+        "primaryRooms": ["child_bedroom", "living_room", "dining_room"],
+        "deviceFamiliarity": { "child_light_01": 0.82, "tv_01": 0.7 },
+        "careResponsibilities": []
+      }
+    },
+    {
+      "id": "pet_1",
+      "kind": "pet",
+      "role": "house pet",
+      "homeMember": true,
+      "profile": {
+        "role": "pet",
+        "ageBand": "pet",
+        "chronotype": "early",
+        "sleepNeedHours": 12,
+        "mealRegularity": 0.9,
+        "chorePreference": 0,
+        "riskSensitivity": 0.35,
+        "sociability": 0.78,
+        "mobility": "active",
+        "primaryRooms": ["living_room", "garden"],
+        "deviceFamiliarity": {},
+        "careResponsibilities": []
+      }
+    }
+  ],
+  "environment": {
+    "timezone": "Asia/Shanghai",
+    "utcOffset": "+08:00",
+    "weather": {
+      "mode": "generated"
+    }
+  },
+  "repertoires": [
+    { "id": "core_household", "version": "1.0.0" }
+  ],
+  "behaviors": [
+    { "id": "core_device_physics", "version": "1.0.0" }
+  ],
+  "automation": { "id": "core_household_automation", "version": "1.0.0" },
+  "habits": [
+    { "id": "adult_1_weekday_wake", "repertoire": "core_household", "activity": "wake_up", "residentIds": ["adult_1"], "recurrence": "weekdays", "window": { "start": "06:10", "end": "06:30" }, "roomId": "master_bedroom" },
+    { "id": "adult_2_weekday_wake", "repertoire": "core_household", "activity": "wake_up", "residentIds": ["adult_2"], "recurrence": "weekdays", "window": { "start": "06:25", "end": "06:45" }, "roomId": "master_bedroom" },
+    { "id": "child_weekday_wake", "repertoire": "core_household", "activity": "wake_up", "residentIds": ["child_1"], "recurrence": "weekdays", "window": { "start": "06:35", "end": "06:55" }, "roomId": "child_bedroom" },
+    { "id": "weekday_breakfast", "repertoire": "core_household", "activity": "meal", "residentIds": ["adult_1", "adult_2", "child_1"], "recurrence": "weekdays", "window": { "start": "06:55", "end": "07:15" }, "roomPurpose": "dining" },
+    { "id": "child_school_departure", "repertoire": "core_household", "activity": "leave_home", "residentIds": ["child_1"], "recurrence": "schooldays", "window": { "start": "07:30", "end": "07:50" }, "roomPurpose": "departure" },
+    { "id": "adult_1_commute_departure", "repertoire": "core_household", "activity": "leave_home", "residentIds": ["adult_1"], "recurrence": "workdays", "window": { "start": "07:40", "end": "08:00" }, "roomPurpose": "departure" },
+    { "id": "adult_2_remote_work", "repertoire": "core_household", "activity": "remote_work", "residentIds": ["adult_2"], "recurrence": "workdays", "window": { "start": "08:05", "end": "08:25" }, "roomPurpose": "focused_work" },
+    { "id": "pet_morning_patrol", "repertoire": "core_household", "activity": "occupy_room", "residentIds": ["pet_1"], "recurrence": "daily", "window": { "start": "08:20", "end": "08:50" }, "roomPurpose": "pet_activity", "probability": 0.75 },
+    { "id": "weekend_family_wake", "repertoire": "core_household", "activity": "wake_up", "residentIds": ["adult_1", "adult_2"], "recurrence": "weekends", "window": { "start": "07:25", "end": "08:00" }, "roomId": "master_bedroom" },
+    { "id": "weekend_child_wake", "repertoire": "core_household", "activity": "wake_up", "residentIds": ["child_1"], "recurrence": "weekends", "window": { "start": "07:40", "end": "08:15" }, "roomId": "child_bedroom" },
+    { "id": "weekend_brunch", "repertoire": "core_household", "activity": "meal", "residentIds": ["adult_1", "adult_2", "child_1"], "recurrence": "weekends", "window": { "start": "08:45", "end": "09:20" }, "roomPurpose": "dining" },
+    { "id": "weekend_family_time", "repertoire": "core_household", "activity": "occupy_room", "residentIds": ["adult_1", "adult_2", "child_1", "pet_1"], "recurrence": "weekends", "window": { "start": "10:00", "end": "10:45" }, "roomPurpose": "family_time" },
+    { "id": "child_returns_from_school", "repertoire": "core_household", "activity": "return_home", "residentIds": ["child_1"], "recurrence": "schooldays", "window": { "start": "16:50", "end": "17:20" }, "roomPurpose": "arrival" },
+    { "id": "adult_1_returns_from_work", "repertoire": "core_household", "activity": "return_home", "residentIds": ["adult_1"], "recurrence": "workdays", "window": { "start": "17:50", "end": "18:20" }, "roomPurpose": "arrival" },
+    { "id": "family_dinner", "repertoire": "core_household", "activity": "meal", "residentIds": ["adult_1", "adult_2", "child_1"], "recurrence": "daily", "window": { "start": "18:35", "end": "19:05" }, "roomPurpose": "dining" },
+    { "id": "family_evening", "repertoire": "core_household", "activity": "occupy_room", "residentIds": ["adult_1", "adult_2", "child_1", "pet_1"], "recurrence": "daily", "window": { "start": "19:45", "end": "20:20" }, "roomPurpose": "family_time" },
+    { "id": "child_weekday_sleep", "repertoire": "core_household", "activity": "sleep", "residentIds": ["child_1"], "recurrence": "weekdays", "window": { "start": "21:00", "end": "21:20" }, "roomId": "child_bedroom" },
+    { "id": "child_weekend_sleep", "repertoire": "core_household", "activity": "sleep", "residentIds": ["child_1"], "recurrence": "weekends", "window": { "start": "21:50", "end": "22:15" }, "roomId": "child_bedroom" },
+    { "id": "adults_weekday_sleep", "repertoire": "core_household", "activity": "sleep", "residentIds": ["adult_1", "adult_2"], "recurrence": "weekdays", "window": { "start": "22:20", "end": "22:50" }, "roomId": "master_bedroom" },
+    { "id": "adults_weekend_sleep", "repertoire": "core_household", "activity": "sleep", "residentIds": ["adult_1", "adult_2"], "recurrence": "weekends", "window": { "start": "23:00", "end": "23:30" }, "roomId": "master_bedroom" },
+    { "id": "pet_night_sleep", "repertoire": "core_household", "activity": "sleep", "residentIds": ["pet_1"], "recurrence": "daily", "window": { "start": "22:40", "end": "23:10" }, "roomPurpose": "pet_rest" }
+  ]
+}

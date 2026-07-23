@@ -4,7 +4,7 @@ import { getCatalog, getHomeDefinition } from '../src/sim/catalog';
 import { createExternalContext } from '../src/sim/externalContext';
 import { getScenarioIds } from '../src/sim/scenarios';
 import { getDeviceCapability } from '../src/shared/deviceRegistry';
-import type { AbnormalityInjectedEvent, AlertCreatedEvent, AutomationTriggeredEvent, ConversationOccurredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, ExternalInteractionOccurredEvent, PersonMovedEvent, PersonState, RoomId, RuleRecoveredEvent, TwinSnapshot } from '../src/shared/types';
+import type { AbnormalityInjectedEvent, AlertCreatedEvent, AutomationTriggeredEvent, ConversationOccurredEvent, DeviceStateChangedEvent, DeviceTelemetryEvent, ExternalInteractionOccurredEvent, HomeDefinition, PersonMovedEvent, PersonState, RoomId, RuleRecoveredEvent, TwinSnapshot } from '../src/shared/types';
 
 function addSeniorToSnapshot(snapshot: TwinSnapshot, location: RoomId | 'away', activity: string): PersonState {
   const senior: PersonState = {
@@ -61,6 +61,40 @@ describe('virtual home simulator MVP', () => {
     for (const device of Object.values(snapshot.devices)) {
       expect(device.state).toEqual(getDeviceCapability(device.type).defaultState);
     }
+  });
+
+  it('initializes a template-defined resident in a template-defined room', () => {
+    const homeDefinition: HomeDefinition = {
+      building: { id: 'studio_home', name: 'Studio Home' },
+      floors: [{
+        id: 'only_floor',
+        name: 'Only Floor',
+        level: 1,
+        rooms: [{
+          id: 'sleeping_room_a',
+          name: 'Sleeping Room A',
+          type: 'bedroom',
+          connectedRooms: []
+        }],
+        fixtures: { devices: [] }
+      }],
+      topology: { connections: [] },
+      people: [{
+        id: 'resident_nurse',
+        kind: 'human',
+        role: 'commuter nurse',
+        homeMember: true
+      }]
+    };
+
+    const snapshot = createSimulator({ seed: 42, homeDefinition }).getSnapshot();
+
+    expect(snapshot.homeId).toBe('studio_home');
+    expect(snapshot.people.resident_nurse).toMatchObject({
+      id: 'resident_nurse',
+      location: 'sleeping_room_a'
+    });
+    expect(snapshot.rooms.sleeping_room_a.people).toContain('resident_nurse');
   });
 
   it('runs a weekday scenario where people activity drives device and telemetry events', () => {

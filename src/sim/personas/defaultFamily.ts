@@ -1,3 +1,4 @@
+import type { Catalog, PersonDefinition, ResidentAgeBand, ResidentRole, RoomId } from '../../shared/types';
 import type { PersonaProfile } from '../agents/persona';
 
 export const defaultFamilyPersonas: Record<string, PersonaProfile> = {
@@ -84,4 +85,73 @@ export function getPersona(personId: string): PersonaProfile {
     throw new Error(`Unknown persona: ${personId}`);
   }
   return structuredClone(persona);
+}
+
+export function getPersonaForDefinition(person: PersonDefinition, catalog: Catalog): PersonaProfile {
+  if (person.profile) {
+    return structuredClone({ personId: person.id, ...person.profile });
+  }
+  const existing = defaultFamilyPersonas[person.id];
+  if (existing) {
+    return structuredClone(existing);
+  }
+
+  const role = inferResidentRole(person);
+  const ageBand = inferAgeBand(person, role);
+  return {
+    personId: person.id,
+    role,
+    ageBand,
+    chronotype: ageBand === 'senior' ? 'early' : 'neutral',
+    sleepNeedHours: ageBand === 'child' ? 9 : ageBand === 'senior' ? 7.8 : ageBand === 'pet' ? 13 : 7.5,
+    mealRegularity: ageBand === 'pet' ? 0.6 : 0.7,
+    chorePreference: ageBand === 'child' || ageBand === 'pet' ? 0.2 : 0.5,
+    riskSensitivity: ageBand === 'senior' ? 0.75 : ageBand === 'child' ? 0.45 : 0.6,
+    sociability: 0.55,
+    mobility: ageBand === 'senior' ? 'steady' : 'active',
+    primaryRooms: inferPrimaryRooms(role, catalog),
+    deviceFamiliarity: {},
+    careResponsibilities: inferCareResponsibilities(role)
+  };
+}
+
+function inferResidentRole(person: PersonDefinition): ResidentRole {
+  if (person.kind === 'pet') return 'pet';
+  const role = person.role.toLowerCase().replaceAll('-', ' ').replaceAll('_', ' ');
+  if (role.includes('student') || role.includes('child')) return 'student';
+  if (role.includes('senior') || role.includes('elder')) return 'senior';
+  if (role.includes('remote') || role.includes('hybrid')) return 'remote_worker';
+  if (role.includes('commut') || role.includes('office')) return 'commuter';
+  return 'home_adult';
+}
+
+function inferAgeBand(person: PersonDefinition, role: ResidentRole): ResidentAgeBand {
+  if (person.kind === 'pet') return 'pet';
+  if (role === 'student') return 'child';
+  if (role === 'senior') return 'senior';
+  return 'adult';
+}
+
+function inferPrimaryRooms(role: ResidentRole, catalog: Catalog): RoomId[] {
+  const preferredTypes = role === 'remote_worker'
+    ? ['work', 'bedroom', 'living']
+    : role === 'student'
+      ? ['bedroom', 'work', 'living']
+      : role === 'senior'
+        ? ['bedroom', 'living', 'outdoor']
+        : role === 'pet'
+          ? ['living', 'outdoor', 'utility']
+          : ['bedroom', 'living', 'entry'];
+  const matches = catalog.rooms
+    .filter((room) => preferredTypes.includes(room.type))
+    .map((room) => room.id);
+  return matches.length > 0 ? matches : catalog.rooms.map((room) => room.id);
+}
+
+function inferCareResponsibilities(role: ResidentRole): string[] {
+  if (role === 'commuter') return ['commute'];
+  if (role === 'remote_worker') return ['remote_work'];
+  if (role === 'student') return ['homework'];
+  if (role === 'senior') return ['self_medication'];
+  return [];
 }

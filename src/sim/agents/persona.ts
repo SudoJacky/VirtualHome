@@ -1,21 +1,14 @@
-import type { RoomId } from '../../shared/types';
+import type {
+  ResidentChronotype,
+  ResidentMobility,
+  ResidentProfileDefinition,
+  ResidentRole
+} from '../../shared/types';
 
-export type PersonaRole = 'commuter' | 'remote_worker' | 'student' | 'senior' | 'pet';
-export type Chronotype = 'early' | 'neutral' | 'late';
-export type MobilityLevel = 'limited' | 'steady' | 'active';
+export type PersonaRole = ResidentRole;
+export type Chronotype = ResidentChronotype;
+export type MobilityLevel = ResidentMobility;
 
-export interface PersonaProfile {
+export interface PersonaProfile extends ResidentProfileDefinition {
   personId: string;
-  role: PersonaRole;
-  ageBand: 'child' | 'adult' | 'senior' | 'pet';
-  chronotype: Chronotype;
-  sleepNeedHours: number;
-  mealRegularity: number;
-  chorePreference: number;
-  riskSensitivity: number;
-  sociability: number;
-  mobility: MobilityLevel;
-  primaryRooms: RoomId[];
-  deviceFamiliarity: Record<string, number>;
-  careResponsibilities: string[];
 }

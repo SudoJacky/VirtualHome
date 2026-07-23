@@ -1,17 +1,28 @@
-export type RoomId =
-  | 'entrance'
-  | 'living_room'
-  | 'kitchen'
-  | 'dining_room'
-  | 'master_bedroom'
-  | 'child_bedroom'
-  | 'study'
-  | 'bathroom'
-  | 'garden';
+export type RoomId = string;
 
 export type HomeMode = 'morning' | 'away' | 'evening_home' | 'sleeping' | 'alert';
 
 export type PersonKind = 'human' | 'pet';
+
+export type ResidentRole = 'commuter' | 'remote_worker' | 'student' | 'senior' | 'home_adult' | 'pet';
+export type ResidentAgeBand = 'child' | 'adult' | 'senior' | 'pet';
+export type ResidentChronotype = 'early' | 'neutral' | 'late';
+export type ResidentMobility = 'limited' | 'steady' | 'active';
+
+export interface ResidentProfileDefinition {
+  role: ResidentRole;
+  ageBand: ResidentAgeBand;
+  chronotype: ResidentChronotype;
+  sleepNeedHours: number;
+  mealRegularity: number;
+  chorePreference: number;
+  riskSensitivity: number;
+  sociability: number;
+  mobility: ResidentMobility;
+  primaryRooms: RoomId[];
+  deviceFamiliarity: Record<string, number>;
+  careResponsibilities: string[];
+}
 
 export type Severity = 'info' | 'warning' | 'high';
 export type AlertLifecycleStatus = 'active' | 'acknowledged' | 'resolved' | 'ignored';
@@ -21,6 +32,7 @@ export interface RoomDefinition {
   name: string;
   type: 'entry' | 'living' | 'utility' | 'bedroom' | 'work' | 'outdoor';
   connectedRooms: RoomId[];
+  purposes?: string[];
 }
 
 export interface PersonDefinition {
@@ -28,6 +40,7 @@ export interface PersonDefinition {
   kind: PersonKind;
   role: string;
   homeMember: boolean;
+  profile?: ResidentProfileDefinition;
 }
 
 export interface DeviceDefinition {
@@ -81,6 +94,34 @@ export interface RunContext {
   scenarioVersion: string;
   engineVersion: string;
   startedAt: string;
+  householdRun?: {
+    templateId: string;
+    templateVersion: string;
+    templateDigest: string;
+    compilerVersion: string;
+    date: string;
+    timezone: string;
+    repertoireVersions: Record<string, string>;
+    behaviorVersions: Record<string, string>;
+    automationPolicyVersion: { id: string; version: string };
+    environmentSnapshot: {
+      calendar: {
+        date: string;
+        dayType: 'weekday' | 'weekend';
+        season: 'spring' | 'summer' | 'autumn' | 'winter';
+        month: number;
+        dayOfWeek: number;
+        holidayName: string | null;
+        schoolDay: boolean;
+        workday: boolean;
+      };
+      weather: {
+        condition: 'clear' | 'cloudy' | 'light_rain' | 'heavy_rain' | 'hot' | 'cold';
+        outdoorTemperatureC: number;
+        precipitationMm: number;
+      };
+    };
+  };
 }
 
 export interface PersonState {
@@ -355,4 +396,4 @@ export type TwinEvent =
   | ScenarioControlEvent;
 
 export type StaticScenarioId = 'weekday_normal' | 'away_day' | 'night_water_leak';
-export type ScenarioId = StaticScenarioId | `daily_${string}`;
+export type ScenarioId = StaticScenarioId | `daily_${string}` | `household_${string}`;

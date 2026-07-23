@@ -52,4 +52,37 @@ describe('home definition loader', () => {
 
     expect(parseHomeDefinition(definition).building.id).toBe('default_home');
   });
+
+  it('accepts template-defined room identifiers outside the default home', () => {
+    const definition = getHomeDefinition();
+    const room = definition.floors[0].rooms.find((candidate) => candidate.id === 'study');
+    if (!room) {
+      throw new Error('missing study room');
+    }
+
+    room.id = 'music_studio';
+    room.name = 'Music Studio';
+    room.connectedRooms = ['living_room'];
+    definition.floors[0].fixtures.devices
+      .filter((device) => device.roomId === 'study')
+      .forEach((device) => {
+        device.roomId = 'music_studio';
+      });
+    definition.floors[0].rooms.forEach((candidate) => {
+      candidate.connectedRooms = candidate.connectedRooms.map((roomId) => (
+        roomId === 'study' ? 'music_studio' : roomId
+      ));
+    });
+    definition.topology.connections.forEach((connection) => {
+      if (connection.from === 'study') connection.from = 'music_studio';
+      if (connection.to === 'study') connection.to = 'music_studio';
+    });
+
+    const parsed = parseHomeDefinition(definition);
+
+    expect(parsed.floors[0].rooms).toContainEqual(expect.objectContaining({
+      id: 'music_studio',
+      name: 'Music Studio'
+    }));
+  });
 });
