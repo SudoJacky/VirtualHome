@@ -42,7 +42,7 @@ describe('home memory profile claim engine', () => {
     expect(routineEvidence?.supports.map((support) => support.refId)).toEqual(expect.arrayContaining([
       'feature:door_unlock_lock_pairing',
       'feature:stove_range_hood_coupling',
-      'feature:child_bedroom_sleep_around_21',
+      'feature:early_sleep_zone_around_21',
       'feature:weekday_study_daytime_activity'
     ]));
 

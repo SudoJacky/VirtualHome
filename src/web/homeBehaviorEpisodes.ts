@@ -1,13 +1,7 @@
 import type { HomeMemory, MemoryEvidence } from './homeMemoryModel';
+import type { HomeDerivedEpisodeKind } from './homeDerivedFeatureStore';
 
-export type HomeBehaviorEpisodeKind =
-  | 'door_access_episode'
-  | 'cooking_episode'
-  | 'sleep_episode'
-  | 'work_study_episode'
-  | 'laundry_episode'
-  | 'vacuum_episode'
-  | 'media_episode';
+export type HomeBehaviorEpisodeKind = HomeDerivedEpisodeKind;
 
 export interface HomeBehaviorEpisode {
   id: string;
@@ -22,6 +16,25 @@ export interface HomeBehaviorEpisode {
 }
 
 export function extractHomeBehaviorEpisodes(memory: HomeMemory): HomeBehaviorEpisode[] {
+  const storedFacts = Object.values(memory.episodeFacts);
+  if (storedFacts.length > 0) {
+    return storedFacts.map((fact) => ({
+      id: `behavior:${fact.id}`,
+      kind: fact.kind,
+      roomIds: [...fact.roomIds],
+      deviceIds: [...fact.deviceIds],
+      startedAt: fact.startedSimTime,
+      endedAt: fact.endedSimTime ?? fact.updatedSimTime,
+      durationMinutes: fact.durationMinutes ?? Math.max(
+        0,
+        Number(minutesBetween(fact.startedSimTime, fact.updatedSimTime).toFixed(3))
+      ),
+      features: { ...fact.features },
+      evidenceIds: [...fact.evidenceIds]
+    })).sort((left, right) => (
+      left.startedAt.localeCompare(right.startedAt) || left.id.localeCompare(right.id)
+    ));
+  }
   const evidence = collectEpisodeEvidence(memory)
     .filter((event) => event.profileWeight > 0)
     .sort(compareEvidenceAsc);

@@ -7,6 +7,7 @@ import { PassThrough } from 'node:stream';
 import { z } from 'zod';
 import { getHomeDefinition } from '../sim/catalog';
 import { createSimulator } from '../sim/engine';
+import { compileHouseholdRun, householdTemplateDate, type HouseholdCompilerOptions } from '../sim/householdTemplate';
 import { getScenarioIds } from '../sim/scenarios';
 import {
   applyHomeMemoryLlmConfigPatch,
@@ -29,6 +30,7 @@ import { createDeviceAccessRecords } from './deviceAccess';
 import { buildDeviceReplayPage, projectDeviceValueEvents } from './deviceEventStream';
 import { DeviceEventDatabase, type DeviceEventAggregateGroupBy } from './deviceEventStore';
 import { loadHomeDefinitionFromFile } from './homeDefinitionLoader';
+import { loadHouseholdTemplateFromFile } from './householdTemplateLoader';
 import { HomeMemoryDatabase } from './homeMemoryStore';
 import {
   buildHomeMemoryFromEvents,
@@ -67,6 +69,9 @@ export interface ServerOptions {
   telemetryRetentionEvents?: number;
   homeDefinition?: HomeDefinition;
   homeDefinitionPath?: string;
+  householdTemplate?: unknown;
+  householdTemplatePath?: string;
+  householdCompilerOptions?: HouseholdCompilerOptions;
   homeMemoryLlm?: HomeMemoryLlmConfig;
   homeMemoryLlmFetch?: HomeMemoryLlmFetch;
 }
@@ -400,7 +405,20 @@ const websocketReplayLimit = 500;
 export function createServer(options: ServerOptions): FastifyInstance {
   mkdirSync(path.dirname(options.databasePath), { recursive: true });
   const app = Fastify({ logger: false });
-  const homeDefinition = options.homeDefinition ?? (options.homeDefinitionPath
+  const householdTemplate = options.householdTemplate ?? (options.householdTemplatePath
+    ? loadHouseholdTemplateFromFile(options.householdTemplatePath)
+    : undefined);
+  if (householdTemplate && (options.homeDefinition || options.homeDefinitionPath)) {
+    throw new Error('householdTemplate and homeDefinition are mutually exclusive');
+  }
+  const initialHouseholdRun = householdTemplate
+    ? compileHouseholdRun(
+        householdTemplate,
+        { date: householdTemplateDate(householdTemplate), seed: 20260617 },
+        options.householdCompilerOptions
+      )
+    : null;
+  const homeDefinition = initialHouseholdRun?.homeDefinition ?? options.homeDefinition ?? (options.homeDefinitionPath
     ? loadHomeDefinitionFromFile(options.homeDefinitionPath)
     : getHomeDefinition());
   let homeMemoryLlm = options.homeMemoryLlm ?? resolveHomeMemoryLlmConfig({});
@@ -430,7 +448,12 @@ export function createServer(options: ServerOptions): FastifyInstance {
       pruneHomeMemoryLlmResults();
     }
   };
-  const simulator = createSimulator({ seed: 20260617, homeDefinition });
+  const simulator = createSimulator({
+    seed: 20260617,
+    homeDefinition,
+    behaviors: options.householdCompilerOptions?.behaviors,
+    automationPolicies: options.householdCompilerOptions?.automationPolicies
+  });
   const db = new TwinDatabase(options.databasePath, {
     snapshotIntervalEvents: options.snapshotIntervalEvents,
     telemetryRetentionEvents: options.telemetryRetentionEvents
@@ -469,11 +492,23 @@ export function createServer(options: ServerOptions): FastifyInstance {
     : null;
   const restoredFromDatabase = Boolean(restorableSnapshot?.runId);
   if (restorableSnapshot?.runId) {
-    simulator.restore(restorableSnapshot, db.getEventsForRun(restorableSnapshot.runId));
+    if (householdTemplate) {
+      const householdIdentity = restorableSnapshot.runContext.householdRun;
+      if (!householdIdentity) {
+        throw new Error('Latest compatible snapshot was not created from the configured household template');
+      }
+      const restoreRun = compileHouseholdRun(householdTemplate, {
+        date: householdIdentity.date,
+        seed: restorableSnapshot.runContext.seed
+      }, options.householdCompilerOptions);
+      simulator.restoreCompiledHouseholdRun(restoreRun, restorableSnapshot, db.getEventsForRun(restorableSnapshot.runId));
+    } else {
+      simulator.restore(restorableSnapshot, db.getEventsForRun(restorableSnapshot.runId));
+    }
   }
   const sockets = new Set<{ privacy: PrivacyMode; send: (payload: string) => void }>();
   const deviceEventSockets = new Set<{ send: (payload: string) => void }>();
-  const scenarioIds = getScenarioIds();
+  const scenarioIds = householdTemplate ? [] : getScenarioIds();
   let tickHandle: NodeJS.Timeout | undefined;
   let heartbeatHandle: NodeJS.Timeout | undefined;
 
@@ -1358,7 +1393,16 @@ export function createServer(options: ServerOptions): FastifyInstance {
     }
     return runIdempotentCommand(reply, result.data.idempotencyKey, 'POST /api/daily/start', stripIdempotencyKey(result.data), () => {
       const date = result.data.date ?? todayInShanghai();
-      const events = simulator.startDailyScenario({ date, seed: result.data.seed });
+      const events = householdTemplate
+        ? simulator.startCompiledHouseholdRun(compileHouseholdRun(
+            householdTemplate,
+            {
+              date,
+              seed: result.data.seed ?? seedFromDate(date)
+            },
+            options.householdCompilerOptions
+          ))
+        : simulator.startDailyScenario({ date, seed: result.data.seed });
       const snapshot = recordAndBroadcast(events);
       return { snapshot, events };
     });
@@ -1543,7 +1587,9 @@ export function createServer(options: ServerOptions): FastifyInstance {
 
   app.addHook('onReady', async () => {
     if (!restoredFromDatabase) {
-      recordAndBroadcast(simulator.startDailyScenario({ date: todayInShanghai(), seed: 20260617 }));
+      recordAndBroadcast(initialHouseholdRun
+        ? simulator.startCompiledHouseholdRun(initialHouseholdRun)
+        : simulator.startDailyScenario({ date: todayInShanghai(), seed: 20260617 }));
     }
     if (options.autoTick !== false) {
       tickHandle = setInterval(() => {
@@ -1606,6 +1652,10 @@ function todayInShanghai(): string {
     month: '2-digit',
     day: '2-digit'
   }).format(new Date());
+}
+
+function seedFromDate(date: string): number {
+  return [...date].reduce((hash, char) => ((hash * 31) + char.charCodeAt(0)) >>> 0, 2166136261);
 }
 
 function snapshotMatchesHomeDefinition(snapshot: TwinSnapshot, homeDefinition: HomeDefinition): boolean {

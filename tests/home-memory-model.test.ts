@@ -733,6 +733,117 @@ describe('home memory model', () => {
     });
   });
 
+  it('uses sibling confidence as source quality without treating metadata as behavior', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'motion_confidence',
+        sourceEventId: 'source_motion',
+        sequence: 1,
+        roomId: 'living_room',
+        deviceId: 'living_motion_01',
+        deviceType: 'motion_sensor',
+        field: 'confidence',
+        value: 0.2
+      }),
+      deviceEvent({
+        id: 'motion_value',
+        sourceEventId: 'source_motion',
+        sequence: 1,
+        roomId: 'living_room',
+        deviceId: 'living_motion_01',
+        deviceType: 'motion_sensor',
+        field: 'motion',
+        value: true
+      }),
+      deviceEvent({
+        id: 'washer_remaining',
+        sourceEventId: 'source_washer_remaining',
+        sequence: 2,
+        roomId: 'bathroom',
+        deviceId: 'washer_01',
+        deviceType: 'washer',
+        field: 'remainingMin',
+        value: 54
+      })
+    ]);
+
+    expect(memory.profileEventCount).toBe(1);
+    expect(memory.profileEvidenceWeight).toBeCloseTo(0.11);
+    expect(memory.fields['living_motion_01:confidence']).toMatchObject({
+      evidenceCategory: 'system_status',
+      profileEvidenceWeight: 0
+    });
+    expect(memory.fields['washer_01:remainingMin']).toMatchObject({
+      evidenceCategory: 'system_status',
+      profileEvidenceWeight: 0
+    });
+    expect(memory.rooms.bathroom.profileEvidenceWeight).toBe(0);
+    expect(memory.devices.washer_01.profileEvidenceWeight).toBe(0);
+    expect(memory.fields['living_motion_01:motion'].recentEvents[0]).toMatchObject({
+      sourceConfidence: 0.2,
+      profileWeight: 0.11
+    });
+  });
+
+  it('counts profile patterns on activation edges instead of every active telemetry value', () => {
+    const memory = reduceDeviceEvents(createHomeMemory(), [
+      deviceEvent({
+        id: 'hood_on',
+        sourceEventId: 'source_hood_on',
+        sequence: 1,
+        simTime: '2026-06-22T18:00:00',
+        deviceId: 'range_hood_01',
+        deviceType: 'range_hood',
+        field: 'power',
+        value: 'on'
+      }),
+      deviceEvent({
+        id: 'stove_power_state',
+        sourceEventId: 'source_stove_on',
+        sequence: 2,
+        simTime: '2026-06-22T18:01:00',
+        deviceId: 'stove_01',
+        deviceType: 'stove',
+        field: 'power',
+        value: 'on'
+      }),
+      deviceEvent({
+        id: 'stove_power_w_1',
+        sourceEventId: 'source_stove_on',
+        sequence: 2,
+        simTime: '2026-06-22T18:01:00',
+        deviceId: 'stove_01',
+        deviceType: 'stove',
+        field: 'powerW',
+        value: 500
+      }),
+      deviceEvent({
+        id: 'stove_power_w_2',
+        sourceEventId: 'source_stove_telemetry_2',
+        sequence: 3,
+        simTime: '2026-06-22T18:02:00',
+        deviceId: 'stove_01',
+        deviceType: 'stove',
+        field: 'powerW',
+        value: 620
+      }),
+      deviceEvent({
+        id: 'stove_power_w_3',
+        sourceEventId: 'source_stove_telemetry_3',
+        sequence: 4,
+        simTime: '2026-06-22T18:03:00',
+        deviceId: 'stove_01',
+        deviceType: 'stove',
+        field: 'powerW',
+        value: 710
+      })
+    ]);
+
+    expect(memory.profilePatterns['stove-active']?.count).toBe(1);
+    expect(memory.profilePatterns['dinner-stove']?.count).toBe(1);
+    expect(memory.profilePatterns['stove-range-hood-paired']?.count).toBe(1);
+  });
+
   it('does not mutate previous memory records when reducing another event', () => {
     const firstMemory = reduceDeviceEvent(createHomeMemory(), deviceEvent({
       id: 'power_event_1',

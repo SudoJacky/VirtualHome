@@ -4,6 +4,11 @@ import path from 'node:path';
 import type { HouseholdPortrait } from './memoryQuery';
 import type { HomeMemory, MemoryEvidence } from '../web/homeMemoryModel';
 import type { ProfileHypothesis } from '../web/homeProfiler';
+import type {
+  HomeDailyFeature,
+  HomeEpisodeFact,
+  HomePatternCandidate
+} from '../web/homeDerivedFeatureStore';
 
 export interface HomeMemoryMaterializationInput {
   memory: HomeMemory;
@@ -54,6 +59,20 @@ export interface StoredHomeMemoryPortraitSection {
   confidence: number;
   evidenceIds: string[];
   payload: HouseholdPortrait['sections'][number];
+}
+
+export interface StoredHomeEpisodeFact extends HomeEpisodeFact {
+  payload: HomeEpisodeFact;
+}
+
+export interface StoredHomeDailyFeature extends HomeDailyFeature {
+  payload: HomeDailyFeature;
+}
+
+export interface StoredHomePatternCandidate extends HomePatternCandidate {
+  homeId: string;
+  runId: string;
+  payload: HomePatternCandidate;
 }
 
 export class HomeMemoryDatabase {
@@ -139,6 +158,18 @@ export class HomeMemoryDatabase {
         PRIMARY KEY (home_id, run_id, id)
       );
 
+      CREATE TABLE IF NOT EXISTS home_memory_episode_facts (
+        id TEXT NOT NULL,
+        home_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_sim_time TEXT NOT NULL,
+        ended_sim_time TEXT,
+        payload_json TEXT NOT NULL,
+        PRIMARY KEY (home_id, run_id, id)
+      );
+
       CREATE TABLE IF NOT EXISTS home_memory_daily_summaries (
         id TEXT NOT NULL,
         home_id TEXT NOT NULL,
@@ -151,6 +182,36 @@ export class HomeMemoryDatabase {
         id TEXT NOT NULL,
         home_id TEXT NOT NULL,
         run_id TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        PRIMARY KEY (home_id, run_id, id)
+      );
+
+      CREATE TABLE IF NOT EXISTS home_memory_daily_features (
+        id TEXT NOT NULL,
+        home_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        date TEXT NOT NULL,
+        observation_count INTEGER NOT NULL,
+        primary_measurement_count INTEGER NOT NULL,
+        lifecycle_update_count INTEGER NOT NULL,
+        mean_quality_multiplier REAL NOT NULL,
+        payload_json TEXT NOT NULL,
+        PRIMARY KEY (home_id, run_id, id)
+      );
+
+      CREATE TABLE IF NOT EXISTS home_memory_pattern_candidates (
+        id TEXT NOT NULL,
+        home_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        support_days INTEGER NOT NULL,
+        opportunity_days INTEGER NOT NULL,
+        lift REAL,
+        time_dispersion_minutes REAL,
+        source_diversity INTEGER NOT NULL,
+        contradiction_count INTEGER NOT NULL,
+        stability_across_weeks REAL NOT NULL,
+        confidence REAL NOT NULL,
+        evidence_ids_json TEXT NOT NULL,
         payload_json TEXT NOT NULL,
         PRIMARY KEY (home_id, run_id, id)
       );
@@ -206,6 +267,12 @@ export class HomeMemoryDatabase {
         ON home_memory_profile_hypotheses(home_id, run_id, confidence);
       CREATE INDEX IF NOT EXISTS home_memory_portrait_sections_run_idx
         ON home_memory_portrait_sections(home_id, run_id, section_id);
+      CREATE INDEX IF NOT EXISTS home_memory_episode_facts_run_idx
+        ON home_memory_episode_facts(home_id, run_id, kind, started_sim_time);
+      CREATE INDEX IF NOT EXISTS home_memory_daily_features_run_idx
+        ON home_memory_daily_features(home_id, run_id, date);
+      CREATE INDEX IF NOT EXISTS home_memory_pattern_candidates_run_idx
+        ON home_memory_pattern_candidates(home_id, run_id, confidence);
     `);
   }
 
@@ -295,6 +362,24 @@ export class HomeMemoryDatabase {
         insertActivityEpisode.run(episode.id, episode.homeId, episode.runId, episode.kind, episode.updatedSimTime, JSON.stringify(episode));
       }
 
+      const insertEpisodeFact = this.db.prepare(`
+        INSERT INTO home_memory_episode_facts
+          (id, home_id, run_id, kind, status, started_sim_time, ended_sim_time, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const episode of Object.values(input.memory.episodeFacts)) {
+        insertEpisodeFact.run(
+          episode.id,
+          episode.homeId,
+          episode.runId,
+          episode.kind,
+          episode.status,
+          episode.startedSimTime,
+          episode.endedSimTime ?? null,
+          JSON.stringify(episode)
+        );
+      }
+
       const insertDaily = this.db.prepare(`
         INSERT INTO home_memory_daily_summaries (id, home_id, run_id, payload_json)
         VALUES (?, ?, ?, ?)
@@ -309,6 +394,51 @@ export class HomeMemoryDatabase {
       `);
       for (const summary of Object.values(input.memory.weeklySummaries)) {
         insertWeekly.run(summary.week, summary.homeId, summary.runId, JSON.stringify(summary));
+      }
+
+      const insertDailyFeature = this.db.prepare(`
+        INSERT INTO home_memory_daily_features
+          (id, home_id, run_id, date, observation_count, primary_measurement_count,
+           lifecycle_update_count, mean_quality_multiplier, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const feature of Object.values(input.memory.dailyFeatures)) {
+        insertDailyFeature.run(
+          feature.id,
+          feature.homeId,
+          feature.runId,
+          feature.date,
+          feature.observationCount,
+          feature.primaryMeasurementCount,
+          feature.lifecycleUpdateCount,
+          feature.meanQualityMultiplier,
+          JSON.stringify(feature)
+        );
+      }
+
+      const insertPatternCandidate = this.db.prepare(`
+        INSERT INTO home_memory_pattern_candidates
+          (id, home_id, run_id, support_days, opportunity_days, lift,
+           time_dispersion_minutes, source_diversity, contradiction_count,
+           stability_across_weeks, confidence, evidence_ids_json, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const candidate of Object.values(input.memory.patternCandidates)) {
+        insertPatternCandidate.run(
+          candidate.id,
+          homeId,
+          runId,
+          candidate.supportDays,
+          candidate.opportunityDays,
+          candidate.lift,
+          candidate.timeDispersionMinutes,
+          candidate.sourceDiversity,
+          candidate.contradictionCount,
+          candidate.stabilityAcrossWeeks,
+          candidate.confidence,
+          JSON.stringify(candidate.evidenceIds),
+          JSON.stringify(candidate)
+        );
       }
 
       const insertSemantic = this.db.prepare(`
@@ -417,6 +547,63 @@ export class HomeMemoryDatabase {
       LIMIT ?
     `).all(query.homeId, query.runId, query.limit ?? 100) as HomeMemoryHypothesisRow[];
     return { items: rows.map(toHypothesisRecord) };
+  }
+
+  listEpisodeFacts(query: HomeMemoryListQuery): { items: StoredHomeEpisodeFact[] } {
+    const rows = this.db.prepare(`
+      SELECT payload_json
+      FROM home_memory_episode_facts
+      WHERE home_id = ? AND run_id = ?
+      ORDER BY started_sim_time DESC, id ASC
+      LIMIT ?
+    `).all(query.homeId, query.runId, query.limit ?? 100) as Array<{ payload_json: string }>;
+    return {
+      items: rows.map((row) => {
+        const payload = JSON.parse(row.payload_json) as HomeEpisodeFact;
+        return { ...payload, payload };
+      })
+    };
+  }
+
+  listDailyFeatures(query: HomeMemoryListQuery): { items: StoredHomeDailyFeature[] } {
+    const rows = this.db.prepare(`
+      SELECT payload_json
+      FROM home_memory_daily_features
+      WHERE home_id = ? AND run_id = ?
+      ORDER BY date DESC
+      LIMIT ?
+    `).all(query.homeId, query.runId, query.limit ?? 100) as Array<{ payload_json: string }>;
+    return {
+      items: rows.map((row) => {
+        const payload = JSON.parse(row.payload_json) as HomeDailyFeature;
+        return { ...payload, payload };
+      })
+    };
+  }
+
+  listPatternCandidates(query: HomeMemoryListQuery): { items: StoredHomePatternCandidate[] } {
+    const rows = this.db.prepare(`
+      SELECT home_id, run_id, payload_json
+      FROM home_memory_pattern_candidates
+      WHERE home_id = ? AND run_id = ?
+      ORDER BY confidence DESC, id ASC
+      LIMIT ?
+    `).all(query.homeId, query.runId, query.limit ?? 100) as Array<{
+      home_id: string;
+      run_id: string;
+      payload_json: string;
+    }>;
+    return {
+      items: rows.map((row) => {
+        const payload = JSON.parse(row.payload_json) as HomePatternCandidate;
+        return {
+          ...payload,
+          homeId: row.home_id,
+          runId: row.run_id,
+          payload
+        };
+      })
+    };
   }
 
   listPortraitSections(query: Omit<HomeMemoryListQuery, 'limit'>): { items: StoredHomeMemoryPortraitSection[] } {
@@ -551,6 +738,7 @@ function toPortraitSectionRecord(row: HomeMemoryPortraitSectionRow): StoredHomeM
 
 function collectUniqueEvidence(memory: HomeMemory): MemoryEvidence[] {
   const evidence = [
+    ...Object.values(memory.evidenceFacts),
     ...memory.recentEvents,
     ...Object.values(memory.rooms).flatMap((room) => room.recentEvents),
     ...Object.values(memory.devices).flatMap((device) => device.recentEvents),
@@ -573,8 +761,11 @@ function homeMemoryMaterializedTables(): string[] {
     'home_memory_rooms',
     'home_memory_episodes',
     'home_memory_activity_episodes',
+    'home_memory_episode_facts',
     'home_memory_daily_summaries',
     'home_memory_weekly_summaries',
+    'home_memory_daily_features',
+    'home_memory_pattern_candidates',
     'home_memory_semantic_signals',
     'home_memory_profile_hypotheses',
     'home_memory_portrait_sections',

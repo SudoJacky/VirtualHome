@@ -27,6 +27,24 @@ $env:VIRTUALHOME_HOME_DEFINITION = ".\my-home-definition.json"
 npm run server
 ```
 
+`VIRTUALHOME_HOME_DEFINITION` changes only the structural Home Definition. To compile rooms, devices, residents, habits, calendar, and deterministic weather into a Life Plan, use a versioned Household Template instead:
+
+```powershell
+$env:VIRTUALHOME_HOUSEHOLD_TEMPLATE = ".\examples\household-templates\night-nurse-studio.json"
+npm run server
+```
+
+Checked-in examples:
+
+- `examples/household-templates/default-family-apartment.json` converts the legacy default-family home and daily event routine into the generalized template format.
+- `examples/household-templates/night-nurse-studio.json` demonstrates a different layout, resident profile, schedule, and fixed weather environment.
+
+The two template environment variables are mutually exclusive. Household Templates accept only the versioned declarative schema; low-level actions and executable code are rejected. A template declares rooms and topology, device instances, resident profiles, habits, timezone, weather, and exact Life-event Repertoire, Device Behavior Module, and Automation Policy versions. Compilation validates references, room affordances, device-behavior ownership, module availability, date, and timezone offset before producing a Life Plan.
+
+Habit windows remain hard scheduling constraints. Within those windows, resident `chronotype` and `sleepNeedHours` bias wake/sleep timing, while `mealRegularity` controls how strongly meals stay near the center of their declared window. Trusted Life-event Repertoire modules receive the selected resident definitions, Environment Snapshot, and a stable habit seed so they can compile profile- and environment-aware events without adding executable logic to the template.
+
+Starting the same template digest with the same date, Environment Snapshot, module versions, and seed produces the same semantic Twin Event sequence. Restore additionally verifies the template/compiler/module identity and saved Environment Snapshot. Trusted TypeScript modules can be supplied programmatically through `HouseholdCompilerOptions`; templates can only select their `id@version` and cannot provide executable code. Automation thresholds and rule enablement belong to the installed Automation Policy Module rather than inline template data, and mandatory stove/leak safety rules cannot be removed by a policy.
+
 For long-running demos, cap retained telemetry rows per simulation run:
 
 ```powershell
@@ -48,9 +66,10 @@ http://127.0.0.1:5173
 
 ## What is implemented
 
-- TypeScript simulation core for one default model-driven virtual family home.
+- TypeScript simulation core with a default family plus versioned Household Template compilation for alternate homes.
 - Nine rooms, three human family members, one pet, and 35 virtual devices loaded from `src/sim/defaultHomeDefinition.json`.
 - Three static scenarios plus generated daily routines from date and seed.
+- Household Template v1 for dynamic room identifiers, device instances, resident profiles, room purposes, deterministic weather, and controlled habits.
 - Internal twin events for people movement, device state, telemetry, rules, alerts, scenario control, and recovery.
 - Household routines keep device control tied to plausible user actions, sensor observations, or deterministic automation rules.
 - SQLite-backed append-only events, optionally capped telemetry, idempotency records, and checkpointed state snapshots.
@@ -70,7 +89,7 @@ http://127.0.0.1:5173
 
 ## Boundary
 
-This repository is still a single-home simulation sandbox. It now exposes protocol and adapter seams that a real digital twin would need, but it does not yet connect to MQTT, Matter, Home Assistant, authentication, RBAC, or multiple persisted homes. The simulated home definition is externalized as a default template so future work can load other homes without rewriting the simulator.
+This repository still runs one active household per server process. The built-in Life-event Repertoire is intentionally small, and trusted custom repertoire/behavior modules must currently be registered programmatically rather than loaded as code from template files. Legacy static scenarios remain available outside Household Template mode. The project does not yet connect to MQTT, Matter, Home Assistant, authentication, RBAC, or multiple concurrently persisted homes.
 
 ## API Surface
 

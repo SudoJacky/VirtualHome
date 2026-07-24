@@ -141,21 +141,21 @@ describe('home memory reasoning flow', () => {
 
     expect(reasoning.title).toBe('Probable household size');
     expect(reasoning.inputs).toEqual([
-      { label: 'Estimate', value: '3 residents' },
+      { label: 'Estimate', value: '1 resident' },
       { label: 'Lower bound', value: '1' },
-      { label: 'Distribution', value: '1:16%/2:22%/3:28%/4:19%/5:16%' },
+      { label: 'Distribution', value: '1:34%/2:18%/3:32%/4:12%/5:5%' },
       { label: 'Concurrent rooms', value: '1' },
       { label: 'Sleep zones', value: '0' },
       { label: 'Shared sleep candidate', value: 'none' },
       { label: 'Routine clusters', value: '4' },
       { label: 'Meaningful rooms', value: '4' },
-      { label: 'Weighted evidence', value: '2.6' },
-      { label: 'Behavior episodes', value: '4' },
+      { label: 'Weighted evidence', value: '1' },
+      { label: 'Behavior episodes', value: '1' },
       { label: 'Weak environment ratio', value: '0%' }
     ]);
     expect(reasoning.rule).toBe('Sparse or non-overlapping activity keeps the lower bound at 1 while routine clusters shape the probability distribution.');
-    expect(reasoning.result).toContain('Estimated 3 residents');
-    expect(reasoning.result).toContain('Distribution 1:16%, 2:22%, 3:28%, 4:19%, 5:16%');
+    expect(reasoning.result).toContain('Estimated 1 resident');
+    expect(reasoning.result).toContain('Distribution 1:34%, 2:18%, 3:32%, 4:12%, 5:5%');
     expect(reasoning.steps.map((step) => step.label)).toEqual([
       'Find concurrent lower bound',
       'Collect stable resident signals',
@@ -175,8 +175,8 @@ describe('home memory reasoning flow', () => {
     expect(trace.conclusion).toEqual({
       label: 'Probable household size',
       type: 'household_size',
-      confidence: '56%',
-      summary: expect.stringContaining('suggests 3 residents')
+      confidence: '62%',
+      summary: expect.stringContaining('suggests 1 resident')
     });
     expect(trace.sections.map((section) => section.title)).toEqual([
       'Observed conclusion',
@@ -193,16 +193,16 @@ describe('home memory reasoning flow', () => {
       { label: 'Environment weak-context ratio', value: '0%', note: 'High ratios cap resident-count confidence.' }
     ]));
     expect(trace.sections.find((section) => section.title === 'Candidate scoring')?.rows).toEqual(expect.arrayContaining([
-      expect.objectContaining({ label: '3 residents', value: '28%' }),
-      expect.objectContaining({ label: '2 residents', value: '22%' })
+      expect.objectContaining({ label: '1 resident', value: '34%' }),
+      expect.objectContaining({ label: '3 residents', value: '32%' })
     ]));
     expect(trace.sections.find((section) => section.title === 'Score ledger')?.rows).toEqual(expect.arrayContaining([
-      expect.objectContaining({ label: '3 residents total', value: expect.any(String), note: expect.stringContaining('probability 28%') }),
-      expect.objectContaining({ label: '3R Base score', value: '+1', note: '1' }),
-      expect.objectContaining({ label: '3R Routine estimate distance', note: expect.stringContaining('routineEstimate') })
+      expect.objectContaining({ label: '1 resident total', value: expect.any(String), note: expect.stringContaining('probability 34%') }),
+      expect.objectContaining({ label: '1R Base score', value: '+1', note: '1' }),
+      expect.objectContaining({ label: '1R Routine estimate distance', note: expect.stringContaining('routineEstimate') })
     ]));
     expect(trace.sections.find((section) => section.title === 'Confidence calculation')?.rows).toEqual(expect.arrayContaining([
-      { label: 'Final confidence', value: '56%', note: 'The UI should treat this as probabilistic, not ground truth.' }
+      { label: 'Final confidence', value: '62%', note: 'The UI should treat this as probabilistic, not ground truth.' }
     ]));
   });
 

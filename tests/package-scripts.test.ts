@@ -35,6 +35,24 @@ describe('package scripts', () => {
     expect(packageJson.scripts?.['memory:dataset']).toBe('tsx src/sim/evaluation/homeMemoryDataset.ts');
   });
 
+  it('defines a split-safe Home Memory benchmark command', () => {
+    const packageJson = JSON.parse(readFileSync(path.resolve('package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+
+    expect(packageJson.scripts?.['memory:benchmark']).toBe('tsx src/sim/evaluation/homeMemoryBenchmark.ts');
+  });
+
+  it('defines a quantitative Home Memory benchmark evaluator command', () => {
+    const packageJson = JSON.parse(readFileSync(path.resolve('package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+
+    expect(packageJson.scripts?.['memory:benchmark:evaluate']).toBe(
+      'tsx src/sim/evaluation/homeMemoryBenchmarkEvaluator.ts'
+    );
+  });
+
   it('defines a Home Memory rebuild command for persistent stores', () => {
     const packageJson = JSON.parse(readFileSync(path.resolve('package.json'), 'utf8')) as {
       scripts?: Record<string, string>;

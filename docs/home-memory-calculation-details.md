@@ -121,7 +121,7 @@ active(value) =
 
 | 条件 | capability | active 计算 | 为什么 |
 | --- | --- | --- | --- |
-| `field` 属于 `battery/batterylevel/firmware/health/lastseen/online/rssi/signal` | `system_health` | false | 系统健康是事实，不代表家庭行为 |
+| `field` 属于系统、质量或生命周期元数据，如 `battery/batterypercent/confidence/online/latencyms/remainingmin/lifecyclephase/openminutes` | `system_health` | false | 这些字段保留事实，但不代表一次新的家庭行为 |
 | `deviceType` 含 `lock` 或 `field == lock` | `access_control` | `active(value)` | 门锁/门禁是入户活动强信号 |
 | `deviceType` 含 `motion/presence`，或 `field` 是 `motion/occupancy/occupied/presence`，或包含 `peoplecount/personcount/occupancycount` | `presence_detection` | `active(value)` | 表示有人或占用 |
 | `deviceType` 含 `sleep`，或 `field` 是 `inbed/asleep/sleeping` | `sleep_context` | `active(value)` | 表示睡眠或在床上下文 |
@@ -144,7 +144,7 @@ active(value) =
 | 优先级 | 条件 | category | strength | baseWeight | 原因 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `capability == system_health` | `system_status` | `ignored` | 0 | 系统遥测只存事实，不参与画像 |
-| 2 | `access_control && active && door unlock` | `human_activity` | `strong` | 1.00 | 门锁解锁是直接人类活动信号 |
+| 2 | `access_control && door unlock`，包括 `locked=false` | `human_activity` | `strong` | 1.00 | 门锁解锁是直接人类活动信号；`locked=false` 不会因 active=false 被漏掉 |
 | 3 | `climate_control && active` | `device_usage` | `medium` | 0.55 | 空调/暖通表示设备使用，但不一定是直接人类活动 |
 | 4 | `power_usage && active && field in power/state && value on/true` | `device_usage` | `strong` | 0.90 | 电源打开是强设备使用证据 |
 | 5 | `presence_detection && active` | `human_activity` | `medium` | 0.55 | 运动/占用是中等强度存在信号 |
@@ -198,10 +198,13 @@ else:
 公式：
 
 ```text
-profileWeight = meaningfulChange ? baseWeight : 0
+sourceConfidence = clamp01(source event 的 confidence)，缺失时为 1
+profileWeight = meaningfulChange
+  ? round3(baseWeight * sourceConfidence)
+  : 0
 ```
 
-为什么这样算：重复遥测仍会保存成事实，但不继续增加画像权重，避免同一个状态反复上报导致置信度虚高。
+为什么这样算：重复遥测仍会保存成事实，但不继续增加画像权重；低质量 source event 的所有业务测量按同一个 confidence 降权。`confidence` 自身属于 system status，不能再次成为画像证据。
 
 ## 4. MemoryEvidence 生成
 
@@ -210,6 +213,7 @@ profileWeight = meaningfulChange ? baseWeight : 0
 ```text
 MemoryEvidence = {
   ...event identity fields,
+  sourceConfidence?,
   timeBucket,
   evidenceCategory: classification.category,
   evidenceStrength: classification.strength,
@@ -376,6 +380,19 @@ meaningfulRooms += roomId
 ```
 
 为什么这样算：长期画像不能只看最近 50 条事件。日/周摘要保留长窗口活动覆盖，尤其用于人数估计和日常节律。
+
+### 6.4 长窗口 pattern 计数
+
+行为 pattern 只在满足以下条件时累计：
+
+```text
+evidence.meaningfulChange == true
+profileWeight > 0
+activation rule => previous value inactive and next value active
+same pattern + same sourceEventId => count once
+```
+
+门锁解锁等反向状态使用显式状态转换；stove、range hood、washer、motion、sleep 等 active pattern 使用 inactive→active 边沿。这样同一次 source event 展开的多个字段、以及 episode 内连续变化的功率遥测，不会被当作多次独立行为。
 
 ## 7. 低层 Episode
 
@@ -882,21 +899,31 @@ meaningfulRooms = rooms where
   or room in longWindowRooms
 ```
 
-### 12.3 并发活动下界
+### 12.3 直接人数下界和重叠 occupancy
 
-把事件按 10 分钟窗口分组：
+硬下界只使用直接人数和其它独立强证据。直接人数来自字段历史：
 
 ```text
-minute = hour * 60 + minute
-windowStart = floor(minute / 10) * 10
-windowKey = `${date}:${HH(windowStart)}:${MM(windowStart)}`
-roomsInWindow = unique(roomId)
-strongestWindow = window with max roomsInWindow.length, tie by earlier key
+directCount = max numericMax where field includes
+  occupancyCount / personCount / peopleCount / sleeperCount
 
-concurrentLowerBound = clampResidentCount(roomsInWindow.length)
+concurrentLowerBound = directCount exists
+  ? clampResidentCount(directCount)
+  : 1
 ```
 
-为什么 10 分钟：同一 10 分钟内多房间强活动可以作为最低人数线索；窗口太短会漏掉设备上报延迟，太长会把连续单人活动误认为并发。
+多房间并发作为软特征，使用完整 `occupancy` episode 的时间区间重叠：
+
+```text
+for each occupancy episode start:
+  activeRooms = unique(roomId where
+    episode.startedSimTime <= start
+    and (episode has no end or episode.endedSimTime >= start))
+
+strongestOverlap = candidate with max activeRooms
+```
+
+为什么不再按“10 分钟内有事件”设置下界：连续单人移动、自动化设备和传感器上报延迟都会制造假并发。重叠 occupancy 比普通事件接近同时在场，但仍可能包含传感器滞留或宠物活动，因此只调整候选人数分布；只有 peopleCount 等直接人数才提高这一项的硬下界。最强重叠时刻仍向下取到 10 分钟刻度，仅用于 UI 和 trace 展示。
 
 ### 12.4 睡眠区域
 
@@ -1415,7 +1442,7 @@ environmentOnlyCapViolations = count hypothesis where
 | return_home window | 30 min | 入户后续活动 | 覆盖进门后短流程 |
 | meal_preparation window | 45 min | 备餐上下文 | 备餐持续时间更长 |
 | climate_response window | 30 min | 环境到空调响应 | 限制同房间近因关系 |
-| household concurrent window | 10 min | 多房间并发 | 平衡上报延迟和误串联 |
+| occupancy overlap display bucket | 10 min | 并发 trace 的时间标签 | 仅用于展示；推断使用 episode 区间的精确重叠 |
 | CO2 anomaly threshold | 900 | 环境异常候选 | 作为弱空气质量异常信号 |
 | PM2.5 anomaly threshold | 35 | 环境异常候选 | 作为弱空气质量异常信号 |
 | environment-only cap violation threshold | 0.3 | 可靠性检查 | 仅环境证据不应高置信 |
@@ -1427,7 +1454,7 @@ environmentOnlyCapViolations = count hypothesis where
 ## 18. 设计原则总结
 
 1. 事实层确定性：同一批设备值事件重放，得到同一份 HomeMemory。
-2. 权重只表达画像贡献：重复遥测和系统状态保留事实，但不增加画像权重。
+2. 权重只表达画像贡献：重复遥测、质量字段和生命周期元数据保留事实，但不增加画像权重；source confidence 只缩放同源业务测量。
 3. 环境上下文弱化：温湿度、CO2、PM2.5 等可以解释背景，但不能单独推出家庭行为。
 4. 小样本强制降置信度：所有 profile hypothesis 都经过样本量上限。
 5. household size 输出概率分布：人数估计保留下界、候选概率和 score ledger，不输出绝对真值。

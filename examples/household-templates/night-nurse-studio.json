@@ -1,0 +1,106 @@
+{
+  "schemaVersion": "virtualhome.household/v1",
+  "id": "night_nurse_studio",
+  "version": "1.0.0",
+  "name": "Night Nurse Studio",
+  "home": {
+    "building": { "id": "night_nurse_home", "name": "Night Nurse Home" },
+    "floors": [
+      {
+        "id": "floor_main",
+        "name": "Main Floor",
+        "level": 1,
+        "rooms": [
+          { "id": "foyer_a", "name": "Foyer", "type": "entry", "connectedRooms": ["lounge_a"], "purposes": ["arrival"] },
+          { "id": "lounge_a", "name": "Lounge", "type": "living", "connectedRooms": ["foyer_a", "sleeping_a", "office_a", "galley_a"], "purposes": ["relaxing", "dining"] },
+          { "id": "sleeping_a", "name": "Sleeping Room", "type": "bedroom", "connectedRooms": ["lounge_a"], "purposes": ["sleeping"] },
+          { "id": "office_a", "name": "Office Nook", "type": "work", "connectedRooms": ["lounge_a"], "purposes": ["working"] },
+          { "id": "galley_a", "name": "Galley", "type": "utility", "connectedRooms": ["lounge_a"], "purposes": ["food_preparation"] }
+        ],
+        "fixtures": {
+          "devices": [
+            { "id": "lock_front_custom", "roomId": "foyer_a", "type": "door_lock", "name": "Front Lock", "metrics": ["locked"] },
+            { "id": "cold_box_custom", "roomId": "galley_a", "type": "fridge", "name": "Cold Box", "metrics": ["door_open", "power_w"] },
+            { "id": "sleep_pad_custom", "roomId": "sleeping_a", "type": "sleep_sensor", "name": "Sleep Pad", "metrics": ["in_bed"] }
+          ]
+        }
+      }
+    ],
+    "topology": {
+      "connections": [
+        { "from": "foyer_a", "to": "lounge_a" },
+        { "from": "lounge_a", "to": "sleeping_a" },
+        { "from": "lounge_a", "to": "office_a" },
+        { "from": "lounge_a", "to": "galley_a" }
+      ]
+    }
+  },
+  "residents": [
+    {
+      "id": "resident_nurse",
+      "kind": "human",
+      "role": "commuter nurse",
+      "homeMember": true,
+      "profile": {
+        "role": "commuter",
+        "ageBand": "adult",
+        "chronotype": "late",
+        "sleepNeedHours": 7.5,
+        "mealRegularity": 0.65,
+        "chorePreference": 0.45,
+        "riskSensitivity": 0.7,
+        "sociability": 0.55,
+        "mobility": "active",
+        "primaryRooms": ["sleeping_a", "lounge_a"],
+        "deviceFamiliarity": { "lock_front_custom": 0.9 },
+        "careResponsibilities": []
+      }
+    }
+  ],
+  "environment": {
+    "timezone": "Asia/Singapore",
+    "utcOffset": "+08:00",
+    "weather": {
+      "mode": "fixed",
+      "condition": "heavy_rain",
+      "outdoorTemperatureC": 27,
+      "precipitationMm": 18
+    }
+  },
+  "repertoires": [
+    { "id": "core_household", "version": "1.0.0" }
+  ],
+  "behaviors": [
+    { "id": "core_device_physics", "version": "1.0.0" }
+  ],
+  "automation": { "id": "core_household_automation", "version": "1.0.0" },
+  "habits": [
+    {
+      "id": "return_after_shift",
+      "repertoire": "core_household",
+      "activity": "return_home",
+      "residentIds": ["resident_nurse"],
+      "recurrence": "workdays",
+      "window": { "start": "07:20", "end": "07:40" },
+      "roomPurpose": "arrival"
+    },
+    {
+      "id": "morning_meal",
+      "repertoire": "core_household",
+      "activity": "meal",
+      "residentIds": ["resident_nurse"],
+      "recurrence": "daily",
+      "window": { "start": "08:00", "end": "08:15" },
+      "roomPurpose": "dining"
+    },
+    {
+      "id": "day_sleep",
+      "repertoire": "core_household",
+      "activity": "sleep",
+      "residentIds": ["resident_nurse"],
+      "recurrence": "daily",
+      "window": { "start": "09:00", "end": "09:10" },
+      "roomPurpose": "sleeping"
+    }
+  ]
+}

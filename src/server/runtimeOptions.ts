@@ -20,6 +20,9 @@ export function resolveServerRuntimeOptions(root: string, env: NodeJS.ProcessEnv
       homeMemoryDatabasePath: resolvePath(root, env.VIRTUALHOME_HOME_MEMORY_DATABASE_PATH ?? path.join('data', 'home-memory.db')),
       agentProfileDatabasePath: resolvePath(root, env.VIRTUALHOME_AGENT_PROFILE_DATABASE_PATH ?? path.join('data', 'agent-profile.db')),
       homeDefinitionPath: env.VIRTUALHOME_HOME_DEFINITION,
+      householdTemplatePath: env.VIRTUALHOME_HOUSEHOLD_TEMPLATE
+        ? resolvePath(root, env.VIRTUALHOME_HOUSEHOLD_TEMPLATE)
+        : undefined,
       homeMemoryLlm,
       telemetryRetentionEvents,
       autoTick: true,

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { DeviceValueEvent } from '../src/web/deviceEventSocket';
-import { extractHomeBehaviorEpisodes } from '../src/web/homeBehaviorEpisodes';
+import { extractHomeBehaviorEpisodes, type HomeBehaviorEpisode } from '../src/web/homeBehaviorEpisodes';
 import { extractHomeInferenceFeatures } from '../src/web/homeInferenceFeatures';
 import { createHomeMemory, reduceDeviceEvents } from '../src/web/homeMemoryModel';
 
@@ -25,7 +25,7 @@ describe('home memory inference features', () => {
       type: 'device_coupling',
       strength: 'strong'
     });
-    expect(byId.get('feature:child_bedroom_sleep_around_21')).toMatchObject({
+    expect(byId.get('feature:early_sleep_zone_around_21')).toMatchObject({
       type: 'recurring_time_window',
       strength: 'strong'
     });
@@ -50,7 +50,34 @@ describe('home memory inference features', () => {
     const serialized = JSON.stringify(features);
 
     expect(serialized).not.toMatch(/student|adult_|child_1|persona|three-person|three residents/i);
-    expect(features.find((feature) => feature.id === 'feature:child_bedroom_sleep_around_21')?.summary)
-      .toMatch(/child_bedroom.*21/i);
+    expect(features.find((feature) => feature.id === 'feature:early_sleep_zone_around_21')?.summary)
+      .toMatch(/early sleep-zone.*21/i);
   }, 60_000);
+
+  it('recognizes stove and range-hood coupling without fixed device ids', () => {
+    const cookingEpisode: HomeBehaviorEpisode = {
+      id: 'behavior:cooking_episode:custom',
+      kind: 'cooking_episode',
+      roomIds: ['kitchen'],
+      deviceIds: ['cooktop_custom', 'ventilator_custom'],
+      startedAt: '2026-06-22T18:00:00',
+      endedAt: '2026-06-22T18:20:00',
+      durationMinutes: 20,
+      features: {
+        hasStove: true,
+        hasRangeHood: true,
+        deviceCount: 2
+      },
+      evidenceIds: ['cooktop_on', 'ventilator_on']
+    };
+
+    const features = extractHomeInferenceFeatures(createHomeMemory(), [cookingEpisode]);
+
+    expect(features).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'feature:stove_range_hood_coupling',
+        type: 'device_coupling'
+      })
+    ]));
+  });
 });

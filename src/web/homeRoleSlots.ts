@@ -27,7 +27,7 @@ export function extractHomeRoleSlots(memory: HomeMemory, features: HomeInference
   const byId = new Map(features.map((feature) => [feature.id, feature]));
   const slots: HomeRoleSlot[] = [];
 
-  const childSleep = byId.get('feature:child_bedroom_sleep_around_21');
+  const childSleep = byId.get('feature:early_sleep_zone_around_21');
   if (childSleep) {
     slots.push(roleSlot({
       kind: 'child_sleep_slot',

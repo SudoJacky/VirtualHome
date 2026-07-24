@@ -21,7 +21,7 @@ describe('home memory role slots', () => {
 
     expect(byKind.get('child_sleep_slot')).toMatchObject({
       confidence: expect.any(Number),
-      supportingFeatureIds: expect.arrayContaining(['feature:child_bedroom_sleep_around_21'])
+      supportingFeatureIds: expect.arrayContaining(['feature:early_sleep_zone_around_21'])
     });
     expect(byKind.get('main_sleep_slot')).toMatchObject({
       confidence: expect.any(Number)
@@ -52,7 +52,7 @@ describe('home memory role slots', () => {
     });
     expect(byKind.get('child_activity_slot')).toMatchObject({
       supportingFeatureIds: expect.arrayContaining([
-        'feature:child_bedroom_sleep_around_21',
+        'feature:early_sleep_zone_around_21',
         'feature:door_unlock_lock_pairing'
       ])
     });

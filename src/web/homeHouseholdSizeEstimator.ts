@@ -63,6 +63,7 @@ export interface HouseholdSizeEstimate {
     environmentContextRatio: number;
     concurrentActivity: {
       lowerBound: ResidentCount;
+      directOccupantCount: ResidentCount | null;
       roomCount: number;
       rooms: string[];
       windowKey: string | null;
@@ -95,6 +96,7 @@ const RESIDENT_COUNTS: ResidentCount[] = [1, 2, 3, 4, 5];
 export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSizeEstimate {
   const meaningfulEvents = householdSizeEvidence(memory.recentEvents);
   const episodes = behaviorEpisodes(memory);
+  const semanticEpisodeFacts = Object.values(memory.episodeFacts);
   const dailySummaries = Object.values(memory.dailySummaries);
   const weeklySummaries = Object.values(memory.weeklySummaries);
   const longWindowRooms = sortedUnique([
@@ -109,8 +111,10 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
     ...meaningfulRooms.map((room) => room.roomId),
     ...longWindowRooms
   ]);
-  const meaningfulEvidenceWeight = roundWeight(meaningfulRooms.reduce((total, room) => total + meaningfulWeightOfRoom(room), 0));
-  const concurrentActivity = estimateConcurrentActivity(meaningfulEvents);
+  const meaningfulEvidenceWeight = semanticEpisodeFacts.length > 0
+    ? episodeDaySampleCount(memory)
+    : roundWeight(meaningfulRooms.reduce((total, room) => total + meaningfulWeightOfRoom(room), 0));
+  const concurrentActivity = estimateConcurrentActivity(memory, episodes);
   const recurringSleepZones = estimateRecurringSleepZones(memory, meaningfulEvents, episodes);
   const routineClusters = estimateRoutineClusters(memory, meaningfulEvents, recurringSleepZones.rooms);
   const residentSlots = estimateResidentSlots(memory);
@@ -128,7 +132,9 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
     lowerBound,
     meaningfulRoomCount: meaningfulRoomIds.length,
     meaningfulEvidenceWeight,
-    behaviorEpisodeCount: episodes.length,
+    behaviorEpisodeCount: semanticEpisodeFacts.length > 0
+      ? semanticEpisodeFacts.length
+      : episodes.length,
     observedDayCount: dailySummaries.length,
     observedWeekCount: weeklySummaries.length,
     environmentContextRatio,
@@ -144,7 +150,9 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
   const estimate = mostLikelyResidentCount(distribution);
   const confidenceInput = {
     meaningfulEvidenceWeight,
-    behaviorEpisodeCount: episodes.length,
+    behaviorEpisodeCount: semanticEpisodeFacts.length > 0
+      ? semanticEpisodeFacts.length
+      : episodes.length,
     observedDayCount: dailySummaries.length,
     observedWeekCount: weeklySummaries.length,
     environmentContextRatio,
@@ -168,7 +176,9 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
       meaningfulRoomCount: meaningfulRoomIds.length,
       longWindowRoomCount: longWindowRooms.length,
       meaningfulEvidenceWeight,
-      behaviorEpisodeCount: episodes.length,
+      behaviorEpisodeCount: semanticEpisodeFacts.length > 0
+        ? semanticEpisodeFacts.length
+        : episodes.length,
       observedDayCount: dailySummaries.length,
       observedWeekCount: weeklySummaries.length,
       environmentContextRatio,
@@ -183,26 +193,36 @@ export function estimateHouseholdSizeFromMemory(memory: HomeMemory): HouseholdSi
   };
 }
 
-function estimateConcurrentActivity(events: MemoryEvidence[]): HouseholdSizeEstimate['features']['concurrentActivity'] {
-  const windows = new Map<string, Set<string>>();
-
-  for (const event of events) {
-    const minute = minuteOfDay(event.simTime);
-    const date = event.simTime.slice(0, 10);
-    const windowStart = Math.floor(minute / 10) * 10;
-    const windowKey = `${date}:${String(Math.floor(windowStart / 60)).padStart(2, '0')}:${String(windowStart % 60).padStart(2, '0')}`;
-    const rooms = windows.get(windowKey) ?? new Set<string>();
-    rooms.add(event.roomId);
-    windows.set(windowKey, rooms);
-  }
-
-  const strongest = [...windows.entries()]
-    .map(([windowKey, rooms]) => ({ windowKey, rooms: sortedUnique([...rooms]) }))
-    .sort((left, right) => right.rooms.length - left.rooms.length || left.windowKey.localeCompare(right.windowKey))[0];
+function estimateConcurrentActivity(
+  memory: HomeMemory,
+  episodes: MemoryEpisode[]
+): HouseholdSizeEstimate['features']['concurrentActivity'] {
+  const occupancyEpisodes = episodes.filter((episode) => episode.kind === 'occupancy');
+  const directCountValue = Math.max(
+    0,
+    ...Object.values(memory.fields)
+      .filter((field) => isDirectOccupantCountField(field.field))
+      .map(maxNumericValue)
+  );
+  const directOccupantCount = directCountValue > 0
+    ? clampResidentCount(directCountValue)
+    : null;
+  const strongest = sortedUnique(occupancyEpisodes.map((episode) => episode.startedSimTime))
+    .map((startedSimTime) => ({
+      startedSimTime,
+      rooms: sortedUnique(occupancyEpisodes
+        .filter((episode) => (
+          episode.startedSimTime <= startedSimTime &&
+          (episode.endedSimTime === undefined || episode.endedSimTime >= startedSimTime)
+        ))
+        .map((episode) => episode.roomId))
+    }))
+    .sort((left, right) => right.rooms.length - left.rooms.length || left.startedSimTime.localeCompare(right.startedSimTime))[0];
 
   if (!strongest) {
     return {
-      lowerBound: 1,
+      lowerBound: directOccupantCount ?? 1,
+      directOccupantCount,
       roomCount: 0,
       rooms: [],
       windowKey: null
@@ -210,11 +230,14 @@ function estimateConcurrentActivity(events: MemoryEvidence[]): HouseholdSizeEsti
   }
 
   const roomCount = strongest.rooms.length;
+  const minute = minuteOfDay(strongest.startedSimTime);
+  const windowStart = Math.floor(minute / 10) * 10;
   return {
-    lowerBound: clampResidentCount(roomCount),
+    lowerBound: directOccupantCount ?? 1,
+    directOccupantCount,
     roomCount,
     rooms: strongest.rooms,
-    windowKey: strongest.windowKey
+    windowKey: `${strongest.startedSimTime.slice(0, 10)}:${String(Math.floor(windowStart / 60)).padStart(2, '0')}:${String(windowStart % 60).padStart(2, '0')}`
   };
 }
 
@@ -232,7 +255,10 @@ function estimateRecurringSleepZones(
       .map((episode) => episode.roomId),
     ...Object.values(memory.fields)
       .filter((field) => isSleepField(field.deviceType, field.field) && field.trueCount && field.trueCount > 0)
-      .map((field) => field.roomId)
+      .map((field) => field.roomId),
+    ...Object.values(memory.episodeFacts)
+      .filter((episode) => episode.kind === 'sleep_episode')
+      .flatMap((episode) => episode.roomIds)
   ]);
 
   return {
@@ -277,6 +303,12 @@ function estimateRoutineClusters(
   if (Object.values(memory.devices).some((device) => device.roomId === 'study' && device.profileEvidenceWeight > 0)) {
     clusters.add('study_or_work_activity');
   }
+  for (const episode of Object.values(memory.episodeFacts)) {
+    if (episode.kind === 'cooking_episode') clusters.add('meal_activity');
+    if (episode.kind === 'work_study_episode') clusters.add('study_or_work_activity');
+    if (episode.kind === 'media_episode') clusters.add('shared_evening_activity');
+    if (episode.kind === 'door_access_episode') clusters.add('entry_activity');
+  }
 
   return {
     count: clusters.size,
@@ -286,8 +318,11 @@ function estimateRoutineClusters(
 
 function estimateResidentSlots(memory: HomeMemory): HouseholdSizeEstimate['features']['residentSlots'] {
   const slots = new Set<string>();
+  const sleepRooms = sortedUnique(Object.values(memory.episodeFacts)
+    .filter((episode) => episode.kind === 'sleep_episode')
+    .flatMap((episode) => episode.roomIds));
   for (const signal of memory.semanticSignals) {
-    if (signal.type === 'sleep_signal') {
+    if (signal.type === 'sleep_signal' && sleepRooms.length === 0) {
       slots.add(signal.roomId.includes('child') ? 'child_sleep_slot' : 'main_sleep_slot');
     }
     if (signal.type === 'work_study_signal') {
@@ -299,6 +334,25 @@ function estimateResidentSlots(memory: HomeMemory): HouseholdSizeEstimate['featu
     if (signal.type === 'presence_signal' && signal.timeBucket === 'daytime') {
       slots.add('daytime_home_slot');
     }
+  }
+  for (const roomId of sleepRooms) {
+    slots.add(
+      (memory.patternCandidates['child-sleep-start']?.supportDays ?? 0) > 0 &&
+      Object.values(memory.episodeFacts).some((episode) => (
+        episode.kind === 'sleep_episode' &&
+        episode.roomIds.includes(roomId) &&
+        minuteOfDay(episode.startedSimTime) >= 20 * 60 + 30 &&
+        minuteOfDay(episode.startedSimTime) <= 22 * 60
+      ))
+        ? `early_sleep_slot:${roomId}`
+        : `sleep_slot:${roomId}`
+    );
+  }
+  if (Object.values(memory.episodeFacts).some((episode) => episode.kind === 'work_study_episode')) {
+    slots.add('remote_work_slot');
+  }
+  if (Object.values(memory.episodeFacts).some((episode) => episode.kind === 'media_episode')) {
+    slots.add('shared_evening_slot');
   }
 
   const sortedSlots = [...slots].sort((left, right) => left.localeCompare(right));
@@ -594,8 +648,11 @@ function createEvidenceText(
   environmentContextRatio: number
 ): string[] {
   const evidence: string[] = [];
+  if (concurrentActivity.directOccupantCount && concurrentActivity.directOccupantCount > 1) {
+    evidence.push(`${concurrentActivity.directOccupantCount}-person direct occupancy lower bound`);
+  }
   if (concurrentActivity.roomCount > 1) {
-    evidence.push(`${concurrentActivity.roomCount}-room concurrent activity lower bound`);
+    evidence.push(`${concurrentActivity.roomCount}-room overlapping occupancy candidate`);
   }
   if (sleepZones.count > 0) {
     evidence.push(`${sleepZones.count} recurring sleep zone${sleepZones.count === 1 ? '' : 's'}`);
@@ -640,6 +697,14 @@ function householdSizeEvidence(events: MemoryEvidence[]): MemoryEvidence[] {
 
 function behaviorEpisodes(memory: HomeMemory): MemoryEpisode[] {
   return Object.values(memory.episodes);
+}
+
+function episodeDaySampleCount(memory: HomeMemory): number {
+  return new Set(Object.values(memory.episodeFacts).flatMap((episode) => (
+    episode.roomIds.map((roomId) => (
+      `${episode.kind}:${episode.startedSimTime.slice(0, 10)}:${roomId}`
+    ))
+  ))).size;
 }
 
 function meaningfulWeightOfRoom(room: RoomMemory): number {
@@ -688,6 +753,16 @@ function isSharedOccupancyField(field: string): boolean {
     normalizedField.includes('sleepercount') ||
     normalizedField.includes('bedside') ||
     normalizedField.includes('side')
+  );
+}
+
+function isDirectOccupantCountField(field: string): boolean {
+  const normalizedField = normalize(field);
+  return (
+    normalizedField.includes('occupancycount') ||
+    normalizedField.includes('personcount') ||
+    normalizedField.includes('peoplecount') ||
+    normalizedField.includes('sleepercount')
   );
 }
 

@@ -5,6 +5,17 @@ import {
   type EvidenceCategory,
   type EvidenceStrength
 } from './homeEvidenceClassifier';
+import {
+  createHomeDerivedFeatureState,
+  refreshHomePatternCandidates,
+  reduceHomeObservationFeatures,
+  type HomeDerivedFeatureState
+} from './homeDerivedFeatureStore';
+import {
+  classifyHomeObservationField,
+  reconstructHomeObservations,
+  type HomeObservation
+} from './homeObservation';
 
 export type TimeBucket = 'morning' | 'daytime' | 'evening' | 'night';
 export type MemoryEpisodeKind = 'occupancy' | 'contact_activity' | 'device_usage' | 'appliance_usage';
@@ -28,6 +39,7 @@ export interface MemoryEvidence {
   deviceType: string;
   field: string;
   value: DeviceEventValue;
+  sourceConfidence?: number;
   timeBucket: TimeBucket;
   evidenceCategory: EvidenceCategory;
   evidenceStrength: EvidenceStrength;
@@ -229,7 +241,7 @@ export interface RoomMemory {
   profileEvidenceByCategory: ProfileEvidenceCategoryCounts;
 }
 
-export interface HomeMemory {
+export interface HomeMemory extends HomeDerivedFeatureState {
   homeId: string | null;
   runId: string | null;
   totalEvents: number;
@@ -249,6 +261,7 @@ export interface HomeMemory {
   semanticSignals: SemanticSignal[];
   semanticSignalCount: number;
   semanticSignalCountsByType: SemanticSignalCounts;
+  evidenceFacts: Record<string, MemoryEvidence>;
   recentEvents: MemoryEvidence[];
   profileEventCount: number;
   profileEvidenceWeight: number;
@@ -261,6 +274,7 @@ const SEMANTIC_SIGNAL_LIMIT = 80;
 
 export function createHomeMemory(): HomeMemory {
   return {
+    ...createHomeDerivedFeatureState(),
     homeId: null,
     runId: null,
     totalEvents: 0,
@@ -280,6 +294,7 @@ export function createHomeMemory(): HomeMemory {
     semanticSignals: [],
     semanticSignalCount: 0,
     semanticSignalCountsByType: emptySemanticSignalCounts(),
+    evidenceFacts: {},
     recentEvents: [],
     profileEventCount: 0,
     profileEvidenceWeight: 0,
@@ -307,25 +322,120 @@ export function getTimeBucket(simTime: string): TimeBucket {
 }
 
 export function reduceDeviceEvents(memory: HomeMemory, events: DeviceValueEvent[]): HomeMemory {
-  return events.reduce(reduceDeviceEvent, memory);
+  const reduced = reconstructHomeObservations(events).reduce(
+    (current, observation) => reduceHomeObservation(current, observation, false),
+    memory
+  );
+  return {
+    ...reduced,
+    patternCandidates: refreshHomePatternCandidates(reduced)
+  };
 }
 
 export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): HomeMemory {
+  const observation = reconstructHomeObservations([event])[0];
+  return reduceHomeObservation(memory, observation);
+}
+
+function reduceHomeObservation(
+  memory: HomeMemory,
+  observation: HomeObservation,
+  refreshPatterns = true
+): HomeMemory {
+  const baseMemory = memory.runId !== null && memory.runId !== observation.runId
+    ? createHomeMemory()
+    : memory;
+  const reduced = observation.events.reduce((current, event) => (
+    reduceDeviceEventWithConfidence(
+      current,
+      event,
+      Object.keys(observation.quality).length > 0
+        ? observation.qualityMultiplier
+        : undefined,
+      classifyHomeObservationField(event.field) === 'primary'
+    )
+  ), baseMemory);
+  const observationEvidence = observation.events.flatMap((event) => {
+    if (classifyHomeObservationField(event.field) !== 'primary') {
+      return [];
+    }
+    const item = reduced.fields[getFieldId(event.deviceId, event.field)]?.recentEvents
+      .find((candidate) => candidate.id === event.id);
+    return item ? [item] : [];
+  });
+  const derived = reduceHomeObservationFeatures(
+    reduced,
+    observation,
+    observationEvidence.map((item) => ({
+      id: item.id,
+      profileWeight: item.profileWeight
+    })),
+    refreshPatterns
+  );
+  const referencedEvidenceIds = new Set(
+    Object.values(derived.episodeFacts).flatMap((episode) => episode.evidenceIds)
+  );
+  const evidenceFacts = observationEvidence.reduce((facts, item) => (
+    referencedEvidenceIds.has(item.id)
+      ? { ...facts, [item.id]: item }
+      : facts
+  ), reduced.evidenceFacts);
+  return {
+    ...reduced,
+    ...derived,
+    evidenceFacts
+  };
+}
+
+function reduceDeviceEventWithConfidence(
+  memory: HomeMemory,
+  event: DeviceValueEvent,
+  sourceConfidence: number | undefined,
+  behaviorEligible: boolean
+): HomeMemory {
   const baseMemory = memory.runId !== null && memory.runId !== event.runId ? createHomeMemory() : memory;
   const timeBucket = getTimeBucket(event.simTime);
   const fieldId = getFieldId(event.deviceId, event.field);
   const classification = classifyDeviceEvidence(event);
-  const change = analyzeFieldChange(baseMemory.fields[fieldId], event, classification);
-  const evidence = toEvidence(event, timeBucket, classification, change);
+  const previousField = baseMemory.fields[fieldId];
+  const change = analyzeFieldChange(previousField, event, classification, sourceConfidence);
+  const classifiedEvidence = toEvidence(
+    event,
+    timeBucket,
+    classification,
+    change,
+    sourceConfidence
+  );
+  const evidence = behaviorEligible
+    ? classifiedEvidence
+    : {
+        ...classifiedEvidence,
+        profileWeight: 0,
+        evidenceReason: `${classifiedEvidence.evidenceReason} Retained as Observation metadata, not behavior evidence.`
+      };
   const fieldMemory = updateFieldMemory(baseMemory.fields[fieldId], event, evidence, fieldId);
   const deviceMemory = updateDeviceMemory(baseMemory.devices[event.deviceId], event, evidence, fieldId, timeBucket);
   const roomMemory = updateRoomMemory(baseMemory.rooms[event.roomId], event, evidence, fieldId, timeBucket);
-  const episodeMemory = updateEpisodeMemory(baseMemory, event, evidence, fieldId, timeBucket);
-  const dailySummaries = updateDailySummaries(baseMemory.dailySummaries, event, evidence, fieldId, timeBucket, episodeMemory.startedEpisode);
-  const weeklySummaries = updateWeeklySummaries(baseMemory.weeklySummaries, event, evidence, fieldId, timeBucket, episodeMemory.startedEpisode);
-  const semanticSignals = semanticSignalsForEvidence(event, evidence);
-  const activityEpisodes = updateActivityEpisodes(baseMemory, semanticSignals);
-  const profilePatterns = updateProfilePatterns(baseMemory.profilePatterns, event, evidence);
+  const episodeMemory = behaviorEligible
+    ? updateEpisodeMemory(baseMemory, event, evidence, fieldId, timeBucket)
+    : {
+        episodes: baseMemory.episodes,
+        activeEpisodeIds: baseMemory.activeEpisodeIds,
+        episodeCount: baseMemory.episodeCount
+      };
+  const dailySummaries = behaviorEligible
+    ? updateDailySummaries(baseMemory.dailySummaries, event, evidence, fieldId, timeBucket, episodeMemory.startedEpisode)
+    : baseMemory.dailySummaries;
+  const weeklySummaries = behaviorEligible
+    ? updateWeeklySummaries(baseMemory.weeklySummaries, event, evidence, fieldId, timeBucket, episodeMemory.startedEpisode)
+    : baseMemory.weeklySummaries;
+  const semanticSignals = behaviorEligible ? semanticSignalsForEvidence(event, evidence) : [];
+  const activityEpisodes = behaviorEligible
+    ? updateActivityEpisodes(baseMemory, semanticSignals)
+    : baseMemory.activityEpisodes;
+  const profilePatterns = behaviorEligible
+    ? updateProfilePatterns(baseMemory.profilePatterns, event, evidence, previousField)
+    : baseMemory.profilePatterns;
 
   const nextMemory: HomeMemory = {
     ...baseMemory,
@@ -357,10 +467,18 @@ export function reduceDeviceEvent(memory: HomeMemory, event: DeviceValueEvent): 
     semanticSignals: appendManyBounded(baseMemory.semanticSignals, semanticSignals, SEMANTIC_SIGNAL_LIMIT),
     semanticSignalCount: baseMemory.semanticSignalCount + semanticSignals.length,
     semanticSignalCountsByType: incrementSemanticSignalCounts(baseMemory.semanticSignalCountsByType, semanticSignals),
-    recentEvents: appendBounded(baseMemory.recentEvents, evidence, ROOT_RECENT_LIMIT),
-    profileEventCount: incrementProfileEventCount(baseMemory.profileEventCount, evidence),
-    profileEvidenceWeight: roundWeight(baseMemory.profileEvidenceWeight + evidence.profileWeight),
-    profileEvidenceByCategory: incrementProfileEvidenceCategory(baseMemory.profileEvidenceByCategory, evidence)
+    recentEvents: behaviorEligible
+      ? appendBounded(baseMemory.recentEvents, evidence, ROOT_RECENT_LIMIT)
+      : baseMemory.recentEvents,
+    profileEventCount: behaviorEligible
+      ? incrementProfileEventCount(baseMemory.profileEventCount, evidence)
+      : baseMemory.profileEventCount,
+    profileEvidenceWeight: behaviorEligible
+      ? roundWeight(baseMemory.profileEvidenceWeight + evidence.profileWeight)
+      : baseMemory.profileEvidenceWeight,
+    profileEvidenceByCategory: behaviorEligible
+      ? incrementProfileEvidenceCategory(baseMemory.profileEvidenceByCategory, evidence)
+      : baseMemory.profileEvidenceByCategory
   };
   return {
     ...nextMemory,
@@ -517,7 +635,8 @@ function toEvidence(
   event: DeviceValueEvent,
   timeBucket: TimeBucket,
   classification: ReturnType<typeof classifyDeviceEvidence>,
-  change: FieldChangeAnalysis
+  change: FieldChangeAnalysis,
+  sourceConfidence: number | undefined
 ): MemoryEvidence {
   return {
     id: event.id,
@@ -533,6 +652,7 @@ function toEvidence(
     deviceType: event.deviceType,
     field: event.field,
     value: event.value,
+    ...(sourceConfidence === undefined ? {} : { sourceConfidence }),
     timeBucket,
     evidenceCategory: classification.category,
     evidenceStrength: classification.strength,
@@ -551,6 +671,7 @@ function semanticSignalsForEvidence(event: DeviceValueEvent, evidence: MemoryEvi
 
   const field = normalize(event.field);
   const deviceType = normalize(event.deviceType);
+  const qualityWeight = (weight: number) => roundWeight(weight * (evidence.sourceConfidence ?? 1));
   const signals: SemanticSignal[] = [];
   const add = (type: SemanticSignalType, reason: string, strength = evidence.evidenceStrength, profileWeight = evidence.profileWeight) => {
     signals.push({
@@ -580,11 +701,11 @@ function semanticSignalsForEvidence(event: DeviceValueEvent, evidence: MemoryEvi
   }
 
   if (isAccessSignal(event.roomId, deviceType, field, event.value)) {
-    add('access_signal', `${event.deviceId}.${event.field} indicates access or entry activity.`, 'strong', Math.max(evidence.profileWeight, 0.8));
+    add('access_signal', `${event.deviceId}.${event.field} indicates access or entry activity.`, 'strong', Math.max(evidence.profileWeight, qualityWeight(0.8)));
   }
 
   if (evidence.capability.type === 'sleep_context' && evidence.capability.active) {
-    add('sleep_signal', `${event.deviceId}.${event.field} indicates sleep or in-bed context.`, evidence.evidenceStrength === 'ignored' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, 0.6));
+    add('sleep_signal', `${event.deviceId}.${event.field} indicates sleep or in-bed context.`, evidence.evidenceStrength === 'ignored' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, qualityWeight(0.6)));
     return signals;
   }
 
@@ -594,27 +715,27 @@ function semanticSignalsForEvidence(event: DeviceValueEvent, evidence: MemoryEvi
   }
 
   if (isWaterSignal(deviceType, field, event.value)) {
-    add('water_signal', `${event.deviceId}.${event.field} indicates active water usage.`, evidence.evidenceStrength === 'weak' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, 0.45));
+    add('water_signal', `${event.deviceId}.${event.field} indicates active water usage.`, evidence.evidenceStrength === 'weak' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, qualityWeight(0.45)));
   }
 
   if (evidence.capability.type === 'climate_control' && evidence.capability.active) {
-    add('climate_signal', `${event.deviceId}.${event.field} indicates active climate control.`, evidence.evidenceStrength === 'weak' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, 0.45));
+    add('climate_signal', `${event.deviceId}.${event.field} indicates active climate control.`, evidence.evidenceStrength === 'weak' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, qualityWeight(0.45)));
   }
 
   if (isCookingSignal(event.roomId, deviceType, field, event.value)) {
-    add('cooking_signal', `${event.deviceId}.${event.field} contributes kitchen or cooking activity context.`, evidence.evidenceStrength === 'weak' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, 0.45));
+    add('cooking_signal', `${event.deviceId}.${event.field} contributes kitchen or cooking activity context.`, evidence.evidenceStrength === 'weak' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, qualityWeight(0.45)));
   }
 
   if (isMediaSignal(deviceType, field, event.value)) {
-    add('media_signal', `${event.deviceId}.${event.field} indicates media or shared entertainment activity.`, evidence.evidenceStrength === 'weak' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, 0.45));
+    add('media_signal', `${event.deviceId}.${event.field} indicates media or shared entertainment activity.`, evidence.evidenceStrength === 'weak' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, qualityWeight(0.45)));
   }
 
   if (isWorkStudySignal(event.roomId, deviceType, field, event.value)) {
-    add('work_study_signal', `${event.deviceId}.${event.field} contributes work or study activity context.`, evidence.evidenceStrength === 'weak' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, 0.35));
+    add('work_study_signal', `${event.deviceId}.${event.field} contributes work or study activity context.`, evidence.evidenceStrength === 'weak' ? 'medium' : evidence.evidenceStrength, Math.max(evidence.profileWeight, qualityWeight(0.35)));
   }
 
   if (isLightingSignal(deviceType, field, event.value)) {
-    add('lighting_signal', `${event.deviceId}.${event.field} is lighting context for nearby activity.`, evidence.evidenceStrength === 'strong' ? 'medium' : evidence.evidenceStrength, Math.min(Math.max(evidence.profileWeight, 0.2), 0.45));
+    add('lighting_signal', `${event.deviceId}.${event.field} is lighting context for nearby activity.`, evidence.evidenceStrength === 'strong' ? 'medium' : evidence.evidenceStrength, Math.min(Math.max(evidence.profileWeight, qualityWeight(0.2)), qualityWeight(0.45)));
   }
 
   if (evidence.evidenceCategory === 'human_activity' && !signals.some((signal) => signal.type === 'presence_signal')) {
@@ -626,7 +747,7 @@ function semanticSignalsForEvidence(event: DeviceValueEvent, evidence: MemoryEvi
   }
 
   if (signals.some((signal) => signal.type === 'access_signal') && !signals.some((signal) => signal.type === 'presence_signal')) {
-    add('presence_signal', `${event.deviceId}.${event.field} access activity weakly supports recent presence.`, 'medium', Math.min(Math.max(evidence.profileWeight, 0.45), 0.7));
+    add('presence_signal', `${event.deviceId}.${event.field} access activity weakly supports recent presence.`, 'medium', Math.min(Math.max(evidence.profileWeight, qualityWeight(0.45)), qualityWeight(0.7)));
   }
 
   return signals;
@@ -996,14 +1117,22 @@ function updateWeeklySummary(
 function updateProfilePatterns(
   patterns: HomeProfilePatterns,
   event: DeviceValueEvent,
-  evidence: MemoryEvidence
+  evidence: MemoryEvidence,
+  currentField: FieldMemory | undefined
 ): HomeProfilePatterns {
+  if (!evidence.meaningfulChange || evidence.profileWeight <= 0) {
+    return patterns;
+  }
+
   const field = normalize(event.field);
   const deviceType = normalize(event.deviceType);
   const roomId = normalize(event.roomId);
   const date = getSummaryDate(event);
   const minute = minuteOfDay(event.simTime);
   const weekend = isWeekendDate(date);
+  const activated = becameActive(currentField, event.value);
+  const enteredCleaning = becameMatchingValue(currentField, event.value, (value) => normalize(String(value)) === 'cleaning');
+  const enteredRunning = becameMatchingValue(currentField, event.value, (value) => normalize(String(value)) === 'running');
   let next = patterns;
 
   const add = (id: string, gapsMinutes: number[] = []) => {
@@ -1014,7 +1143,7 @@ function updateProfilePatterns(
     add('door-lock-unlock');
   }
 
-  if (deviceType.includes('lock') && field === 'locked' && event.value === true) {
+  if (deviceType.includes('lock') && field === 'locked' && event.value === true && activated) {
     const lastUnlock = latestPatternEvidence(next['door-lock-unlock'], date);
     add('door-lock-lock');
     if (lastUnlock) {
@@ -1025,7 +1154,7 @@ function updateProfilePatterns(
     }
   }
 
-  if (roomId.includes('kitchen') && deviceType.includes('fridge') && isContactLikeField(field) && isActiveValue(event.value)) {
+  if (roomId.includes('kitchen') && deviceType.includes('fridge') && isContactLikeField(field) && activated) {
     if (!weekend && minute >= 6 * 60 && minute <= 7 * 60 + 45) {
       add('weekday-breakfast-fridge');
     }
@@ -1034,7 +1163,7 @@ function updateProfilePatterns(
     }
   }
 
-  if (roomId.includes('kitchen') && deviceType.includes('stove') && isPowerLikeField(field) && isActiveValue(event.value)) {
+  if (roomId.includes('kitchen') && deviceType.includes('stove') && isPowerLikeField(field) && activated) {
     add('stove-active');
     if (!weekend && minute >= 6 * 60 && minute <= 7 * 60 + 45) {
       add('weekday-breakfast-stove');
@@ -1054,7 +1183,7 @@ function updateProfilePatterns(
     }
   }
 
-  if (deviceType.includes('rangehood') && field === 'power' && isActiveValue(event.value)) {
+  if (deviceType.includes('rangehood') && field === 'power' && activated) {
     add('range-hood-on');
     if (minute >= 18 * 60 && minute <= 20 * 60 + 30) {
       add('dinner-range-hood');
@@ -1068,7 +1197,7 @@ function updateProfilePatterns(
     }
   }
 
-  if (deviceType.includes('sleep') && isInBedField(field) && event.value === true) {
+  if (deviceType.includes('sleep') && isInBedField(field) && event.value === true && activated) {
     if (roomId.includes('child') && minute >= 20 * 60 + 30 && minute <= 22 * 60) {
       add('child-sleep-start');
     }
@@ -1077,11 +1206,11 @@ function updateProfilePatterns(
     }
   }
 
-  if (!weekend && roomId.includes('study') && minute >= 8 * 60 && minute <= 17 * 60 && isStudyWorkDeviceSignal(deviceType, field, event.value)) {
+  if (!weekend && roomId.includes('study') && minute >= 8 * 60 && minute <= 17 * 60 && activated && isStudyWorkDeviceSignal(deviceType, field, event.value)) {
     add('study-weekday-daytime-work');
   }
 
-  if (deviceType.includes('robotvacuum') && field === 'status' && normalize(String(event.value)) === 'cleaning') {
+  if (deviceType.includes('robotvacuum') && field === 'status' && enteredCleaning) {
     const lastLock = latestPatternEvidence(next['door-lock-lock'], date);
     if (lastLock) {
       const gap = minutesBetweenSimTimes(lastLock.simTime, event.simTime);
@@ -1091,19 +1220,19 @@ function updateProfilePatterns(
     }
   }
 
-  if (deviceType.includes('washer') && ((field === 'status' && normalize(String(event.value)) === 'running') || (isPowerLikeField(field) && isActiveValue(event.value)))) {
+  if (deviceType.includes('washer') && ((field === 'status' && enteredRunning) || (isPowerLikeField(field) && activated))) {
     add('laundry-running');
   }
 
-  if (deviceType.includes('sprinkler') && field.includes('valve') && isActiveValue(event.value) && minute >= 5 * 60 && minute <= 7 * 60) {
+  if (deviceType.includes('sprinkler') && field.includes('valve') && activated && minute >= 5 * 60 && minute <= 7 * 60) {
     add('garden-summer-morning-sprinkler');
   }
 
-  if (roomId.includes('garden') && deviceType.includes('camera') && field === 'motion' && event.value === true) {
+  if (roomId.includes('garden') && deviceType.includes('camera') && field === 'motion' && event.value === true && activated) {
     add('garden-camera-motion');
   }
 
-  if (roomId.includes('living') && deviceType.includes('tv') && field === 'power' && isActiveValue(event.value) && (minute >= 17 * 60 || weekend)) {
+  if (roomId.includes('living') && deviceType.includes('tv') && field === 'power' && activated && (minute >= 17 * 60 || weekend)) {
     add('living-evening-media');
   }
 
@@ -1120,6 +1249,9 @@ function addProfilePattern(
   gapsMinutes: number[]
 ): HomeProfilePatterns {
   const current = patterns[id];
+  if (current?.evidence[0]?.sourceEventId === evidence.sourceEventId) {
+    return patterns;
+  }
   const nextPattern: HomeProfilePattern = current
     ? {
       ...current,
@@ -1472,6 +1604,18 @@ function meaningfulRoomIdsForEvent(
   return [];
 }
 
+function becameActive(current: FieldMemory | undefined, nextValue: DeviceEventValue): boolean {
+  return isActiveValue(nextValue) && !isActiveValue(current?.currentValue ?? null);
+}
+
+function becameMatchingValue(
+  current: FieldMemory | undefined,
+  nextValue: DeviceEventValue,
+  matches: (value: DeviceEventValue) => boolean
+): boolean {
+  return matches(nextValue) && !matches(current?.currentValue ?? null);
+}
+
 function durationMinutes(startedAt: string, endedAt: string): number | undefined {
   const startMs = Date.parse(startedAt);
   const endMs = Date.parse(endedAt);
@@ -1525,13 +1669,19 @@ interface FieldChangeAnalysis {
 function analyzeFieldChange(
   current: FieldMemory | undefined,
   event: DeviceValueEvent,
-  classification: ReturnType<typeof classifyDeviceEvidence>
+  classification: ReturnType<typeof classifyDeviceEvidence>,
+  sourceConfidence: number | undefined
 ): FieldChangeAnalysis {
+  const confidence = sourceConfidence === undefined ? 1 : normalizeSourceConfidence(sourceConfidence);
+  const weightedProfileValue = roundWeight(classification.profileWeight * confidence);
+  const qualityReason = sourceConfidence === undefined
+    ? ''
+    : ` Source confidence ${Number(confidence.toFixed(3))} scales profile weight.`;
   if (!current) {
     return {
       meaningfulChange: true,
-      profileWeight: classification.profileWeight,
-      evidenceReason: classification.reason
+      profileWeight: weightedProfileValue,
+      evidenceReason: `${classification.reason}${qualityReason}`
     };
   }
 
@@ -1544,9 +1694,16 @@ function analyzeFieldChange(
   return {
     meaningfulChange,
     valueDelta,
-    profileWeight: meaningfulChange ? classification.profileWeight : 0,
-    evidenceReason: meaningfulChange ? classification.reason : `${classification.reason}${telemetryReason}`
+    profileWeight: meaningfulChange ? weightedProfileValue : 0,
+    evidenceReason: meaningfulChange ? `${classification.reason}${qualityReason}` : `${classification.reason}${telemetryReason}`
   };
+}
+
+function normalizeSourceConfidence(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 1;
+  }
+  return Math.min(1, Math.max(0, value));
 }
 
 function isMeaningfulFieldChange(

@@ -39,10 +39,7 @@ describe('home memory behavior episodes', () => {
 
   it('keeps behavior episodes grounded in device evidence and not profile conclusions', () => {
     const memory = reduceDeviceEvents(createHomeMemory(), homeMemoryDaysEvents());
-    const evidenceIds = new Set([
-      ...memory.recentEvents.map((event) => event.id),
-      ...Object.values(memory.profilePatterns).flatMap((pattern) => pattern.evidence.map((event) => event.id))
-    ]);
+    const evidenceIds = new Set(Object.keys(memory.evidenceFacts));
     const episodes = extractHomeBehaviorEpisodes(memory);
 
     const doorAccess = episodes.find((episode) => episode.kind === 'door_access_episode');

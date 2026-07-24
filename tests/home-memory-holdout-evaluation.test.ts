@@ -23,7 +23,7 @@ describe('home memory holdout and counterfactual evaluation', () => {
         expectedFeatureIds: [
           'feature:door_unlock_lock_pairing',
           'feature:stove_range_hood_coupling',
-          'feature:child_bedroom_sleep_around_21',
+          'feature:early_sleep_zone_around_21',
           'feature:weekday_study_daytime_activity'
         ],
         expectedRoleSlotKinds: [
@@ -37,7 +37,7 @@ describe('home memory holdout and counterfactual evaluation', () => {
         {
           id: 'without-child-sleep',
           memory: memoryFromEvents(events.filter((event) => event.deviceId !== 'child_sleep_01' && event.roomId !== 'child_bedroom')),
-          absentFeatureIds: ['feature:child_bedroom_sleep_around_21'],
+          absentFeatureIds: ['feature:early_sleep_zone_around_21'],
           absentRoleSlotKinds: ['child_sleep_slot']
         },
         {
@@ -54,7 +54,7 @@ describe('home memory holdout and counterfactual evaluation', () => {
     expect(report.standard.featureIds).toEqual(expect.arrayContaining([
       'feature:door_unlock_lock_pairing',
       'feature:stove_range_hood_coupling',
-      'feature:child_bedroom_sleep_around_21',
+      'feature:early_sleep_zone_around_21',
       'feature:weekday_study_daytime_activity'
     ]));
     expect(report.standard.roleSlotKinds).toEqual(expect.arrayContaining([
@@ -66,7 +66,7 @@ describe('home memory holdout and counterfactual evaluation', () => {
 
     const noChildSleep = report.counterfactuals.find((entry) => entry.id === 'without-child-sleep');
     expect(noChildSleep?.violations).toEqual([]);
-    expect(noChildSleep?.featureIds).not.toContain('feature:child_bedroom_sleep_around_21');
+    expect(noChildSleep?.featureIds).not.toContain('feature:early_sleep_zone_around_21');
     expect(noChildSleep?.roleSlotKinds).not.toContain('child_sleep_slot');
     expect(JSON.stringify(noChildSleep?.claims)).not.toMatch(/child sleep slot/i);
 
